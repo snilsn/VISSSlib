@@ -3,9 +3,13 @@
 import uuid
 
 import numpy as np
+import os
+
+from copy import deepcopy
+
 import cv2
 import xarray as xr
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from image_packer import packer
 
@@ -38,26 +42,31 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
 
     total_width = (container_width + extra) * nTiles // nRows
     max_height = (20 + container_height_max) * nRows + 60
-    FONT = cv2.FONT_HERSHEY_DUPLEX
-    FONT_SCALE = 1
-    FONT_THICKNESS = 2
+    font = ImageFont.truetype("OpenSans-SemiBold.ttf", 35)
+    fontL = ImageFont.truetype("OpenSans-SemiBold.ttf", 16)
+
 
     ff = files.FindFiles(timestamp, camera, config, lv2Version)
 
+
+    site = config["site"]
+
     particlesPloted = 0
-    if len(ff.fnames1) == 0:
-        print("NO DATA (YET?) ", ff.quicklook1)
-        return None
+
+    if os.path.isfile(ff.quicklook1) and skipExisting:
+        print("SKIPPING - file exists", ff.quicklook1)
+        return None, None
+
+    if (len(ff.fnames1) == 0) and (len(ff.fnames0) > 0):
+        print("NO DATA YET ", ff.quicklook1)
+        return None, None
 
     if not ff.isComplete:
-        print("NOT COMPLETE (YET?) %i/%i %s"% (len(ff.fnames1Ext), len(ff.fnames0), ff.quicklook1))
+        print("NOT COMPLETE YET %i/%i %s"% (len(ff.fnames1Ext), len(ff.fnames0), ff.quicklook1))
 #         if (len(ff.fnames1Ext) == len(ff.fnames0)):
 #             afshgsa
-        return None
+        return None, None
     
-    if os.path.isfile(ff.quicklook1) and skipExisting:
-        print("SKIPPING ", ff.quicklook1)
-        return None
 #     else:
     print("RUNNING ", ff.quicklook1)
 
@@ -88,183 +97,204 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
         dat2 = dat2.stack(fpid=("file", "pid"))
 
         dats2.append(dat2)
+
     print("opened")
-
-    limDat = xr.concat(dats2, dim='fpid')
-#         limDat = dats2
-    print("merged")
-
-
     new_im = Image.new('RGB', (total_width, max_height), color=(255, 255, 255))
 
-    print('Total number of particles for plotting %i' % len(limDat.fpid))
+    if len(dats2) == 0:
 
-    if len(limDat.fpid) == 0:
-        print("TOO FEW DATA ", ff.quicklook1)
+        draw = ImageDraw.Draw(new_im)
+        draw.text((total_width//3, max_height//3),'no raw data',(0,0,0),font=font)
 
-        new_im = Image.fromarray(cv2.putText(np.array(new_im), 'no data',
-                                             (total_width//3, max_height//3), FONT, FONT_SCALE, (0, 0, 0), FONT_THICKNESS,))
+        nParticles = 0
 
     else:
-        timeSteps = np.percentile(
-            limDat.record_time, np.linspace(0, 100, nTiles+1))
+        limDat = xr.concat(dats2, dim='fpid')
+    #         limDat = dats2
+        print("merged")
 
-        mosaics = []
+        if len(limDat.fpid) == 0:
+            print("TOO FEW DATA ", ff.quicklook1)
 
-        videos = {}
-        for tt, (t1, t2) in enumerate(zip(timeSteps[:-1], timeSteps[1:])):
+            draw = ImageDraw.Draw(new_im)
+            draw.text((total_width//3, max_height//3),'no data recorded',(0,0,0),font=font)
 
-            #     if tt!= 9:
-            #         continue
+            nParticles = 0
 
-            thisDat = limDat.where((limDat.record_time > t1) &
-                                   (limDat.record_time <= t2)).dropna('fpid')
-            totalArea = 0
+        else:
+            print('Total number of particles for plotting %i' % len(limDat.fpid))
 
-            # select pids randomly, figure out how much we need, and sort them again
-            pids = deepcopy(thisDat.fpid.values)
-            nPids = len(pids)
-            np.random.seed(tt)
-            np.random.shuffle(pids)
+            timeSteps = np.percentile(
+                limDat.record_time, np.linspace(0, 100, nTiles+1))
 
-            containerSize = (container_width*container_height_max)
-            try:
-                nParticlesNeeded = np.where(thisDat.sel(fpid=pids).roi.sel(ROI_elements=[
-                                            "w", "h"]).prod("ROI_elements").cumsum("fpid")/containerSize > 1)[0][0]
-            except IndexError:
-                nParticlesNeeded = len(pids)
+            mosaics = []
 
-            pids = np.sort(pids[:nParticlesNeeded])
-            print(tt, "/", nTiles, t1, t2, nParticlesNeeded, 'of', nPids)
-            particlesPloted += nParticlesNeeded
-            ims = []
+            videos = {}
+            for tt, (t1, t2) in enumerate(zip(timeSteps[:-1], timeSteps[1:])):
 
-            for fname, pid in pids:
-
-                basenameImg = fname.split('/')[-1]
-
-                if not readParticlesFromFiles:
-
-                    basename = '_'.join(fname.split(
-                        '/')[-1].split('.')[-2].split('_')[3:])
-                    thisfname_lv0 = fname_lv0.format(root=root, computer=computer, visssGen=visssGen, camera=camera, timestamp=timestamp,
-                                                     site=site, year=year, month=month, day=day, nThread='{thread}', basename=basename, movieExtension=movieExtension,)
-
-                    if thisfname_lv0 not in videos.keys():
-                        for k in videos.keys():
-                            videos[k].release()
-
-                        videos[thisfname_lv0] = VideoReaderMeta(
-                            thisfname_lv0, fname)
-            #             print('opened %s'%thisfname_lv0)
-
-                particle = thisDat.sel(fpid=(fname, pid))
-                kk = int(particle.record_id.values)
-                if not readParticlesFromFiles:
-                    _, frame1, _ = videos[thisfname_lv0].getFrameByIndex(kk)
-
-                    if frame1 is None:
-                        continue
-
-                    x, y, w, h = particle.roi.values.astype(int)
-                    if len(frame1.shape) == 3:
-                        frame1 = frame1[:, :, 0]
-                    im = frame1[y+height_offset:y+height_offset+h, x:x+w]
+                if tt == len(timeSteps) -2:
+                    whereCond = (limDat.record_time >= t1)
                 else:
+                    whereCond = ((limDat.record_time >= t1) &
+                                                           (limDat.record_time < t2))
 
-                    fn = files.FilenamesFromLevel(fname, config)
+                thisDat = limDat.where(whereCond).dropna('fpid')
+                totalArea = 0
 
-                    pidStr = '%07i' % pid
-                    imName = '%s.png' % (pidStr)
-                    imfname = '%s/%s' % (
-                        fn.out_level2images.format(ppid=pidStr[:4]), imName)
+                # select pids randomly, figure out how much we need, and sort them again
+                pids = deepcopy(thisDat.fpid.values)
+                nPids = len(pids)
+                np.random.seed(tt)
+                np.random.shuffle(pids)
+
+                containerSize = (container_width*container_height_max)
+                
+                if nPids < 5: #fo very few particles I want to see them all!
+                    nParticlesNeeded = len(pids)
+                else:
                     try:
-                        im = np.array(Image.open(imfname))
-                    except FileNotFoundError:
-                        print("NOT FOUND ", imfname)
-                        continue
+                        nParticlesNeeded = np.where(thisDat.sel(fpid=pids).roi.sel(ROI_elements=[
+                                                    "w", "h"]).prod("ROI_elements").cumsum("fpid")/containerSize > 1)[0][0] +1
+                    except IndexError:
+                        nParticlesNeeded = nPids
 
-                im = np.pad(im, [(0, 1), (0, 1)])
-                fid = np.where(fname == np.array(ff.fnames1))[0][0]
+                pids = np.sort(pids[:nParticlesNeeded])
+                print(tt, "/", nTiles, t1, t2, nParticlesNeeded, 'of', nPids)
+                particlesPloted += nParticlesNeeded
+                ims = []
 
-                text = np.zeros((100, 100))
-                text = cv2.putText(text, '%i.%i' % (fid, pid),
-                                   (0, 50), cv2.FONT_HERSHEY_PLAIN, .75, 255, 1,)
+                for fname, pid in pids:
 
-                text = crop(text)
+                    basenameImg = fname.split('/')[-1]
 
-                y1, x1 = im.shape
-                y2, x2 = text.shape
+                    if not readParticlesFromFiles:
 
-                # only add label if large enough
-                if x1 >= x2:
+                        basename = '_'.join(fname.split(
+                            '/')[-1].split('.')[-2].split('_')[3:])
+                        thisfname_lv0 = fname_lv0.format(root=root, computer=computer, visssGen=visssGen, camera=camera, timestamp=timestamp,
+                                                         site=site, year=year, month=month, day=day, nThread='{thread}', basename=basename, movieExtension=movieExtension,)
 
-                    y3 = y1+y2
-                    x3 = max(x1, x2)
-                    imT = np.zeros((y3, x3), dtype=np.uint8)
-                    imT[:y1, :x1] = im
-                    imT[y1:, :x2] = text
-                else:
-                    imT = im
-                ims.append(imT)
-                totalArea += np.prod(imT.shape)
+                        if thisfname_lv0 not in videos.keys():
+                            for k in videos.keys():
+                                videos[k].release()
 
-            # make tile
-            images = [Image.fromarray(im) for im in ims]
-            if len(images) == 0:
-                continue
-            mosaic = Packer_patched(images).pack(
-                container_width=container_width, container_height_max=container_height_max)
-            mosaic = np.array(mosaic)
+                            videos[thisfname_lv0] = VideoReaderMeta(
+                                thisfname_lv0, fname)
+                #             print('opened %s'%thisfname_lv0)
 
-            if container_width > mosaic.shape[1]:
-                mosaic = np.pad(
-                    mosaic, [(0, 0), (0, container_width-mosaic.shape[1]), (0, 0)])
+                    particle = thisDat.sel(fpid=(fname, pid))
+                    kk = int(particle.record_id.values)
+                    if not readParticlesFromFiles:
+                        _, frame1, _ = videos[thisfname_lv0].getFrameByIndex(kk)
 
-            label = np.ones((20, mosaic.shape[1], 3), dtype=np.uint8) * 255
-            label = cv2.putText(label, '%s-%s' % (str(t1).split('.')[0].split('T')[1], str(t2).split('.')[0].split('T')[1]),
-                                (0, 20), cv2.FONT_HERSHEY_PLAIN, 1.3, (0, 0, 0), 2,)
+                        if frame1 is None:
+                            continue
 
-            mosaic = Image.fromarray(np.vstack((label, mosaic)))
-#             display(mosaic)
-            mosaics.append(mosaic)
+                        x, y, w, h = particle.roi.values.astype(int)
+                        if len(frame1.shape) == 3:
+                            frame1 = frame1[:, :, 0]
+                        im = frame1[y+height_offset:y+height_offset+h, x:x+w]
+                    else:
 
-        nCols = nTiles//nRows
+                        fn = files.FilenamesFromLevel(fname, config)
 
-        widths, heights = zip(*(i.size for i in mosaics))
+                        pidStr = '%07i' % pid
+                        imName = '%s.png' % (pidStr)
+                        imfname = '%s/%s' % (
+                            fn.out_level2images.format(ppid=pidStr[:4]), imName)
+                        try:
+                            im = np.array(Image.open(imfname))
+                        except FileNotFoundError:
+                            print("NOT FOUND ", imfname)
+                            continue
 
-        for nRow in range(nRows):
-            x_offset = 0
+                    im = np.pad(im, [(0, 1), (0, 1)])
+                    fid = np.where(fname == np.array(ff.fnames1))[0][0]
 
-            for im in mosaics[nCols*(nRow):nCols*(nRow+1)]:
-                new_im.paste(im, (x_offset, max(heights)*nRow + 50))
-                x_offset += im.size[0] + extra
+                    text = np.zeros((100, 100))
+                    text = cv2.putText(text, '%i.%i' % (fid, pid),
+                                       (0, 50), cv2.FONT_HERSHEY_PLAIN, .75, 255, 1,)
 
-            # x_offset = 0
+                    text = crop(text)
+
+                    y1, x1 = im.shape
+                    y2, x2 = text.shape
+
+                    # only add label if large enough
+                    if x1 >= x2:
+
+                        y3 = y1+y2
+                        x3 = max(x1, x2)
+                        imT = np.zeros((y3, x3), dtype=np.uint8)
+                        imT[:y1, :x1] = im
+                        imT[y1:, :x2] = text
+                    else:
+                        imT = im
+                    ims.append(imT)
+                    totalArea += np.prod(imT.shape)
+
+                # make tile
+                images = [Image.fromarray(im) for im in ims]
+                if len(images) == 0:
+                    continue
+                mosaic = Packer_patched(images).pack(
+                    container_width=container_width, container_height_max=container_height_max)
+                mosaic = np.array(mosaic)
+
+                if container_width > mosaic.shape[1]:
+                    mosaic = np.pad(
+                        mosaic, [(0, 0), (0, container_width-mosaic.shape[1]), (0, 0)])
+
+                # sometimes container is too large... 
+                mosaic = mosaic[:container_height_max, :container_width]
+
+                label = Image.fromarray(np.ones((20, mosaic.shape[1], 3), dtype=np.uint8) * 255)
+                drawL = ImageDraw.Draw(label)
+                drawL.text((0, 0),'%s-%s' % (str(t1).split('.')[0].split('T')[1], str(t2).split('.')[0].split('T')[1]),(0,0,0),font=fontL)
+
+                mosaic = Image.fromarray(np.vstack((label, mosaic)))
+    #             display(mosaic)
+                mosaics.append(mosaic)
+
+            nCols = nTiles//nRows
+
+            widths, heights = zip(*(i.size for i in mosaics))
+
+            for nRow in range(nRows):
+                x_offset = 0
+
+                for im in mosaics[nCols*(nRow):nCols*(nRow+1)]:
+                    new_im.paste(im, (x_offset, max(heights)*nRow + 50))
+                    x_offset += im.size[0] + extra
+
+                # x_offset = 0
     # for im in mosaics[len(mosaics)//nRows:]:
     #   new_im.paste(im, (x_offset,max(heights) +50))
     #   x_offset += im.size[0] + extra
 
-    tenmm = 1e6/resolution/100
+            nParticles = len(limDat.fpid)
 
-    title = '%s %s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger detections plotted, 10 mm = %.1f px =' % (str(
-        t1).split('T')[0], nicerNames(camera), site, minSize, minSize * resolution * 1e-6 * 1000, particlesPloted, len(limDat.fpid), tenmm)
+    tenmm = 1e6/config["resolution"]/100
 
-    new_im = cv2.putText(np.array(new_im), title,
-                         (0, 45), FONT, FONT_SCALE, (0, 0, 0), FONT_THICKNESS,)
-    (label_width, label_height), baseline = cv2.getTextSize(
-        title, FONT, FONT_SCALE, FONT_THICKNESS)
+    title = '%s-%s-%s %s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger detections plotted, 10 mm = %.1f px =' % (
+        ff.year, ff.month, ff.day, nicerNames(camera), config["name"], minSize, minSize * config["resolution"] * 1e-6 * 1000, particlesPloted, nParticles, tenmm)
 
-    new_im = Image.fromarray(new_im)
+    # new_im = cv2.putText(np.array(new_im), title,
+    #                      (0, 45), FONT, FONT_SCALE, (0, 0, 0), FONT_THICKNESS,)
+    # (label_width, label_height), baseline = cv2.getTextSize(
+    #     title, FONT, FONT_SCALE, FONT_THICKNESS)
+
     draw = ImageDraw.Draw(new_im)
-    draw.line((label_width + 15, 30, label_width +
+    draw.text((0, 0),title,(0,0,0),font=font)
+    width, height = draw.textsize(title, font=font)
+
+    draw.line((width + 15, 30, width +
               15+round(tenmm), 30), fill=0, width=5)
 
-#     display(new_im)
 
     new_im.save(ff.quicklook1)
     
-    return ff.quicklook1
+    return ff.quicklook1, new_im
 
 
 class Packer_patched(packer.Packer):

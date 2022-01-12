@@ -49,24 +49,11 @@ class FindFiles(object):
             self.fnamesPattern0 = '%s/*%s*_0.%s' % (
                 self.outpath0, case, config["movieExtension"])
 
-        self.fnamesPattern1 = "%s/level1_V%s*%s*nc"%(self.outpath1, version, camera)
-        self.fnamesPattern2 = "%s/level2_V%s*%s*nc"%(self.outpath2, version, camera)
+        self.fnamesPattern1 = "%s/level1_V%s*%s*%s*nc"%(self.outpath1, version, camera, case)
+        self.fnamesPattern2 = "%s/level2_V%s*%s*%s*nc"%(self.outpath2, version, camera, case)
 
-        self.fnamesPattern1Ext = "%s/level1_V%s*%s*nc.[b,n]*"%(self.outpath1, version, camera) #finds broken & nodata
-        self.fnamesPattern2Ext = "%s/level2_V%s*%s*nc.[b,n]*"%(self.outpath2, version, camera) #finds broken & nodata
-
-        
-        self.fnames0 = sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern0) ))
-        self.fnames1 = sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern1) ))
-        self.fnames2 = sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern2) ))
-   
-        self.fnames1Ext = sorted(self.fnames1 + list(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern1Ext) )))
-        self.fnames2Ext = sorted(self.fnames2 + list(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern2Ext) )))
+        self.fnamesPattern1Ext = "%s/level1_V%s*%s*%s*nc.[b,n]*"%(self.outpath1, version, camera, case) #finds broken & nodata
+        self.fnamesPattern2Ext = "%s/level2_V%s*%s*%s*nc.[b,n]*"%(self.outpath2, version, camera, case) #finds broken & nodata
 
         self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
         
@@ -78,8 +65,35 @@ class FindFiles(object):
         self.quicklook1 = f"{self.quicklookPath1}/level1_V{version}_{config['site']}_{self.computer}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
 
         
-        self.isComplete  = (len(self.fnames0) == len(self.fnames1Ext))
-        
+    @property
+    def fnames0(self):
+        return sorted(filter( os.path.isfile,
+                                glob.glob(self.fnamesPattern0) ))
+    
+    @property
+    def fnames1(self):
+        return sorted(filter( os.path.isfile,
+                                glob.glob(self.fnamesPattern1) ))
+    @property
+    def fnames2(self):
+        return sorted(filter( os.path.isfile,
+                                glob.glob(self.fnamesPattern2) ))
+
+    @property
+    def fnames1Ext(self):
+        return sorted(self.fnames1 + list(filter( os.path.isfile,
+                                glob.glob(self.fnamesPattern1Ext) )))
+
+    @property
+    def fnames2Ext(self):
+        return sorted(self.fnames2 + list(filter( os.path.isfile,
+                                glob.glob(self.fnamesPattern2Ext) )))
+
+    @property
+    def isComplete(self):
+        return (len(self.fnames0) == len(self.fnames1Ext))
+
+
         
     def createQuicklookDirs(self):
         res1 = os.system('mkdir -p %s' %
