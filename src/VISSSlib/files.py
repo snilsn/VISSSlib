@@ -105,7 +105,10 @@ class FindFiles(object):
 class Filenames(object):
     def __init__(self, fname, config, version):
         
+        self.fname = fname
         self.config = config
+        self.version = version
+
         self.basename = os.path.basename(fname).split('.')[0]
         if config["nThreads"] is None:
             ts = self.basename.split("_")[-1]
@@ -143,6 +146,33 @@ class Filenames(object):
         
         return res1, res2
 
+    @property
+    def fnameAllThreads(self):
+        fname0All = list()
+        for nThread in range(self.config["nThreads"]):
+            
+            thisFname = self.fname.replace(f'_0.{self.config["movieExtension"]}', f'_%i.{self.config["movieExtension"]}'%nThread)
+            
+            #sometime the second changes while the new thread file is written, fix it:
+            if not os.path.isfile(thisFname):
+                thisSplits = thisFname.split("_")
+                thisTime = datetime.datetime.strptime(thisSplits[-2], "%Y%m%d-%H%M%S")
+                thisTime = (thisTime + datetime.timedelta(seconds=1)).strftime("%Y%m%d-%H%M%S")
+                thisSplits[-2] = thisTime
+                thisFname = "_".join(thisSplits)
+                # it can be even BEFORE the _0 file:
+                if not os.path.isfile(thisFname):
+                    thisSplits = thisFname.split("_")
+                    thisTime = datetime.datetime.strptime(thisSplits[-2], "%Y%m%d-%H%M%S")
+                    #remove two, becuase 1 has been already added
+                    thisTime = (thisTime + datetime.timedelta(seconds=-2)).strftime("%Y%m%d-%H%M%S")
+                    thisSplits[-2] = thisTime
+                    thisFname = "_".join(thisSplits)
+                #now it should work!
+                assert os.path.isfile(thisFname)
+
+            fname0All.append(thisFname)
+        return fname0All
 
 class FilenamesFromLevel(object):
     def __init__(self, fname, config):

@@ -17,22 +17,6 @@ from copy import deepcopy
 
 from . import __version__
 
-'''
-To do:
-
-* change tracking concept, detect everything, then see whether ther eis a matc
-with previous particles also considering speed and direction if multiple images 
-are available
-
-* add flag for particles at the edge
-
-'''
-# https://pypi.org/project/memory-profiler/
-
-'''
-identify interesting time stamps
-'''
-
 
 
 class movementDetection(object):
