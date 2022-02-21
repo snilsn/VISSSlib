@@ -22,3 +22,6 @@ from . import quicklooks
 from . import av
 from . import tools
 from . import detection
+from . import metadata
+from . import matching
+from . import tracking
