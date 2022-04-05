@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import functools
+import os
 
 import numpy as np
 import cv2
@@ -53,7 +54,7 @@ class VideoReader(cv2.VideoCapture):
 # can cause segfaults!
 
 class VideoReaderMeta(object):
-    def __init__(self, movFilePattern, metaL1, metaL2=None, saveMode=False):
+    def __init__(self, movFilePattern, metaL1, metaL2=None, saveMode=False, config=None):
         if type(metaL1) is xr.Dataset:
             self.metaL1 = metaL1
         else:
@@ -63,9 +64,11 @@ class VideoReaderMeta(object):
         else:
             self.metaL2 = xr.open_dataset(metaL2)
         self.saveMode = saveMode
-            
+        self.config = config
+
         self.movFilePattern = movFilePattern
         self.threads = np.unique(self.metaL1.nThread)
+
         self.video = {}
         self.position = 0
         self.positions = {}
@@ -126,7 +129,7 @@ class VideoReaderMeta(object):
         return self.res, self.curentFrame, self.currentMetaL1
 
     
-    def getFrameByIndexWithParticles(self, ii):
+    def getFrameByIndexWithParticles(self, ii, markParticles=False):
         '''
         like read, but with even more meta data and appropriate thread
         '''
@@ -141,6 +144,20 @@ class VideoReaderMeta(object):
 
         assert np.all(self.currentMetaL1.capture_time == self.currentMetaL2.capture_time)
             
+        if markParticles:
+            for jj, pid in enumerate(self.currentMetaL2.pid.values):
+                partic1 = self.currentMetaL2.sel(pid=pid)
+                (x, y, w, h) = partic1.roi.values.astype(int)
+                y = y + self.config['height_offset']
+                colors=[(0, 255, 0), (255, 0, 0), (0, 0 , 255), (255, 255, 0), (0, 255, 255)] * 30
+                color = colors[jj]
+                cv2.rectangle(self.curentFrame, (x, y),
+                          (x + w, y + h), color, 2)
+                extra1 = str(partic1.record_time.values)[:-6].split('T')[-1]
+                extra2 = '%i'%partic1.Dmax.values
+                cv2.putText(self.curentFrame, '%i %s %s' % (partic1.pid, extra1, extra2),
+                            (int(partic1.roi[0]+w+5), int(partic1.roi[1]+self.config['height_offset'])), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+
         return self.res, self.curentFrame, self.currentMetaL1, self.currentMetaL2
 
     

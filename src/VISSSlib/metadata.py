@@ -19,9 +19,24 @@ import cv2
 import logging
 import logging.config
 
+from . import __version__
+from . import time
 
-def getMetaData(fnames, camera, nThreads, threshs=None, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, goodFile=None):
+def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True):
 
+
+    nThreads = config["nThreads"]
+    threshs = np.array(config["threshs"])
+    goodFiles = config["goodFiles"]
+    fixTime = config["fixTime"]
+    
+    computers = config["computers"]
+    instruments = config["instruments"]
+
+    goodFilesDict = {}
+    for computer1, camera1, goodFile1 in zip(computers, instruments, goodFiles):
+        goodFilesDict[camera1] = goodFile1
+    goodFile = goodFilesDict[camera]
 
     try:
         threshs = threshs.tolist()
@@ -41,6 +56,10 @@ def getMetaData(fnames, camera, nThreads, threshs=None, stopAfter=-1, detectMoti
         metaDat = None
     else:
         metaDat = xr.concat(metaDat, dim='capture_time').sortby('capture_time')
+
+
+    if fixTime == "fixMosaicTimeL1":
+        metaDat = time.fixMosaicTimeL1(metaDat, config)
 
     return metaDat, droppedFrames
 
@@ -162,14 +181,16 @@ def _getMetaData1(fname, camera, nThreads, threshs=None, stopAfter=-1, detectMot
     metaDat['record_time'] = xr.DataArray([datetime.datetime.utcfromtimestamp(
         t1*1e-6) for t1 in metaDat['record_time'].values.astype(int)], coords=metaDat['record_time'].coords)
 
-    metaDat['capture_starttime'] = capture_starttime
-    metaDat['serialnumber'] = serialnumber
-    metaDat['configuration'] = configuration
-    metaDat['hostname'] = hostname
-    metaDat['gitTag'] = gitTag
-    metaDat['gitBranch'] = gitBranch
-    metaDat['filename'] = fname.split('/')[-1]
-    metaDat['record_starttime'] = record_starttime
+
+
+    metaDat['capture_starttime'] = xr.DataArray(np.array([capture_starttime]), dims=["file_starttime"], coords=[metaDat['record_time'].values[:1]])
+    metaDat['serialnumber'] = xr.DataArray([serialnumber], dims=["file_starttime"], coords=[metaDat['record_time'].values[:1]])
+    metaDat['configuration'] = xr.DataArray([configuration], dims=["file_starttime"], coords=[metaDat['record_time'].values[:1]])
+    metaDat['hostname'] = xr.DataArray([hostname], dims=["file_starttime"], coords=[metaDat['record_time'].values[:1]])
+    metaDat['gitTag'] = xr.DataArray([gitTag], dims=["file_starttime"], coords=[metaDat['record_time'].values[:1]])
+    metaDat['gitBranch'] = xr.DataArray([gitBranch], dims=["file_starttime"], coords=[metaDat['record_time'].values[:1]])
+    metaDat['filename'] = xr.DataArray([fname.split('/')[-1]], dims=["file_starttime"], coords=[metaDat['record_time'].values[:1]])
+    metaDat['record_starttime'] = xr.DataArray([record_starttime], dims=["file_starttime"], coords=[metaDat['record_time'].values[:1]])
 
     if testMovieFile and (goodFile is not None) and (goodFile != "None"):
         # check for broken files:
@@ -286,6 +307,12 @@ def _getMetaData1(fname, camera, nThreads, threshs=None, stopAfter=-1, detectMot
         metaDat['nThread'].values[:] = nThread
     else:
         metaDat['nThread'].values[:] = 0
+
+    #save storage
+    # metaDat["foundParticles"] = metaDat["foundParticles"].astype(np.uint32)
+    # metaDat["movingObjects"] = metaDat["movingObjects"].astype(np.uint32)
+    metaDat["nThread"] = metaDat["nThread"].astype(np.uint16)
+
     return metaDat, droppedFrames
 
 def checkMotion(subFrame, oldFrame, threshs):
