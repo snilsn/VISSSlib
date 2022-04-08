@@ -61,7 +61,7 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
         print("NO DATA YET ", ff.quicklook1)
         return None, None
 
-    if not ff.isComplete:
+    if not ff.isCompleteL1:
         print("NOT COMPLETE YET %i/%i %s"% (len(ff.fnames1Ext), len(ff.fnames0), ff.quicklook1))
 #         if (len(ff.fnames1Ext) == len(ff.fnames0)):
 #             afshgsa
@@ -201,7 +201,7 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
                         pidStr = '%07i' % pid
                         imName = '%s.png' % (pidStr)
                         imfname = '%s/%s' % (
-                            fn.out_level2images.format(ppid=pidStr[:4]), imName)
+                            fn.fnameLevel2images.format(ppid=pidStr[:4]), imName)
                         try:
                             im = np.array(Image.open(imfname))
                         except FileNotFoundError:

@@ -78,6 +78,7 @@ class FindFiles(object):
 
         
         self.quicklook1 = f"{self.quicklookPath1}/level1_V{version}_{config['site']}_{self.computer}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
+        self.quicklook3 = f"{self.quicklookPath3}/level3_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
 
         
     @functools.cached_property
@@ -124,15 +125,27 @@ class FindFiles(object):
 
     @functools.cached_property
     def isComplete(self):
+        print("replace isComplete with isCompleteL1!")
         return (len(self.fnames0) == len(self.fnames1Ext))
+
+    @functools.cached_property
+    def isCompleteL1(self):
+        return (len(self.fnames0) == len(self.fnames1Ext))
+
+
+    @functools.cached_property
+    def isCompleteL3(self):
+        return (len(self.fnames2) == len(self.fnames3Ext))
 
 
         
     def createQuicklookDirs(self):
         res1 = os.system('mkdir -p %s' %
                   self.quicklookPath1)
+        res3 = os.system('mkdir -p %s' %
+                  self.quicklookPath3)
 
-        return res1, 1, 1
+        return res1, 1, res3
 
 
 class Filenames(object):
@@ -167,6 +180,7 @@ class Filenames(object):
         self.camera = "_".join(self.basename.split("_")[2:4])
 
         self.outpath = "%s/%s/%s/%s" % (config["pathOut"], self.year, self.month, self.day)
+        self.fnameLevel0 = self.fname
         self.fnameLevel1 = '%s/level1_V%s_%s_%s.nc' % (
             self.outpath.format(site=config["site"], level='1'), version, config["site"], self.basename)
         self.fnameLevel2 = '%s/level2_V%s_%s_%s.nc' % (
@@ -176,7 +190,6 @@ class Filenames(object):
 
         self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
         self.fnameLevel2images = "%s/%s/{ppid}"%(self.outpathImg.format(site=config["site"], level='2images'),self.fnameLevel2.split("/")[-1])
-        
         
         return
 
@@ -339,7 +352,7 @@ class FilenamesFromLevel(Filenames):
         month = case[4:6]
         day = case[6:8]
 
-        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["pathOut"].format(level=0), computer, camera, year, month, day)
+        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["pathOut"].format(level=0, site=site), computer, camera, year, month, day)
         if config["nThreads"] is None:
             fnameLevel0 = f"{outpath0}/{basename}.{config['movieExtension']}"
         else:
