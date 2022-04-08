@@ -7,7 +7,11 @@ import xarray as xr
 import scipy.stats
 #import av
 import bottleneck as bn
-import cv2
+import warnings
+try:
+    import cv2
+except ImportError:
+    warnings.warn("opencv not available!")
 
 import logging
 log = logging.getLogger()

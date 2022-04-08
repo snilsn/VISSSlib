@@ -14,7 +14,11 @@ import numpy as np
 import xarray as xr
 from copy import deepcopy
 
-import cv2
+import warnings
+try:
+    import cv2
+except ImportError:
+    warnings.warn("opencv not available!")
 
 import logging
 import logging.config

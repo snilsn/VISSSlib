@@ -7,6 +7,7 @@ import xarray as xr
 import pandas as pn
 import bottleneck as bn
 
+import warnings
 import logging
 log = logging.getLogger()
 

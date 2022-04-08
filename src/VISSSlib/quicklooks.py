@@ -7,11 +7,16 @@ import os
 
 from copy import deepcopy
 
-import cv2
 import xarray as xr
 from PIL import Image, ImageDraw, ImageFont
 
 from image_packer import packer
+
+import warnings
+try:
+    import cv2
+except ImportError:
+    warnings.warn("opencv not available!")
 
 from .tools import nicerNames
 from .av import VideoReaderMeta

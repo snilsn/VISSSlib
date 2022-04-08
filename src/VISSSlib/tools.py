@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import yaml
+import warnings
 
 niceNames= (
     ('master', 'leader'),

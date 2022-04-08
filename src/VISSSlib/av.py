@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 import functools
 import os
+import warnings
 
 import numpy as np
-import cv2
+try:
+    import cv2
+except ImportError:
+    warnings.warn("opencv not available!")
 import xarray as xr
 
 
