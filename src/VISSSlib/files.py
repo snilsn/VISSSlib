@@ -62,6 +62,8 @@ class FindFiles(object):
             self.fnamesPattern0 = '%s/*%s*_0.%s' % (
                 self.outpath0, case, config["movieExtension"])
 
+        self.fnamesPattern0status = f"{self.outpath0}/{self.computer}_{config['visssGen']}_{camera}_{case}_status.txt"
+
         self.fnamesPattern1 = "%s/level1_V%s*%s*%s*nc"%(self.outpath1, version, camera, case)
         self.fnamesPattern2 = "%s/level2_V%s*%s*%s*nc"%(self.outpath2, version, camera, case)
         self.fnamesPattern3 = "%s/level3_V%s*%s*%s*nc"%(self.outpath3, version, camera, case)
@@ -86,6 +88,14 @@ class FindFiles(object):
         return sorted(filter( os.path.isfile,
                                 glob.glob(self.fnamesPattern0) ))
     
+    @functools.cached_property
+    def fnames0status(self):
+        if os.path.isfile(self.fnamesPattern0status):
+            return self.fnamesPattern0status
+        else:
+            return None
+    
+
     @functools.cached_property
     def fnames1(self):
 
