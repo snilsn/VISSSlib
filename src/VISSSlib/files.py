@@ -28,7 +28,10 @@ class FindFiles(object):
         for level 0, only thread 0 files are returned!
         '''
 
-        self.case = case
+        if type(case) is not str:
+            self.case = pn.to_datetime(case).strftime('%Y%m%d-%H%M%S')
+        else:
+            self.case = case
         self.camera = camera
         self.config = config
         self.version = version
@@ -39,11 +42,11 @@ class FindFiles(object):
             computerDict[camera1] = computer1
         self.computer = computerDict[camera]
 
-        self.year  =case[:4]
-        self.month  =case[4:6]
-        self.day  =case[6:8]        
+        self.year  =self.case[:4]
+        self.month  =self.case[4:6]
+        self.day  =self.case[6:8]        
         try:
-            self.timestamps  =case[9:]        
+            self.timestamps  =self.case[9:]        
         except IndexError:
             self.timestamps = None
             
@@ -57,20 +60,21 @@ class FindFiles(object):
 
         if config["nThreads"] is None:
             self.fnamesPattern0 = '%s/*%s*.%s' % (
-                self.outpath0, case, config["movieExtension"])
+                self.outpath0, self.case, config["movieExtension"])
         else:
             self.fnamesPattern0 = '%s/*%s*_0.%s' % (
-                self.outpath0, case, config["movieExtension"])
+                self.outpath0, self.case, config["movieExtension"])
 
-        self.fnamesPattern0status = f"{self.outpath0}/{self.computer}_{config['visssGen']}_{camera}_{case}_status.txt"
+        self.fnamesPattern0status = f"{self.outpath0}/{self.computer}_{config['visssGen']}_{camera}_{self.case}_status.txt"
 
-        self.fnamesPattern1 = "%s/level1_V%s*%s*%s*nc"%(self.outpath1, version, camera, case)
-        self.fnamesPattern2 = "%s/level2_V%s*%s*%s*nc"%(self.outpath2, version, camera, case)
-        self.fnamesPattern3 = "%s/level3_V%s*%s*%s*nc"%(self.outpath3, version, camera, case)
+        self.fnamesPattern1 = "%s/level1_V%s*%s*%s*nc"%(self.outpath1, version, camera, self.case)
+        self.fnamesPattern2 = "%s/level2_V%s*%s*%s*nc"%(self.outpath2, version, camera, self.case)
+        self.fnamesPattern3 = "%s/level3_V%s*%s*%s*nc"%(self.outpath3, version, camera, self.case)
+        self.fnamesPattern3Coef = "%s/level3coefficients_V%s*%s*%s%s%s.nc"%(self.outpath3, version, camera, self.year, self.month, self.day)
 
-        self.fnamesPattern1Ext = "%s/level1_V%s*%s*%s*nc.[b,n]*"%(self.outpath1, version, camera, case) #finds broken & nodata
-        self.fnamesPattern2Ext = "%s/level2_V%s*%s*%s*nc.[b,n]*"%(self.outpath2, version, camera, case) #finds broken & nodata
-        self.fnamesPattern3Ext = "%s/level3_V%s*%s*%s*nc.[b,n]*"%(self.outpath3, version, camera, case) #finds broken & nodata
+        self.fnamesPattern1Ext = "%s/level1_V%s*%s*%s*nc.[b,n]*"%(self.outpath1, version, camera, self.case) #finds broken & nodata
+        self.fnamesPattern2Ext = "%s/level2_V%s*%s*%s*nc.[b,n]*"%(self.outpath2, version, camera, self.case) #finds broken & nodata
+        self.fnamesPattern3Ext = "%s/level3_V%s*%s*%s*nc.[b,n]*"%(self.outpath3, version, camera, self.case) #finds broken & nodata
 
         self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
         
@@ -81,6 +85,7 @@ class FindFiles(object):
         
         self.quicklook1 = f"{self.quicklookPath1}/level1_V{version}_{config['site']}_{self.computer}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
         self.quicklook3 = f"{self.quicklookPath3}/level3_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
+        self.quicklook3Coef = f"{self.quicklookPath3}/level3coefficients_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
 
         
     @functools.cached_property
@@ -111,6 +116,12 @@ class FindFiles(object):
     def fnames3(self):
         return sorted(filter( os.path.isfile,
                                 glob.glob(self.fnamesPattern3) ))
+
+    @functools.cached_property
+    def fnames3Coef(self):
+        return sorted(filter( os.path.isfile,
+                                glob.glob(self.fnamesPattern3Coef) ))
+
 
 
     @functools.cached_property
@@ -172,22 +183,26 @@ class Filenames(object):
         self.dirname = os.path.dirname(fname)
 
         if config["nThreads"] is None:
-            ts = self.basename.split("_")[-1]
+            self.case = self.basename.split("_")[-1]
         else:
-            ts = self.basename.split("_")[-2]
+            self.case = self.basename.split("_")[-2]
 
-        self.year = ts[:4]
-        self.month = ts[4:6]
-        self.day = ts[6:8]
-        self.timestamp = ts[-6:]
+        self.year = self.case[:4]
+        self.month = self.case[4:6]
+        self.day = self.case[6:8]
+        self.timestamp = self.case[-6:]
 
-        self.datetime = datetime.datetime.strptime(ts, "%Y%m%d-%H%M%S")
+        self.datetime = datetime.datetime.strptime(self.case, "%Y%m%d-%H%M%S")
         self.datetime64= np.datetime64(self.datetime)
 
         if config["nThreads"] is not None:
             self.basename = '_'.join(self.basename.split('_')[:-1])
             
         self.camera = "_".join(self.basename.split("_")[2:4])
+        self.visssGen = self.basename.split("_")[1]
+        self.computer = self.basename.split("_")[0]
+        #basename for daily files
+        self.basenameShort = "_".join((self.computer, self.visssGen, self.camera, f"{self.year}{self.month}{self.day}"))
 
         self.outpath = "%s/%s/%s/%s" % (config["pathOut"], self.year, self.month, self.day)
         self.fnameLevel0 = self.fname
@@ -197,10 +212,16 @@ class Filenames(object):
             self.outpath.format(site=config["site"], level='2'), version, config["site"], self.basename)
         self.fnameLevel3 = '%s/level3_V%s_%s_%s.nc' % (
             self.outpath.format(site=config["site"], level='3'), version, config["site"], self.basename)
+        self.fnameLevel3Coef = '%s/level3coefficients_V%s_%s_%s.nc' % (
+            self.outpath.format(site=config["site"], level='3'), version, config["site"], self.basenameShort)
 
         self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
         self.fnameLevel2images = "%s/%s/{ppid}"%(self.outpathImg.format(site=config["site"], level='2images'),self.fnameLevel2.split("/")[-1])
         
+
+        self.quicklookPath1 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level1/{self.year}/{self.month}/{self.day}"
+        self.quicklookPath2 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level2/{self.year}/{self.month}/{self.day}"
+        self.quicklookPath3 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level3/{self.year}/{self.month}/{self.day}"
         return
 
         
@@ -213,6 +234,15 @@ class Filenames(object):
                   self.outpath.format(site=self.config["site"], level='3'))
         
         return res1, res2, res3
+
+    def createQuicklookDirs(self):
+        res1 = os.system('mkdir -p %s' %
+                  self.quicklookPath1)
+        res3 = os.system('mkdir -p %s' %
+                  self.quicklookPath3)
+
+        return res1, 1, res3
+
 
 
     def filenamesOtherCamera(self, graceInterval = 120, level="2"):

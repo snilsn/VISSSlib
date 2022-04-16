@@ -9,6 +9,7 @@ from copy import deepcopy
 
 import xarray as xr
 from PIL import Image, ImageDraw, ImageFont
+import matplotlib.pyplot as plt
 
 from image_packer import packer
 
@@ -409,3 +410,71 @@ class Packer_patched(packer.Packer):
 
         return blank_image
 
+
+def createLv3CoefQuicklook(case, config, lv3Version, skipExisting = True):
+
+    '''
+    Quicklooks of the coefficients obtained for matching in level3
+    '''
+
+
+    leader = config["leader"]
+    follower = config["follower"]
+
+
+    fn = files.FindFiles(case, leader, config, lv3Version)
+
+    if os.path.isfile(fn.quicklook3Coef) and skipExisting:
+        print(f"skip {case} ")
+        return None, None
+    
+    if len(fn.fnames3Coef) == 0:
+        print(f"no data {case} ")
+        return None, None
+    
+    print(f"running {case}")
+
+    dat3 = xr.open_mfdataset(fn.fnames3Coef, concat_dim="file_starttime")
+
+    
+    fig, (bx1, bx2, bx3, bx4) = plt.subplots(figsize=(10, 10), nrows=4, sharex=True)
+    
+    dat3Stats = dat3.isel(iteration=1)
+
+
+    bx1.plot(dat3Stats.file_firsttime, dat3Stats.usedSamples, marker=".", ls = "None")
+    bx1.set_yscale("log")
+    bx1.set_ylabel("Used matches  [#]")
+
+    bx2.fill_between(dat3Stats.file_firsttime, (dat3Stats.muH + dat3Stats.sigmaH), (dat3Stats.muH - dat3Stats.sigmaH), facecolor='C1', alpha=0.4)
+    bx2.plot(dat3Stats.file_firsttime, dat3Stats.muH, marker=".", ls = "None", color="C1")
+    bx2.set_ylabel("Height difference [px]")
+    bx2.axhline(0, color= "gray")
+        
+    bx3.fill_between(dat3Stats.file_firsttime, (dat3Stats.muY + dat3Stats.sigmaY), (dat3Stats.muY - dat3Stats.sigmaY), facecolor='C2', alpha=0.4)
+    bx3.plot(dat3Stats.file_firsttime, dat3Stats.muY, marker=".", ls = "None", color="C2")
+    bx3.set_ylabel("Y position difference [px]")
+
+    bx4.fill_between(dat3Stats.file_firsttime, (dat3Stats.muT + dat3Stats.sigmaT)*1000, (dat3Stats.muT - dat3Stats.sigmaT)*1000, facecolor='C3', alpha=0.4)
+    bx4.plot(dat3Stats.file_firsttime, dat3Stats.muT*1000, marker=".", ls = "None", color="C3")
+    bx4.set_ylabel("Time difference [ms]")
+    # bx4.axhline(1/config["fps"], color= "gray")
+    # bx4.axhline(-1/config["fps"], color= "gray")
+    bx4.axhline(0, color= "gray")
+
+
+    
+    bx1.grid(True)
+    bx2.grid(True)
+    bx3.grid(True)
+    bx4.grid(True)
+
+
+    fig.suptitle(f"{fn.year}-{fn.month}-{fn.day}")
+    fig.tight_layout()
+    
+    fn.createQuicklookDirs()
+    print(fn.quicklook3Coef)
+    fig.savefig(fn.quicklook3Coef)
+    return fn.quicklook3Coef, fig
+    

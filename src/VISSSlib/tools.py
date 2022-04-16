@@ -2,6 +2,7 @@
 
 import yaml
 import warnings
+from addict import Dict
 
 niceNames= (
     ('master', 'leader'),
@@ -17,7 +18,7 @@ def nicerNames(string):
 def readSettings(fname):
     with open(fname, 'r') as stream:
         config = yaml.load(stream, Loader=yaml.Loader)
-    return config
+    return Dict(config)
 
 def otherCamera(camera, config):
     if camera == config["instruments"][0]:

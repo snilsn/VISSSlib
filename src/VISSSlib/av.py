@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import functools
 import os
+import sys
 import warnings
 
 import numpy as np
@@ -9,6 +10,11 @@ try:
 except ImportError:
     warnings.warn("opencv not available!")
 import xarray as xr
+
+from .tools import readSettings
+from .files import Filenames
+
+__all__ = ["VideoReader", "VideoReaderMeta"]
 
 
 class VideoReader(cv2.VideoCapture):
@@ -112,6 +118,7 @@ class VideoReaderMeta(object):
         else:
             return self.getFrameByIndex(ii)
          
+    @functools.lru_cache(maxsize=100, typed=False)
     def getFrameByIndex(self, ii):
         '''
         like read, but with meta data and appropriate thread
@@ -133,7 +140,9 @@ class VideoReaderMeta(object):
         return self.res, self.curentFrame, self.currentMetaL1
 
     
-    def getFrameByIndexWithParticles(self, ii, markParticles=False):
+
+    @functools.lru_cache(maxsize=100, typed=False)
+    def getFrameByIndexWithParticles(self, ii, markParticles=False, highlightPid=None):
         '''
         like read, but with even more meta data and appropriate thread
         '''
@@ -142,6 +151,8 @@ class VideoReaderMeta(object):
         
         self.getFrameByIndex(ii)
     
+        self.curentFrameC = cv2.cvtColor(self.curentFrame, cv2.COLOR_GRAY2BGR)
+
         ct = self.currentCaptureTime
         self.currentMetaL2 = self.metaL2.where(self.metaL2.capture_time==ct).dropna('pid')
         self.currentPids = self.currentMetaL2.pid
@@ -154,15 +165,19 @@ class VideoReaderMeta(object):
                 (x, y, w, h) = partic1.roi.values.astype(int)
                 y = y + self.config['height_offset']
                 colors=[(0, 255, 0), (255, 0, 0), (0, 0 , 255), (255, 255, 0), (0, 255, 255)] * 30
-                color = colors[jj]
-                cv2.rectangle(self.curentFrame, (x, y),
+                if pid == highlightPid:
+                    color = (255,255,255)
+                else:
+                    color = colors[jj]
+
+                cv2.rectangle(self.curentFrameC, (x, y),
                           (x + w, y + h), color, 2)
                 extra1 = str(partic1.record_time.values)[:-6].split('T')[-1]
                 extra2 = '%i'%partic1.Dmax.values
-                cv2.putText(self.curentFrame, '%i %s %s' % (partic1.pid, extra1, extra2),
+                cv2.putText(self.curentFrameC, '%i %s %s' % (partic1.pid, extra1, extra2),
                             (int(partic1.roi[0]+w+5), int(partic1.roi[1]+self.config['height_offset'])), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
 
-        return self.res, self.curentFrame, self.currentMetaL1, self.currentMetaL2
+        return self.res, self.curentFrameC, self.currentMetaL1, self.currentMetaL2
 
     
     @property
@@ -192,3 +207,66 @@ class VideoReaderMeta(object):
         if len(frame1.shape) == 3:
             frame1 = frame1[:,:,0]
         return frame1[y+heightOffset:y+heightOffset+h, x:x+w], frame1
+
+
+def main():
+    import matplotlib as mpl
+    mpl.use('Agg')
+    import matplotlib.pyplot as plt
+
+    '''
+    python -m VISSSlib.av doubleImage fname1 index1 pid1 fname2 index2 pid2 confFile version  outfile 
+    '''
+
+    assert sys.argv[1] == "doubleImage"
+
+
+    fname1 = sys.argv[2]
+    video1ii = int(sys.argv[3])
+    pid1 = int(sys.argv[4])
+    fname2 = sys.argv[5]
+    video2ii = int(sys.argv[6])
+    pid2 = int(sys.argv[7])
+    confFile = sys.argv[8]
+    version = sys.argv[9]
+    outFile = sys.argv[10]
+
+    try:
+        config = readSettings(confFile)
+
+        f1 = Filenames(fname1, config, version)
+        f2 = Filenames(fname2, config, version)
+
+        frames = []
+        video1 = VideoReaderMeta(
+                                    f1.fnameLevel0, f1.fnameLevel1, f1.fnameLevel2, config=config)
+
+        res, frame1, meta11, meta12 = video1.getFrameByIndexWithParticles(
+                                    video1ii, markParticles=True, highlightPid=pid1)  # frame number
+
+        frames.append(frame1)
+        frames.append(np.zeros((frame1.shape[0], 10, 3), dtype=int))
+
+        video2 = VideoReaderMeta(
+                                    f2.fnameLevel0, f2.fnameLevel1, f2.fnameLevel2, config=config)
+
+        res, frame2, meta21, meta22 = video2.getFrameByIndexWithParticles(
+                                    video2ii, markParticles=True, highlightPid=pid2)  # frame number
+        frames.append(frame2)
+
+        frame = np.concatenate(frames, axis=1)
+
+        plt.figure(figsize=(20, 10))
+        plt.imshow(frame, cmap="gray", vmin=0, vmax=255)
+        plt.title(f"{pid1} {pid2}")
+
+        plt.savefig(outFile)
+
+        print(outFile)
+    except:
+        print(outFile, "FAILED")
+    return 0
+
+if __name__ == '__main__':
+    main()
+
