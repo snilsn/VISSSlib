@@ -17,10 +17,12 @@
 
 from importlib.metadata import version, PackageNotFoundError
 try:
-    __version__ = version("VISSSlib")
+    __version__ = version("VISSSlib").split(".")[0]
+    __versionFull__ = version("VISSSlib")
 except PackageNotFoundError:
     # package is not installed
     pass
+
 
 from . import files
 from . import quicklooks
@@ -31,3 +33,5 @@ from . import metadata
 from . import matching
 from . import tracking
 from . import time
+from . import scripts
+

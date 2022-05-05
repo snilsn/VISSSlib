@@ -4,14 +4,19 @@ import uuid
 
 import numpy as np
 import os
+import sys
+import datetime
 
 from copy import deepcopy
 
+import pandas as pd
 import xarray as xr
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 
 from image_packer import packer
+
 
 import warnings
 try:
@@ -19,10 +24,11 @@ try:
 except ImportError:
     warnings.warn("opencv not available!")
 
-from .tools import nicerNames
+from .tools import nicerNames, readSettings
 from .av import VideoReaderMeta
 
 from . import files
+
 
 def crop(image):
     """
@@ -32,28 +38,31 @@ def crop(image):
     return image[np.min(y_nonzero):np.max(y_nonzero)+1, np.min(x_nonzero):np.max(x_nonzero)+1]
 
 
-
-
 def createLv1Quicklook(timestamp, camera, config, lv2Version,
-                    minBlur=100,
-                    minSize=17,
-                    container_width=200,
-                    container_height_max=300,
-                    nTiles=60,
-                    nRows=4,
-                    extra=1,
-                    readParticlesFromFiles = True,
-                    skipExisting = True,                    
-                   ):
+                       minBlur=100,
+                       minSize=17,
+                       container_width=200,
+                       container_height_max=300,
+                       nTiles=60,
+                       nRows=4,
+                       extra=1,
+                       readParticlesFromFiles=True,
+                       skipExisting=True,
+                       ):
+
+    if type(config) is str:
+        config = readSettings(config)
 
     total_width = (container_width + extra) * nTiles // nRows
     max_height = (20 + container_height_max) * nRows + 60
-    font = ImageFont.truetype("OpenSans-SemiBold.ttf", 35)
-    fontL = ImageFont.truetype("OpenSans-SemiBold.ttf", 16)
 
+    # let use a matplotlib font becuase we can be sure it is there
+    mpl_data_dir = os.path.dirname(mpl.matplotlib_fname())
+    mpl_ttf_dir = os.path.join(mpl_data_dir, 'fonts', 'ttf')
+    font = ImageFont.truetype(f"{mpl_ttf_dir}/DejaVuSans.ttf", 35)
+    fontL = ImageFont.truetype(f"{mpl_ttf_dir}/DejaVuSans.ttf", 16)
 
     ff = files.FindFiles(timestamp, camera, config, lv2Version)
-
 
     site = config["site"]
 
@@ -68,14 +77,14 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
         return None, None
 
     if not ff.isCompleteL1:
-        print("NOT COMPLETE YET %i/%i %s"% (len(ff.fnames1Ext), len(ff.fnames0), ff.quicklook1))
+        print("NOT COMPLETE YET %i/%i %s" %
+              (len(ff.fnames1Ext), len(ff.fnames0), ff.quicklook1))
 #         if (len(ff.fnames1Ext) == len(ff.fnames0)):
 #             afshgsa
         return None, None
-    
+
 #     else:
     print("RUNNING ", ff.quicklook1)
-
 
     ff.createQuicklookDirs()
 
@@ -110,7 +119,8 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
     if len(dats2) == 0:
 
         draw = ImageDraw.Draw(new_im)
-        draw.text((total_width//3, max_height//3),'no raw data',(0,0,0),font=font)
+        draw.text((total_width//3, max_height//3),
+                  'no raw data', (0, 0, 0), font=font)
 
         nParticles = 0
 
@@ -123,12 +133,14 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
             print("TOO FEW DATA ", ff.quicklook1)
 
             draw = ImageDraw.Draw(new_im)
-            draw.text((total_width//3, max_height//3),'no data recorded',(0,0,0),font=font)
+            draw.text((total_width//3, max_height//3),
+                      'no data recorded', (0, 0, 0), font=font)
 
             nParticles = 0
 
         else:
-            print('Total number of particles for plotting %i' % len(limDat.fpid))
+            print('Total number of particles for plotting %i' %
+                  len(limDat.fpid))
 
             timeSteps = np.percentile(
                 limDat.record_time, np.linspace(0, 100, nTiles+1))
@@ -138,11 +150,11 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
             videos = {}
             for tt, (t1, t2) in enumerate(zip(timeSteps[:-1], timeSteps[1:])):
 
-                if tt == len(timeSteps) -2:
+                if tt == len(timeSteps) - 2:
                     whereCond = (limDat.record_time >= t1)
                 else:
                     whereCond = ((limDat.record_time >= t1) &
-                                                           (limDat.record_time < t2))
+                                 (limDat.record_time < t2))
 
                 thisDat = limDat.where(whereCond).dropna('fpid')
                 totalArea = 0
@@ -154,13 +166,13 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
                 np.random.shuffle(pids)
 
                 containerSize = (container_width*container_height_max)
-                
-                if nPids < 5: #fo very few particles I want to see them all!
+
+                if nPids < 5:  # fo very few particles I want to see them all!
                     nParticlesNeeded = len(pids)
                 else:
                     try:
                         nParticlesNeeded = np.where(thisDat.sel(fpid=pids).roi.sel(ROI_elements=[
-                                                    "w", "h"]).prod("ROI_elements").cumsum("fpid")/containerSize > 1)[0][0] +1
+                                                    "w", "h"]).prod("ROI_elements").cumsum("fpid")/containerSize > 1)[0][0] + 1
                     except IndexError:
                         nParticlesNeeded = nPids
 
@@ -191,7 +203,8 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
                     particle = thisDat.sel(fpid=(fname, pid))
                     kk = int(particle.record_id.values)
                     if not readParticlesFromFiles:
-                        _, frame1, _ = videos[thisfname_lv0].getFrameByIndex(kk)
+                        _, frame1, _ = videos[thisfname_lv0].getFrameByIndex(
+                            kk)
 
                         if frame1 is None:
                             continue
@@ -251,12 +264,14 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
                     mosaic = np.pad(
                         mosaic, [(0, 0), (0, container_width-mosaic.shape[1]), (0, 0)])
 
-                # sometimes container is too large... 
+                # sometimes container is too large...
                 mosaic = mosaic[:container_height_max, :container_width]
 
-                label = Image.fromarray(np.ones((20, mosaic.shape[1], 3), dtype=np.uint8) * 255)
+                label = Image.fromarray(
+                    np.ones((20, mosaic.shape[1], 3), dtype=np.uint8) * 255)
                 drawL = ImageDraw.Draw(label)
-                drawL.text((0, 0),'%s-%s' % (str(t1).split('.')[0].split('T')[1], str(t2).split('.')[0].split('T')[1]),(0,0,0),font=fontL)
+                drawL.text((0, 0), '%s-%s' % (str(t1).split('.')[0].split('T')[1], str(
+                    t2).split('.')[0].split('T')[1]), (0, 0, 0), font=fontL)
 
                 mosaic = Image.fromarray(np.vstack((label, mosaic)))
     #             display(mosaic)
@@ -291,15 +306,14 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
     #     title, FONT, FONT_SCALE, FONT_THICKNESS)
 
     draw = ImageDraw.Draw(new_im)
-    draw.text((0, 0),title,(0,0,0),font=font)
+    draw.text((0, 0), title, (0, 0, 0), font=font)
     width, height = draw.textsize(title, font=font)
 
     draw.line((width + 15, 30, width +
-              15+round(tenmm), 30), fill=0, width=5)
-
+               15+round(tenmm), 30), fill=0, width=5)
 
     new_im.save(ff.quicklook1)
-    
+
     return ff.quicklook1, new_im
 
 
@@ -307,6 +321,7 @@ class Packer_patched(packer.Packer):
     """
     patched image_packer routine that works without files
     """
+
     def __init__(self, images):
         # Ensure plugins are fully loaded so that Image.EXTENSION is populated.
         Image.init()
@@ -316,15 +331,15 @@ class Packer_patched(packer.Packer):
         self._has_alpha = False
 
         for im in images:
-                width = im.width
-                height = im.height
-                uid = uuid.uuid4()
-                self._uid_to_filepath[uid] = deepcopy(im)
-                self._pieces.append(packer.blf.Piece(uid=uid, size=packer.blf.Size(width, height)))
-                if im.mode in ('RGBA', 'LA') or (im.mode == 'P' and 'transparency' in im.info):
-                    self._has_alpha = True
-                    
-                    
+            width = im.width
+            height = im.height
+            uid = uuid.uuid4()
+            self._uid_to_filepath[uid] = deepcopy(im)
+            self._pieces.append(packer.blf.Piece(
+                uid=uid, size=packer.blf.Size(width, height)))
+            if im.mode in ('RGBA', 'LA') or (im.mode == 'P' and 'transparency' in im.info):
+                self._has_alpha = True
+
     def pack(self, container_width, options=None, container_height_max=100):
         '''Packs multiple images of different sizes or formats into one image.
         Args:
@@ -343,9 +358,11 @@ class Packer_patched(packer.Packer):
         assert isinstance(margin_, tuple) and len(margin_) == 4
 
         if options['enable_vertical_flip']:
-            margin = packer.blf.Thickness(top=margin_[2], right=margin_[1], bottom=margin_[0], left=margin_[3])
+            margin = packer.blf.Thickness(top=margin_[2], right=margin_[
+                                          1], bottom=margin_[0], left=margin_[3])
         else:
-            margin = packer.blf.Thickness(top=margin_[0], right=margin_[1], bottom=margin_[2], left=margin_[3])
+            margin = packer.blf.Thickness(top=margin_[0], right=margin_[
+                                          1], bottom=margin_[2], left=margin_[3])
 
         blf_options = {
             'margin': margin,
@@ -405,76 +422,107 @@ class Packer_patched(packer.Packer):
 
             im = self._uid_to_filepath.get(region.uid)
 
-            
             blank_image.paste(im=im, box=(x, y))
 
         return blank_image
 
 
-def createLv3CoefQuicklook(case, config, lv3Version, skipExisting = True):
-
+def createLv3CoefQuicklook(case, config, lv3Version, skipExisting=True):
     '''
     Quicklooks of the coefficients obtained for matching in level3
     '''
 
+    if type(config) is str:
+        config = readSettings(config)
 
     leader = config["leader"]
     follower = config["follower"]
 
-
     fn = files.FindFiles(case, leader, config, lv3Version)
+    ff = files.FindFiles(case, follower, config, lv3Version)
 
     if os.path.isfile(fn.quicklook3Coef) and skipExisting:
         print(f"skip {case} ")
         return None, None
-    
+
     if len(fn.fnames3Coef) == 0:
-        print(f"no data {case} ")
+        print(f"no data {case} {fn.fnamesPattern3Coef}")
         return None, None
-    
+
     print(f"running {case}")
 
     dat3 = xr.open_mfdataset(fn.fnames3Coef, concat_dim="file_starttime")
 
-    
-    fig, (bx1, bx2, bx3, bx4) = plt.subplots(figsize=(10, 10), nrows=4, sharex=True)
-    
+    fig, (bx1, bx2, bx3, bx4) = plt.subplots(
+        figsize=(10, 10), nrows=4, sharex=True)
+
     dat3Stats = dat3.isel(iteration=1)
 
-
-    bx1.plot(dat3Stats.file_firsttime, dat3Stats.usedSamples, marker=".", ls = "None")
+    bx1.plot(dat3Stats.file_firsttime,
+             dat3Stats.usedSamples, marker=".", ls="None")
     bx1.set_yscale("log")
     bx1.set_ylabel("Used matches  [#]")
 
-    bx2.fill_between(dat3Stats.file_firsttime, (dat3Stats.muH + dat3Stats.sigmaH), (dat3Stats.muH - dat3Stats.sigmaH), facecolor='C1', alpha=0.4)
-    bx2.plot(dat3Stats.file_firsttime, dat3Stats.muH, marker=".", ls = "None", color="C1")
+    bx2.fill_between(dat3Stats.file_firsttime, (dat3Stats.muH + dat3Stats.sigmaH),
+                     (dat3Stats.muH - dat3Stats.sigmaH), facecolor='C1', alpha=0.4)
+    bx2.plot(dat3Stats.file_firsttime, dat3Stats.muH,
+             marker=".", ls="None", color="C1")
     bx2.set_ylabel("Height difference [px]")
-    bx2.axhline(0, color= "gray")
-        
-    bx3.fill_between(dat3Stats.file_firsttime, (dat3Stats.muY + dat3Stats.sigmaY), (dat3Stats.muY - dat3Stats.sigmaY), facecolor='C2', alpha=0.4)
-    bx3.plot(dat3Stats.file_firsttime, dat3Stats.muY, marker=".", ls = "None", color="C2")
+    bx2.axhline(0, color="gray")
+
+    bx3.fill_between(dat3Stats.file_firsttime, (dat3Stats.muY + dat3Stats.sigmaY),
+                     (dat3Stats.muY - dat3Stats.sigmaY), facecolor='C2', alpha=0.4)
+    bx3.plot(dat3Stats.file_firsttime, dat3Stats.muY,
+             marker=".", ls="None", color="C2")
     bx3.set_ylabel("Y position difference [px]")
 
-    bx4.fill_between(dat3Stats.file_firsttime, (dat3Stats.muT + dat3Stats.sigmaT)*1000, (dat3Stats.muT - dat3Stats.sigmaT)*1000, facecolor='C3', alpha=0.4)
-    bx4.plot(dat3Stats.file_firsttime, dat3Stats.muT*1000, marker=".", ls = "None", color="C3")
+    bx4.fill_between(dat3Stats.file_firsttime, (dat3Stats.muT + dat3Stats.sigmaT)
+                     * 1000, (dat3Stats.muT - dat3Stats.sigmaT)*1000, facecolor='C3', alpha=0.4)
+    bx4.plot(dat3Stats.file_firsttime, dat3Stats.muT *
+             1000, marker=".", ls="None", color="C3")
     bx4.set_ylabel("Time difference [ms]")
     # bx4.axhline(1/config["fps"], color= "gray")
     # bx4.axhline(-1/config["fps"], color= "gray")
-    bx4.axhline(0, color= "gray")
+    bx4.axhline(0, color="gray")
 
 
+    tStart = dat3Stats.file_firsttime.to_pandas().index[0].replace(hour=0, minute=0, second=0)
+    tEnd = dat3Stats.file_firsttime.to_pandas().index[-1].replace(hour=23, minute=59, second=59)
     
+    if config.site == "mosaic":
+        software_starttimes = xr.open_dataset(f"{fn.logpath}/{fn.computer}_{config.visssGen}_{fn.camera}_softwareStarttimes.nc").software_starttimes
+        tt = (software_starttimes >= tStart) & (software_starttimes <= tEnd)
+        software_starttimes = software_starttimes.isel(software_starttimes=tt)
+
+        for software_starttime in software_starttimes:
+            for bx in [bx1,bx2,bx3,bx4]:
+                bx.axvline(software_starttime.values, color="k", ls="-")
+                
+                
+        software_starttimes = xr.open_dataset(f"{ff.logpath}/{ff.computer}_{config.visssGen}_{ff.camera}_softwareStarttimes.nc").software_starttimes
+        tt = (software_starttimes >= tStart) & (software_starttimes <= tEnd)
+        software_starttimes = software_starttimes.isel(software_starttimes=tt)
+
+        for software_starttime in software_starttimes:
+            for bx in [bx1,bx2,bx3,bx4]:
+                bx.axvline(software_starttime.values, color="k", ls=":")
+
     bx1.grid(True)
     bx2.grid(True)
     bx3.grid(True)
     bx4.grid(True)
 
 
+    bx4.set_xlim(
+        tStart, 
+        tEnd,
+    )
+
     fig.suptitle(f"{fn.year}-{fn.month}-{fn.day}")
     fig.tight_layout()
-    
+
     fn.createQuicklookDirs()
     print(fn.quicklook3Coef)
     fig.savefig(fn.quicklook3Coef)
     return fn.quicklook3Coef, fig
-    
+

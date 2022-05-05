@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+import sys
+import os
+import itertools
 
 # import matplotlib.pyplot as plt
 import numpy as np
@@ -14,14 +17,19 @@ except ImportError:
     warnings.warn("opencv not available!")
 
 import logging
+import logging.config
 log = logging.getLogger()
 
 from copy import deepcopy
 
+from . import tools
+from . import metadata
+from . import files
+
 
 from . import __version__
 
-
+print("next time look at background and store it!")
 
 class movementDetection(object):
     def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
@@ -459,5 +467,295 @@ class singleParticle(object):
         cv2.putText(frame, '%i %s' % (self.pid, extra),
                     (self.x, self.y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
 
+def checkMotion(subFrame, oldFrame, threshs):
+    '''
+    Check whether something is moving - identical to C code
+    '''
 
+    if oldFrame is None:
+        oldFrame = np.zeros(subFrame.shape, dtype=np.uint8)
 
+    nChangedPixel = np.zeros(
+                ( len(threshs)), dtype=int)
+
+    absdiff = cv2.absdiff(subFrame, oldFrame)
+
+    for tt, thresh in enumerate(threshs):
+            nChangedPixel[tt] = ((absdiff >= thresh)).sum()
+
+    return nChangedPixel
+
+def detectParticles(fname,
+                    settings,
+                    testing=False,
+                    writeImg=True,
+                    historySize=20,
+                    minDmax4Plotting=17,
+                    minBlur4Plotting=100,
+                    ):
+
+    logging.config.dictConfig(tools.get_logging_config('detection_run.log'))
+    log = logging.getLogger()
+
+    config = tools.readSettings(settings)
+
+    path = config["path"]
+    pathTmp = config["pathTmp"]
+    threshs = np.array(config["threshs"])
+    instruments = config["instruments"]
+    computers = config["computers"]
+    visssGen = config["visssGen"]
+    movieExtension = config["movieExtension"]
+    frame_width = config["frame_width"]
+    frame_height = config["frame_height"]
+    height_offset = config["height_offset"]
+    fps = config["fps"]
+    minMovingPixels = np.array(config["minMovingPixels"])
+    nThreads = config["nThreads"]
+    cropImage = config["cropImage"]
+    site = config["site"]
+    goodFiles = config["goodFiles"]
+
+    fn = files.Filenames(fname, config, __version__)
+    camera = fn.camera
+
+    Dbins = np.arange(0, 201, 10).tolist()
+
+    if nThreads is None:
+        nThreads2 = 1
+    else:
+        nThreads2 = nThreads
+
+    computerDict = {}
+    goodFilesDict = {}
+    for computer1, camera1, goodFile1 in zip(computers, instruments, goodFiles):
+        computerDict[camera1] = computer1
+        goodFilesDict[camera1] = goodFile1
+    computer = computerDict[camera]
+    goodFile = goodFilesDict[camera]
+
+    if not os.path.isfile(fname):
+        log.error('ERROR Unable to open: ' + fname)
+        raise RuntimeError('ERROR Unable to open: ' + fname)
+
+    fnamesV = fn.fnameAllThreads
+    if len(fnamesV) == 0:
+        raise RuntimeError("len(fnamesV) == 0")
+
+    fnameM = [f.replace(config["movieExtension"], "txt") for f in fnamesV.values()]
+
+    metaData, dropped_frames = metadata.getMetaData(
+        fnameM, camera, config, testMovieFile=True)
+
+    if metaData is None:
+        log.error('ERROR Unable to get meta data: ' + fname)
+        raise RuntimeError('ERROR Unable to get meta data: ' + fname)
+    if len(metaData.capture_time) == 0:
+        log.info('nothing moves: ' + fname)
+
+        with open('%s.nodata' % fn.fname.metaFrames, 'w') as f:
+            f.write('no data')
+        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+            f.write('no data')
+
+        return 0
+
+    # clean up memory if requried
+    try:
+        del foundParticles, snowParticlesXR, snowParticles
+    except:
+        pass
+
+    log.info(f"{fn.year}, {fn.month}, {fn.day}, {fname}")
+    fn.createDirs()
+
+    log.info('Processing %s' % fn.fname.level1detect)
+
+    hasData = False
+
+    particleProperties = []
+
+    nFrames = len(metaData.capture_time)
+    pps = range(nFrames)
+
+    inVid = {}
+    nFramesVid = 0
+    for nThread, fnameV in fnamesV.items():
+        inVid[nThread] = cv2.VideoCapture(fnameV)
+        nFramesVid += int(inVid[nThread].get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if ((site == 'mosaic') and len(metaData.record_id)-1+dropped_frames == nFramesVid):
+        log.warning('lengths do not match %i %i (bug of MOSAiC C code) ' %
+                    (len(metaData.record_id)-1+dropped_frames, nFramesVid))
+
+    elif (len(metaData.record_id)+dropped_frames != nFramesVid):
+        log.error('lengths do not match %i %i ' %
+                  (len(metaData.record_id)+dropped_frames, nFramesVid))
+
+        raise RuntimeError('lengths do not match %i %i ' %
+                           (len(metaData.record_id)+dropped_frames, nFramesVid))
+
+    elif (nFrames < historySize):
+        log.info('too few frames %i ' %
+                 (nFrames))
+
+        with open('%s.nodata' % fn.fname.metaFrames, 'w') as f:
+            f.write('too few frames %i ' %
+                    (nFrames))
+        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+            f.write('too few frames %i ' %
+                    (nFrames))
+
+        sys.exit(0)
+
+    snowParticles = detectedParticles(
+        maxDarkestPoint=130,  # 100 # 40,
+        minDmax=3,
+        maxNParticle=60,
+        minBlur=0,  # 2, #10,  # 30,
+        function=cv2.createBackgroundSubtractorKNN,
+        history=historySize,
+        cropImage=cropImage
+    )
+
+    inVidIter = itertools.cycle(list(inVid.values()))
+    for tt in pps[:historySize]:
+        print('training', tt)
+        ret, frame = next(inVidIter).read()
+        res = snowParticles.update(frame,
+                                   tt,
+                                   int(metaData.capture_id[tt].values),
+                                   int(metaData.record_id[tt].values),
+                                   metaData.capture_time[tt].values,
+                                   metaData.record_time[tt].values,
+                                   training=True)
+
+    for nThread in inVid.keys():
+        inVid[nThread].release()
+        inVid[nThread] = cv2.VideoCapture(fnamesV[nThread])
+
+    foundParticles = np.zeros((nFrames, len(Dbins)))
+    movingObjects = np.zeros((nFrames))
+
+    frame = None
+    for pp in pps:
+
+        #     if pp > 200:
+        #         break
+
+        metaData1 = metaData.isel(capture_time=pp)
+
+        nThread = int(metaData1.nThread.values)
+
+        rr = int(metaData1.record_id.values)
+        log.info('Image %i from thread %i, frame %i ' % (pp, nThread, rr))
+
+        oldFrame = deepcopy(frame)
+
+        # sometime we have to skip frames due to missing meta data
+        # we dont want to take the risk to jump to an index and get the wrong frame
+        if int(inVid[nThread].get(cv2.CAP_PROP_POS_FRAMES)) < rr:
+            while(int(inVid[nThread].get(cv2.CAP_PROP_POS_FRAMES)) < rr):
+                print('fast forwarding', int(
+                    inVid[nThread].get(cv2.CAP_PROP_POS_FRAMES)), rr, )
+                _, _ = inVid[nThread].read()
+        elif int(inVid[nThread].get(cv2.CAP_PROP_POS_FRAMES)) > rr:
+            raise RuntimeError('Cannot go back!')
+
+        ret, frame = inVid[nThread].read()
+        if frame is None:
+            raise ValueError('TOO FEW FRAMES????')
+
+        threshs = np.array([20, 30, 40, 60, 80, 100, 120])
+        nChangedPixel = checkMotion(frame, oldFrame, threshs)
+
+        passesThreshold = nChangedPixel >= minMovingPixels
+        if not passesThreshold.any():
+            print('NOT moving %i' % pp)
+            continue
+        else:
+            print('IS moving %i' % pp)
+
+        res = snowParticles.update(frame,
+                                   pp,
+                                   int(metaData1.capture_id.values),
+                                   int(metaData1.record_id.values),
+                                   metaData1.capture_time.values,
+                                   metaData1.record_time.values)
+        if res:
+            movingObjects[pp] = snowParticles.nParticle
+            Dmax = []
+            for part in snowParticles.lastFrame.values():
+                Dmax.append(part.Dmax)
+            foundParticles[pp] = np.histogram(
+                Dmax, bins=Dbins + [10000])[0]
+        else:
+            foundParticles[pp, :] = -99
+
+        timestamp = str(snowParticles.capture_time).replace(
+            ':', '-')[:-6]
+
+        if not res:
+            if testing:
+                plt.figure(figsize=(10, 10))
+                plt.imshow(snowParticles.frame4drawing,
+                           cmap='gray', vmin=0, vmax=255)
+                plt.title('SKIPPED %s %i %s' %
+                          (camera, pp, timestamp))
+                plt.show()
+                plt.savefig('skiped_%s_%i_%s.png' %
+                            (camera, pp, timestamp))
+
+        for part in snowParticles.lastFrame.values():
+            hasData = True
+
+            if writeImg:
+
+                if not (
+                    (part.Dmax < minDmax4Plotting) or
+                    (part.blur < minBlur4Plotting) or
+                    np.any(part.touchesBorder)
+                ):
+                    pidStr = '%07i' % part.pid
+                    imFolder = fn.imagepath.imagesL1detect.format(ppid=pidStr[:4])
+                    imName = '%s.png' % (pidStr)
+                    log.info('writing %s/%s' % (imFolder, imName))
+                    os.system('mkdir -p %s' % (imFolder))
+                    cv2.imwrite('%s/%s' %
+                                (imFolder, imName),
+                                part.particleBox)
+
+            part.dropImages()
+
+    for nThread in inVid.keys():
+        inVid[nThread].release()
+    foundParticles = xr.DataArray(foundParticles,
+                                  coords=[metaData.capture_time,
+                                          xr.DataArray(Dbins, dims=['Dmax'])])
+    movingObjects = xr.DataArray(movingObjects,
+                                 coords=[metaData.capture_time])
+
+    metaData['foundParticles'] = foundParticles
+    metaData['movingObjects'] = movingObjects
+
+    metaData["foundParticles"] = metaData["foundParticles"].astype(np.uint32)
+    metaData["movingObjects"] = metaData["movingObjects"].astype(np.uint32)
+
+    comp = dict(zlib=True, complevel=5)
+    encoding = {
+        var: comp for var in metaData.data_vars}
+    metaData.to_netcdf(fn.fname.metaFrames, encoding=encoding)
+
+    if hasData and not testing:
+        snowParticlesXR = snowParticles.collectResults()
+
+        comp = dict(zlib=True, complevel=5)
+        encoding = {var: comp for var in snowParticlesXR.data_vars}
+
+        snowParticlesXR.to_netcdf(fn.fname.level1detect, encoding=encoding)
+
+    else:
+        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+            f.write('no data')
+
+    return 0

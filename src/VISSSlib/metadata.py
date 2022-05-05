@@ -25,6 +25,8 @@ import logging.config
 
 from . import __version__
 from . import time
+from . import files
+from . import detection
 
 def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True):
 
@@ -67,47 +69,30 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
 
     return metaDat, droppedFrames
 
-def _getMetaData1(fname, camera, nThreads, threshs=None, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True,goodFile=None):
 
+def readHeaderData(fname, returnLasttime=False):
     log = logging.getLogger()
 
-    movExtension = fname.split('.')[-1]
-    
-    ### meta data ####
-    metaFname = fname.replace(movExtension, 'txt')
-
-    if nThreads is None:
+    try:
         record_starttime = datetime.datetime.strptime(
             fname.split('_')[-1].split('.')[0], '%Y%m%d-%H%M%S')
-    else:
+    except ValueError:
         record_starttime = datetime.datetime.strptime(
             fname.split('_')[-2], '%Y%m%d-%H%M%S')
-        nThread = int(fname.split('_')[-1].split('.')[0])
 
-    with open(metaFname) as f:
+    with open(fname) as f:
         firstLine = f.readline()
         if firstLine == "":
             log.error("%s: metaData empty" % fname)
-            return None, 0
+            return [None] * 10
 
         if firstLine.startswith('# VISSS file format version: 0.2'):
             asciiVersion = 0.2
-            asciiNames = ['capture_time', 'record_time',
-                          'capture_id', 'mean', 'std']
             gitTag = f.readline().split(':')[1].lstrip().rstrip()
             gitBranch = f.readline().split(':')[1].lstrip().rstrip()
             skip = f.readline()
-#        elif firstLine.startswith('# VISSS file format version: 0.3'):
-#            asciiVersion = 0.3
-#            asciiNames = ['capture_time', 'record_time',
-#                          'capture_id'] + threshs.tolist()
-#            gitTag = f.readline().split(':')[1].lstrip().rstrip()
-#            gitBranch = f.readline().split(':')[1].lstrip().rstrip()
-#            skip = f.readline()
         elif firstLine.startswith('# VISSS file format version: 0.3'):
             asciiVersion = 0.3
-            asciiNames = ['capture_time', 'record_time',
-                          'capture_id', 'queue_size'] + threshs
             gitTag = f.readline().split(':')[1].lstrip().rstrip()
             gitBranch = f.readline().split(':')[1].lstrip().rstrip()
             skip = f.readline()
@@ -118,16 +103,115 @@ def _getMetaData1(fname, camera, nThreads, threshs=None, stopAfter=-1, detectMot
                        
         else:
             asciiVersion = 0.1
-            asciiNames = ['capture_time', 'record_time', 'capture_id']
             gitTag = '-'
             gitBranch = '-'
         capture_starttime = f.readline()
         capture_starttime = capture_starttime.split(':')[1].lstrip().rstrip()
         capture_starttime = datetime.datetime.utcfromtimestamp(
             int(capture_starttime)*1e-6)
+
         serialnumber = f.readline().split(':')[1].lstrip().rstrip()
         configuration = f.readline().split(':')[1].lstrip().rstrip()
         hostname = f.readline().split(':')[1].lstrip().rstrip()
+
+        _ = f.readline()
+        capture_firsttime = f.readline()
+        capture_firsttime = capture_firsttime.split(',')[0].lstrip().rstrip()
+        try:
+            capture_firsttime = datetime.datetime.utcfromtimestamp(
+            int(capture_firsttime)*1e-6)
+        except ValueError:
+            capture_firsttime = None
+
+    if returnLasttime:
+        capture_lasttime = os.popen("tail -n 1 %s" % fname).read()
+        capture_lasttime = capture_lasttime.split(',')[0].lstrip().rstrip()
+        try:
+            capture_lasttime = datetime.datetime.utcfromtimestamp(
+            int(capture_lasttime)*1e-6)
+        except ValueError:
+            capture_lasttime = None
+    else:
+        capture_lasttime = None
+    return record_starttime, asciiVersion, gitTag, gitBranch, capture_starttime, capture_firsttime, capture_lasttime, serialnumber, configuration, hostname
+
+
+def _getMetaData1(fname, camera, nThreads, threshs=None, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True,goodFile=None):
+
+    log = logging.getLogger()
+
+    movExtension = fname.split('.')[-1]
+    
+    ### meta data ####
+    metaFname = fname.replace(movExtension, 'txt')
+
+    if nThreads is None:
+        nThread = 0
+    else:
+        nThread = int(fname.split('_')[-1].split('.')[0])
+
+#     with open(metaFname) as f:
+#         firstLine = f.readline()
+#         if firstLine == "":
+#             log.error("%s: metaData empty" % fname)
+#             return None, 0
+
+#         if firstLine.startswith('# VISSS file format version: 0.2'):
+#             asciiVersion = 0.2
+#             asciiNames = ['capture_time', 'record_time',
+#                           'capture_id', 'mean', 'std']
+#             gitTag = f.readline().split(':')[1].lstrip().rstrip()
+#             gitBranch = f.readline().split(':')[1].lstrip().rstrip()
+#             skip = f.readline()
+# #        elif firstLine.startswith('# VISSS file format version: 0.3'):
+# #            asciiVersion = 0.3
+# #            asciiNames = ['capture_time', 'record_time',
+# #                          'capture_id'] + threshs.tolist()
+# #            gitTag = f.readline().split(':')[1].lstrip().rstrip()
+# #            gitBranch = f.readline().split(':')[1].lstrip().rstrip()
+# #            skip = f.readline()
+#         elif firstLine.startswith('# VISSS file format version: 0.3'):
+#             asciiVersion = 0.3
+#             asciiNames = ['capture_time', 'record_time',
+#                           'capture_id', 'queue_size'] + threshs
+#             gitTag = f.readline().split(':')[1].lstrip().rstrip()
+#             gitBranch = f.readline().split(':')[1].lstrip().rstrip()
+#             skip = f.readline()
+#         elif firstLine.startswith('# VISSS file format version: 0.4'):
+#             raise NotImplementedError
+#         elif firstLine.startswith('# VISSS file format version: 0.5'):
+#             raise NotImplementedError
+                       
+#         else:
+#             asciiVersion = 0.1
+#             asciiNames = ['capture_time', 'record_time', 'capture_id']
+#             gitTag = '-'
+#             gitBranch = '-'
+#         capture_starttime = f.readline()
+#         capture_starttime = capture_starttime.split(':')[1].lstrip().rstrip()
+#         capture_starttime = datetime.datetime.utcfromtimestamp(
+#             int(capture_starttime)*1e-6)
+#         serialnumber = f.readline().split(':')[1].lstrip().rstrip()
+#         configuration = f.readline().split(':')[1].lstrip().rstrip()
+#         hostname = f.readline().split(':')[1].lstrip().rstrip()
+    res = readHeaderData(fname, returnLasttime = False)
+    (record_starttime, asciiVersion, gitTag, gitBranch, capture_starttime, capture_firsttime, capture_lasttime, 
+        serialnumber, configuration, hostname) = res
+
+    if record_starttime is None:
+        return None, 0
+
+    if asciiVersion == 0.2:
+        asciiNames = ['capture_time', 'record_time',
+                          'capture_id', 'mean', 'std']
+    elif asciiVersion ==  0.3:
+        asciiNames = ['capture_time', 'record_time',
+                          'capture_id', 'queue_size'] + threshs
+    elif asciiVersion ==  0.1:
+         asciiNames = ['capture_time', 'record_time', 'capture_id']
+    else:
+         raise ValueError
+
 
     metaDat = pd.read_csv(metaFname, comment='#', names=asciiNames)
     
@@ -278,7 +362,7 @@ def _getMetaData1(fname, camera, nThreads, threshs=None, stopAfter=-1, detectMot
                 except TypeError:  # frame is None at the end of the file
                     break
                 try:
-                    nChangedPixel[ii] = checkMotion(subFrame, oldFrame, threshs)
+                    nChangedPixel[ii] = detection.checkMotion(subFrame, oldFrame, threshs)
                 except IndexError:
                     log.warning(
                         '%s WARNING number of frames do not match %i %i  \n' % (fname, ii, tt))
@@ -307,10 +391,7 @@ def _getMetaData1(fname, camera, nThreads, threshs=None, stopAfter=-1, detectMot
     # metaDat = metaDat.expand_dims({'record_starttime': [record_starttime]})
 
     metaDat['nThread'] = xr.zeros_like(metaDat['capture_id'])
-    if nThreads is not None:
-        metaDat['nThread'].values[:] = nThread
-    else:
-        metaDat['nThread'].values[:] = 0
+    metaDat['nThread'].values[:] = nThread
 
     #save storage
     # metaDat["foundParticles"] = metaDat["foundParticles"].astype(np.uint32)
@@ -319,20 +400,101 @@ def _getMetaData1(fname, camera, nThreads, threshs=None, stopAfter=-1, detectMot
 
     return metaDat, droppedFrames
 
-def checkMotion(subFrame, oldFrame, threshs):
+
+def getEvents(fnames0, config, fname0status=None):
+
     '''
-    Check whether something is moving - identical to C code
+    get events meta data for certain case
     '''
 
-    if oldFrame is None:
-        oldFrame = np.zeros(subFrame.shape, dtype=np.uint8)
 
-    nChangedPixel = np.zeros(
-                ( len(threshs)), dtype=int)
 
-    absdiff = cv2.absdiff(subFrame, oldFrame)
+    metaDats = list()
+    bins = [0] + list(range(11,122,10)) + [130]
+    bins4xr = list(range(10,132,10))
 
-    for tt, thresh in enumerate(threshs):
-            nChangedPixel[tt] = ((absdiff >= thresh)).sum()
+    for fname0 in fnames0:
 
-    return nChangedPixel
+        fname0Img = fname0.replace(config["movieExtension"],"jpg")
+        fname0Txt = fname0.replace(config["movieExtension"],"txt")
+
+        metaDat = {}
+        res = readHeaderData(fname0Txt, returnLasttime=True)
+
+        (record_starttime, asciiVersion, gitTag, gitBranch, capture_starttime, capture_firsttime, capture_lasttime, 
+            serialnumber, configuration, hostname) = res
+        if record_starttime is None:
+            continue
+
+        record_starttime = np.datetime64(record_starttime)
+        capture_starttime = np.datetime64(capture_starttime)
+        capture_firsttime = np.datetime64(capture_firsttime)
+        capture_lasttime = np.datetime64(capture_lasttime)
+
+        metaDat['capture_starttime'] = xr.DataArray(np.array([capture_starttime]), dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['capture_firsttime'] = xr.DataArray(np.array([capture_firsttime]), dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['capture_lasttime'] = xr.DataArray(np.array([capture_lasttime]), dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['serialnumber'] = xr.DataArray([serialnumber], dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['configuration'] = xr.DataArray([configuration], dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['hostname'] = xr.DataArray([hostname], dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['gitTag'] = xr.DataArray([gitTag], dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['gitBranch'] = xr.DataArray([gitBranch], dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['filename'] = xr.DataArray([fname0.split('/')[-1]], dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['event'] = xr.DataArray(["newfile"], dims=["file_starttime"], coords=[[record_starttime]])
+
+        #estimate Blocking
+        img = mpl.image.imread(fname0Img)[config.height_offset:]
+        nPixel = np.prod(img.shape)
+
+        hist, _ = np.histogram(img.ravel(), bins=bins)
+        hist = hist.cumsum()/nPixel
+        metaDat['blocking'] = xr.DataArray([hist], dims=["file_starttime", "blockingThreshold"], coords=[[record_starttime],bins4xr])
+
+        metaDats.append(xr.Dataset(metaDat))
+
+    if len(metaDats) > 0:
+        metaDats = xr.concat(metaDats, dim="file_starttime")
+
+    #add status information
+    if fname0status is not None:
+ 
+        statusDat = pd.read_csv(fname0status, names=["file_starttime", "timestamp","event","user"],index_col=0)
+        statusDat.index = pd.to_datetime(statusDat.index, format='%Y-%m-%d %H:%M:%S.%f')
+        statusDat["event"] = [f"{e.lstrip()}-{u.lstrip()}" for e, u in zip(statusDat.event, statusDat.user)]
+        statusDat = statusDat["event"]
+        statusDat = xr.Dataset({"event":xr.DataArray(statusDat)})
+        try:
+            metaDats = xr.merge((metaDats, statusDat))
+        except TypeError:
+            metaDats = statusDat
+            nEvents = len(statusDat["event"])
+            metaDats['capture_starttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['capture_firsttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['capture_lasttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['serialnumber'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("object"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['configuration'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("object"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['hostname'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("object"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['gitTag'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("object"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['gitBranch'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("object"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['blocking'] = xr.DataArray(np.zeros((nEvents, len(bins4xr)))*np.nan, dims=["file_starttime", "blockingThreshold"], coords=[metaDats.file_starttime,bins4xr])
+
+    # no status files are available for MOSAiC, therefore use netcdf generated from log files to figure out when instrument was started (and clock was reset!)
+    if config.site == "mosaic":
+
+        #becuase this is the only time we use _softwareStarttimes files, name is hardcoded here:
+        path = "/".join(fname0.split("/")[:-6])
+        restartFile = f'{path}/metaEvents/{"_".join(fname0.split("/")[-1].split("_")[:-1])}_softwareStarttimes.nc'
+        restartDat = xr.open_dataset(restartFile)
+        case = fname0.split("/")[-1].split("_")[-1].split("-")[0]
+        startTime = np.datetime64(f"{case[:4]}-{case[4:6]}-{case[6:8]}") 
+        endTime = startTime + np.timedelta64(1, "D")
+        ttWindow = (restartDat.software_starttimes >= startTime) & (
+            restartDat.software_starttimes < endTime)
+        restartDat = restartDat.isel(software_starttimes=ttWindow).software_starttimes
+        if  len(restartDat) > 0:
+            statusDat = xr.Dataset()
+            statusDat["events"] = xr.DataArray(["start-user"] * len(restartDat), coords=[restartDat], dims=["file_starttime"] )
+            metaDats = xr.merge((metaDats, statusDat))
+
+    return metaDats
+

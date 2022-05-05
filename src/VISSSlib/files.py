@@ -7,6 +7,7 @@ import os
 import datetime
 from copy import deepcopy
 import functools
+from addict import Dict
 
 
 import numpy as np
@@ -18,6 +19,11 @@ log = logging.getLogger()
 from .tools import nicerNames, otherCamera
 
 
+dailyLevels = ["metaEvents", "metaMatchCoefficients"]
+fileLevels = ["level1detect", "level1match", "level1track", "metaFrames"]
+quicklookLevelsSep = ["metaEvents", "level1detect",]
+quicklookLevelsComb = [ "matchCoefficients"]
+imageLevels = ["imagesL1detect"]
 
 class FindFiles(object):
     def __init__(self, case, camera, config, version):
@@ -50,123 +56,74 @@ class FindFiles(object):
         except IndexError:
             self.timestamps = None
             
-
-        self.outpath0 = config["path"].format(site=config["site"], level='0')+f'/{self.computer}_{config["visssGen"]}_{camera}/{self.year}/{self.month}/{self.day}'
+        self.logpath = "%s/%s_%s_%s/" % (config.path.format(level="logs"), self.computer, config.visssGen, self.camera)
         
         outpath = "%s/%s/%s/%s" % (config["pathOut"], self.year, self.month, self.day)
-        self.outpath1 = outpath.format(site=config["site"], level='1')
-        self.outpath2 = outpath.format(site=config["site"], level='2')
-        self.outpath3 = outpath.format(site=config["site"], level='3')
 
+        self.outpath = Dict({})
+        for dL in fileLevels + dailyLevels:
+            self.outpath[dL] = outpath.format(site=config.site, level=dL)
+        self.outpath["level0"] = config["path"].format(site=config["site"], level='level0')+f'/{self.computer}_{config["visssGen"]}_{camera}/{self.year}/{self.month}/{self.day}'
+
+        for iL in imageLevels:
+            self.outpath[iL] = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
+
+        self.fnamesPattern = Dict({})
+        for dL in fileLevels:
+            self.fnamesPattern[dL] = "%s/%s_V%s*%s*%s*nc"%(self.outpath[dL], dL, version, camera, self.case)
+        #overwrite for level0
         if config["nThreads"] is None:
-            self.fnamesPattern0 = '%s/*%s*.%s' % (
-                self.outpath0, self.case, config["movieExtension"])
+            self.fnamesPattern.level0 = '%s/*%s*.%s' % (
+                self.outpath.level0, self.case, config["movieExtension"])
         else:
-            self.fnamesPattern0 = '%s/*%s*_0.%s' % (
-                self.outpath0, self.case, config["movieExtension"])
+            self.fnamesPattern.level0 = '%s/*%s*_0.%s' % (
+                self.outpath.level0, self.case, config["movieExtension"])
+        self.fnamesPattern.level0status = f"{self.outpath['level0']}/*_{config['visssGen']}_{camera}_{self.case}_status.txt"
+        for dL in dailyLevels:
+            self.fnamesPattern[dL] = "%s/%s_V%s*%s*%s%s%s.nc"%(self.outpath[dL], dL, version, camera, self.year, self.month, self.day)
 
-        self.fnamesPattern0status = f"{self.outpath0}/{self.computer}_{config['visssGen']}_{camera}_{self.case}_status.txt"
+        self.fnamesPatternExt = Dict({})
+        for dL in fileLevels + dailyLevels:
+            self.fnamesPatternExt[dL] = "%s/%s_V%s*%s*%s*nc.[b,n]*"%(self.outpath[dL], dL, version, camera, self.case) #finds broken & nodata
 
-        self.fnamesPattern1 = "%s/level1_V%s*%s*%s*nc"%(self.outpath1, version, camera, self.case)
-        self.fnamesPattern2 = "%s/level2_V%s*%s*%s*nc"%(self.outpath2, version, camera, self.case)
-        self.fnamesPattern3 = "%s/level3_V%s*%s*%s*nc"%(self.outpath3, version, camera, self.case)
-        self.fnamesPattern3Coef = "%s/level3coefficients_V%s*%s*%s%s%s.nc"%(self.outpath3, version, camera, self.year, self.month, self.day)
+                
+        self.quicklook = Dict({})
+        self.quicklookPath = Dict({})
+        for qL in quicklookLevelsSep + quicklookLevelsComb:
+            self.quicklookPath[qL] =config["pathQuicklooks"].format(site=config['site'], level=qL)
 
-        self.fnamesPattern1Ext = "%s/level1_V%s*%s*%s*nc.[b,n]*"%(self.outpath1, version, camera, self.case) #finds broken & nodata
-        self.fnamesPattern2Ext = "%s/level2_V%s*%s*%s*nc.[b,n]*"%(self.outpath2, version, camera, self.case) #finds broken & nodata
-        self.fnamesPattern3Ext = "%s/level3_V%s*%s*%s*nc.[b,n]*"%(self.outpath3, version, camera, self.case) #finds broken & nodata
-
-        self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
-        
-        self.quicklookPath1 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level1/{self.year}/{self.month}/{self.day}"
-        self.quicklookPath2 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level2/{self.year}/{self.month}/{self.day}"
-        self.quicklookPath3 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level3/{self.year}/{self.month}/{self.day}"
-
-        
-        self.quicklook1 = f"{self.quicklookPath1}/level1_V{version}_{config['site']}_{self.computer}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
-        self.quicklook3 = f"{self.quicklookPath3}/level3_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
-        self.quicklook3Coef = f"{self.quicklookPath3}/level3coefficients_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
+        for qL in quicklookLevelsSep:
+            self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{self.computer}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
+        for qL in quicklookLevelsComb:
+            self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
 
         
-    @functools.cached_property
-    def fnames0(self):
+    @functools.lru_cache
+    def listFiles(self, level):
         return sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern0) ))
-    
-    @functools.cached_property
-    def fnames0status(self):
-        if os.path.isfile(self.fnamesPattern0status):
-            return self.fnamesPattern0status
-        else:
-            return None
+                                glob.glob(self.fnamesPattern[level]) ))
+    @functools.lru_cache
+    def listFilesExt(self, level):
+        return sorted(filter( os.path.isfile,
+                                glob.glob(self.fnamesPatternExt[level]) ))
     
 
-    @functools.cached_property
-    def fnames1(self):
-
-
-        return sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern1) ))
-    @functools.cached_property
-    def fnames2(self):
-        return sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern2) ))
-
-    @functools.cached_property
-    def fnames3(self):
-        return sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern3) ))
-
-    @functools.cached_property
-    def fnames3Coef(self):
-        return sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern3Coef) ))
-
-
-
-    @functools.cached_property
-    def fnames1Ext(self):
-        # includes empty and broken data
-        return sorted(self.fnames1 + list(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern1Ext) )))
-
-    @functools.cached_property
-    def fnames2Ext(self):
-        # includes empty and broken data
-        return sorted(self.fnames2 + list(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern2Ext) )))
-
-
-    @functools.cached_property
-    def fnames3Ext(self):
-        # includes empty and broken data
-        return sorted(self.fnames3 + list(filter( os.path.isfile,
-                                glob.glob(self.fnamesPattern3Ext) )))
-
-
-    @functools.cached_property
-    def isComplete(self):
-        print("replace isComplete with isCompleteL1!")
-        return (len(self.fnames0) == len(self.fnames1Ext))
-
-    @functools.cached_property
+    @functools.lru_cache
     def isCompleteL1(self):
-        return (len(self.fnames0) == len(self.fnames1Ext))
+        return (len(self.listFiles("level0")) == len(self.listFilesExt("level1")))
 
 
-    @functools.cached_property
+    @functools.lru_cache
     def isCompleteL3(self):
-        return (len(self.fnames2) == len(self.fnames3Ext))
+        return (len(self.listFiles("level2")) == len(self.listFilesExt("level3Ext")))
 
 
-        
     def createQuicklookDirs(self):
-        res1 = os.system('mkdir -p %s' %
-                  self.quicklookPath1)
-        res3 = os.system('mkdir -p %s' %
-                  self.quicklookPath3)
-
-        return res1, 1, res3
+        res = []
+        for qL in quicklookLevelsSep + quicklookLevelsComb:
+            res.append(os.system('mkdir -p %s' %
+                  self.quicklookPath[qL]))
+        return res
 
 
 class Filenames(object):
@@ -175,7 +132,8 @@ class Filenames(object):
         create matching filenames based on mov file
         Use always thread 0 file!
         '''
-        self.fname = fname
+        self.fname = Dict({"level0":fname})
+
         self.config = config
         self.version = version
 
@@ -205,47 +163,47 @@ class Filenames(object):
         self.basenameShort = "_".join((self.computer, self.visssGen, self.camera, f"{self.year}{self.month}{self.day}"))
 
         self.outpath = "%s/%s/%s/%s" % (config["pathOut"], self.year, self.month, self.day)
-        self.fnameLevel0 = self.fname
-        self.fnameLevel1 = '%s/level1_V%s_%s_%s.nc' % (
-            self.outpath.format(site=config["site"], level='1'), version, config["site"], self.basename)
-        self.fnameLevel2 = '%s/level2_V%s_%s_%s.nc' % (
-            self.outpath.format(site=config["site"], level='2'), version, config["site"], self.basename)
-        self.fnameLevel3 = '%s/level3_V%s_%s_%s.nc' % (
-            self.outpath.format(site=config["site"], level='3'), version, config["site"], self.basename)
-        self.fnameLevel3Coef = '%s/level3coefficients_V%s_%s_%s.nc' % (
-            self.outpath.format(site=config["site"], level='3'), version, config["site"], self.basenameShort)
+        self.logpath = "%s/%s_%s_%s/" % (config.path.format(level="logs"), self.computer, self.visssGen, self.camera)
+
+        for fL in fileLevels:
+            self.fname[fL] = '%s/%s_V%s_%s_%s.nc' % (
+            self.outpath.format(site=config["site"], level=fL), fL, version, config["site"], self.basename)
+        for fL in dailyLevels:
+            self.fname[fL] = '%s/%s_V%s_%s_%s.nc' % (
+            self.outpath.format(site=config["site"], level=fL), fL, version, config["site"], self.basenameShort)
 
         self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
-        self.fnameLevel2images = "%s/%s/{ppid}"%(self.outpathImg.format(site=config["site"], level='2images'),self.fnameLevel2.split("/")[-1])
+        self.imagepath = Dict({})
+        for iL in imageLevels:
+            self.imagepath[iL] = "%s/%s/{ppid}"%(self.outpathImg.format(site=config["site"], level=iL),self.fname.level1detect.split("/")[-1])
         
+        outpathQuicklooks = "%s/%s/%s/%s" % (config["pathQuicklooks"], self.year, self.month, self.day)
+        self.quicklookPath = Dict({})
+        for qL in quicklookLevelsSep + quicklookLevelsComb:
+            self.quicklookPath[qL] =outpathQuicklooks.format(site=config['site'], level=qL)
 
-        self.quicklookPath1 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level1/{self.year}/{self.month}/{self.day}"
-        self.quicklookPath2 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level2/{self.year}/{self.month}/{self.day}"
-        self.quicklookPath3 = f"/projekt4/ag_maahn/quicklooks/{config['site']}/visss/level3/{self.year}/{self.month}/{self.day}"
+
         return
 
         
     def createDirs(self):
-        res1 = os.system('mkdir -p %s' %
-                  self.outpath.format(site=self.config["site"], level='1'))
-        res2 = os.system('mkdir -p %s' %
-                  self.outpath.format(site=self.config["site"], level='2'))
-        res3 = os.system('mkdir -p %s' %
-                  self.outpath.format(site=self.config["site"], level='3'))
-        
-        return res1, res2, res3
+        res = []
+        for fL in dailyLevels + fileLevels:
+            res.append(os.system('mkdir -p %s' %
+                  self.outpath.format(site=self.config["site"], level=fL)))
+        return res
 
     def createQuicklookDirs(self):
-        res1 = os.system('mkdir -p %s' %
-                  self.quicklookPath1)
-        res3 = os.system('mkdir -p %s' %
-                  self.quicklookPath3)
-
-        return res1, 1, res3
-
+        res = []
+        for qL in quicklookLevelsSep + quicklookLevelsComb:
+            res.append(os.system('mkdir -p %s' %
+                  self.quicklookPath[qL]))
+        return res
 
 
-    def filenamesOtherCamera(self, graceInterval = 120, level="2"):
+
+
+    def filenamesOtherCamera(self, graceInterval = 120, level="level2"):
         '''
         Find all relevant files of the other camera of ´level´. ´graceinterval´ accounts for 
         potential time offsets
@@ -258,7 +216,7 @@ class Filenames(object):
 
         ff = FindFiles(case, otherCam, self.config, self.version)
         # get fnames for correct level
-        fnames = ff.__getattribute__(f"fnames{level[-1]}")
+        fnames = ff.listFiles(level)
         
         thisDayStart = self.datetime.replace(hour=0, minute=0, second=0)
         nextDayStart = thisDayStart + datetime.timedelta(days=1)
@@ -269,14 +227,14 @@ class Filenames(object):
         if earlyFile:
             prevCase = datetime.datetime.strftime(prevDayStart, "%Y%m%d")
             prevFf = FindFiles(prevCase, otherCam, self.config, self.version)
-            fnames = prevFf.__getattribute__(f"fnames{level[-1]}") + fnames
+            fnames = prevFf.listFiles(level) + fnames
         
         #same for late files
         lateFile = (nextDayStart - self.datetime) <= datetime.timedelta(seconds=self.config["newFileInt"] + graceInterval)
         if lateFile:
             nextCase = datetime.datetime.strftime(nextDayStart, "%Y%m%d")
             nextFf = FindFiles(nextCase, otherCam, self.config, self.version)
-            fnames += nextFf.__getattribute__(f"fnames{level[-1]}")
+            fnames += nextFf.listFiles(level)
         
         # get timestamps of surrounding files
         ts = np.array([f.split("_")[-1][:-3] for f in fnames])
@@ -307,10 +265,17 @@ class Filenames(object):
         '''
         find level 0 fnames of other threads
         '''
-        fname0All = list()
-        for nThread in range(self.config["nThreads"]):
+
+        if self.config["nThreads"] is None:
+            nThreads = 1
+        else:
+            nThreads = self.config["nThreads"]
+
+
+        fname0All = dict()
+        for nThread in range(nThreads):
             
-            thisFname = self.fname.replace(f'_0.{self.config["movieExtension"]}', f'_%i.{self.config["movieExtension"]}'%nThread)
+            thisFname = self.fname.level0.replace(f'_0.{self.config["movieExtension"]}', f'_%i.{self.config["movieExtension"]}'%nThread)
             
             #sometime the second changes while the new thread file is written, fix it:
             if not os.path.isfile(thisFname):
@@ -330,24 +295,25 @@ class Filenames(object):
                 #now it should work!
                 assert os.path.isfile(thisFname)
 
-            fname0All.append(thisFname)
+            fname0All[nThread] = thisFname
         return fname0All
 
-    @functools.cached_property
-    def nextFile(self):
-        return self.findNeighborFile(+1)
-    @functools.cached_property
-    def prevFile(self):
-        return self.findNeighborFile(-1)
+    @functools.lru_cache
+    def nextFile(self, level="level0"):
+        return self.findNeighborFile(+1, level=level)
+    @functools.lru_cache
+    def prevFile(self, level="level0"):
+        return self.findNeighborFile(-1, level=level)
     
-    def findNeighborFile(self, offset):
+    def findNeighborFile(self, offset, level="level0"):
         '''
         find file at difstance of x offsets
         '''
         dirname = os.path.dirname(self.fname)
         case = self.year+self.month+self.day
-        allFiles = FindFiles(case, self.camera, self.config, self.version).fnames0
-        thisFileI = allFiles.index(self.fname)
+        af = FindFiles(case, self.camera, self.config, self.version)
+        allFiles = af.listFiles(level)
+        thisFileI = allFiles.index(self.fname[level])
         neighborFileI = thisFileI + offset
         #neighbor is on a different day
         if (neighborFileI >= len(allFiles) or (neighborFileI < 0)):
@@ -361,12 +327,16 @@ class Filenames(object):
             neighborDayFolder = allDayFolders[neighborDayFolderI]
             year, month, day = neighborDayFolder.split("/")[-3:]
             neighborCase = "".join([year, month, day])
-            allNeighborFiles = FindFiles(neighborCase, self.camera, self.config, self.version).fnames0
+            allNeighborFiles = FindFiles(neighborCase, self.camera, self.config, self.version)
+            allNeighborFiles = allNeighborFiles.listFiles(level)
             assert offset in [1, -1], "other offsets than 1, -1 not implemented yet!"
             if offset > 0:
                 neighborFile = allNeighborFiles[0]
             else:
-                neighborFile = allNeighborFiles[-1]
+                try:
+                    neighborFile = allNeighborFiles[-1]
+                except IndexError:
+                    return None
         else:
             neighborFile = allFiles[neighborFileI]
         return neighborFile
@@ -392,7 +362,7 @@ class FilenamesFromLevel(Filenames):
         month = case[4:6]
         day = case[6:8]
 
-        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["pathOut"].format(level=0, site=site), computer, camera, year, month, day)
+        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["pathOut"].format(level="level0", site=site), computer, camera, year, month, day)
         if config["nThreads"] is None:
             fnameLevel0 = f"{outpath0}/{basename}.{config['movieExtension']}"
         else:

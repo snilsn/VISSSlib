@@ -3,7 +3,45 @@
 import yaml
 import warnings
 from addict import Dict
+from copy import deepcopy
 
+LOGGING_CONFIG = { 
+    'version': 1,
+    'disable_existing_loggers': True,
+    'formatters': { 
+        'standard': { 
+        'format': "'%(asctime)s: %(levelname)s: %(name)s.%(funcName)s: %(message)s'"
+        },
+    },
+    'handlers': { 
+        'stream': { 
+            'level': 'INFO',
+            'formatter': 'standard',
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stdout',  # stream is stderr
+        },
+        'file': { 
+            'level': 'WARNING',
+            'formatter': 'standard',
+            'class': 'logging.FileHandler',
+            'filename': None,  # stream is stderr
+        },    },
+    'loggers': { 
+        '': {  # root logger
+            'handlers': ['stream', 'file'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+    } 
+}
+
+def get_logging_config(fname):
+    lc = deepcopy(LOGGING_CONFIG)
+    lc['handlers']['file']['filename'] = fname
+
+    return lc
+
+    
 niceNames= (
     ('master', 'leader'),
     ('trigger', 'leader'),
@@ -27,5 +65,4 @@ def otherCamera(camera, config):
         return config["instruments"][0]
     else:
         raise ValueError
-
 
