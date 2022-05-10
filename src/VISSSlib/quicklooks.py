@@ -27,6 +27,7 @@ except ImportError:
 from .tools import nicerNames, readSettings
 from .av import VideoReaderMeta
 
+from . import __version__
 from . import files
 
 
@@ -427,10 +428,13 @@ class Packer_patched(packer.Packer):
         return blank_image
 
 
-def createLv3CoefQuicklook(case, config, lv3Version, skipExisting=True):
+def createMetaCoefQuicklook(case, config, version=__version__, skipExisting=True):
     '''
     Quicklooks of the coefficients obtained for matching in level3
     '''
+
+    version = deepcopy(version)
+    versionOld = version[:8]
 
     if type(config) is str:
         config = readSettings(config)
@@ -438,20 +442,26 @@ def createLv3CoefQuicklook(case, config, lv3Version, skipExisting=True):
     leader = config["leader"]
     follower = config["follower"]
 
-    fn = files.FindFiles(case, leader, config, lv3Version)
-    ff = files.FindFiles(case, follower, config, lv3Version)
+    fn = files.FindFiles(case, leader, config, version)
+    ff = files.FindFiles(case, follower, config, version)
+    fnOld = files.FindFiles(case, leader, config, versionOld)
+    ffOld = files.FindFiles(case, follower, config, versionOld)
 
-    if os.path.isfile(fn.quicklook3Coef) and skipExisting:
+    outFile = fn.quicklook.matchCoefficients
+
+    if os.path.isfile(outFile) and skipExisting:
         print(f"skip {case} ")
         return None, None
 
-    if len(fn.fnames3Coef) == 0:
-        print(f"no data {case} {fn.fnamesPattern3Coef}")
+    coefFiles = fn.listFiles("metaMatchCoefficients")
+    if len(coefFiles) == 0:
+        print(f"no data {case} {fn.fnamesPattern.metaMatchCoefficients}")
         return None, None
 
     print(f"running {case}")
 
-    dat3 = xr.open_mfdataset(fn.fnames3Coef, concat_dim="file_starttime")
+    dat3 = xr.open_mfdataset(coefFiles, concat_dim="file_starttime")
+    print("VERSION HACK")
 
     fig, (bx1, bx2, bx3, bx4) = plt.subplots(
         figsize=(10, 10), nrows=4, sharex=True)
@@ -489,24 +499,31 @@ def createLv3CoefQuicklook(case, config, lv3Version, skipExisting=True):
     tStart = dat3Stats.file_firsttime.to_pandas().index[0].replace(hour=0, minute=0, second=0)
     tEnd = dat3Stats.file_firsttime.to_pandas().index[-1].replace(hour=23, minute=59, second=59)
     
-    if config.site == "mosaic":
-        software_starttimes = xr.open_dataset(f"{fn.logpath}/{fn.computer}_{config.visssGen}_{fn.camera}_softwareStarttimes.nc").software_starttimes
-        tt = (software_starttimes >= tStart) & (software_starttimes <= tEnd)
-        software_starttimes = software_starttimes.isel(software_starttimes=tt)
-
-        for software_starttime in software_starttimes:
+    eventDatL = xr.open_dataset(fnOld.listFiles("metaEvents")[0])
+    for event in eventDatL.event:
+        if str(event.values).startswith("start"):
             for bx in [bx1,bx2,bx3,bx4]:
-                bx.axvline(software_starttime.values, color="k", ls="-")
-                
-                
-        software_starttimes = xr.open_dataset(f"{ff.logpath}/{ff.computer}_{config.visssGen}_{ff.camera}_softwareStarttimes.nc").software_starttimes
-        tt = (software_starttimes >= tStart) & (software_starttimes <= tEnd)
-        software_starttimes = software_starttimes.isel(software_starttimes=tt)
+                bx.axvline(event.file_starttime.values, color="r")
+    lBlocked = (eventDatL.blocking.sel(blockingThreshold=50) > 0.1)
+    lBlocked = lBlocked.file_starttime.where(lBlocked).values
+    for bx in [bx1,bx2,bx3,bx4]:
+        ylim = bx.get_ylim() 
+        bx.fill_between(lBlocked, [ylim[0]]*len(lBlocked), [ylim[1]]*len(lBlocked), color="red", alpha=0.25, label="Leader")
+        bx.set_ylim(ylim) 
 
-        for software_starttime in software_starttimes:
+    eventDatF = xr.open_dataset(ffOld.listFiles("metaEvents")[0])
+    for event in eventDatF.event:
+        if str(event.values).startswith("start"):
             for bx in [bx1,bx2,bx3,bx4]:
-                bx.axvline(software_starttime.values, color="k", ls=":")
+                bx.axvline(event.file_starttime.values, color="blue")
+    fBlocked = (eventDatF.blocking.sel(blockingThreshold=50) > 0.1)
+    fBlocked = fBlocked.file_starttime.where(fBlocked).values
+    for bx in [bx1,bx2,bx3,bx4]:
+        ylim = bx.get_ylim() 
+        bx.fill_between(fBlocked, [ylim[0]]*len(fBlocked), [ylim[1]]*len(fBlocked), color="blue", alpha=0.25, label="Follower")
+        bx.set_ylim(ylim) 
 
+    bx1.legend() 
     bx1.grid(True)
     bx2.grid(True)
     bx3.grid(True)
@@ -522,7 +539,7 @@ def createLv3CoefQuicklook(case, config, lv3Version, skipExisting=True):
     fig.tight_layout()
 
     fn.createQuicklookDirs()
-    print(fn.quicklook3Coef)
-    fig.savefig(fn.quicklook3Coef)
-    return fn.quicklook3Coef, fig
+    print(outFile)
+    fig.savefig(outFile)
+    return outFile, fig
 

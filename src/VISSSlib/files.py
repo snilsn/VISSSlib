@@ -20,8 +20,8 @@ from .tools import nicerNames, otherCamera
 
 
 dailyLevels = ["metaEvents", "metaMatchCoefficients"]
-fileLevels = ["level1detect", "level1match", "level1track", "metaFrames"]
-quicklookLevelsSep = ["metaEvents", "level1detect",]
+fileLevels = ["level1detect", "level1match", "level1track", "metaFrames"]#, "metaFixedCaptureId"]
+quicklookLevelsSep = ["metaEvents", "level1detect"]
 quicklookLevelsComb = [ "matchCoefficients"]
 imageLevels = ["imagesL1detect"]
 
@@ -80,11 +80,11 @@ class FindFiles(object):
                 self.outpath.level0, self.case, config["movieExtension"])
         self.fnamesPattern.level0status = f"{self.outpath['level0']}/*_{config['visssGen']}_{camera}_{self.case}_status.txt"
         for dL in dailyLevels:
-            self.fnamesPattern[dL] = "%s/%s_V%s*%s*%s%s%s.nc"%(self.outpath[dL], dL, version, camera, self.year, self.month, self.day)
+            self.fnamesPattern[dL] = "%s/%s_V%s_*%s*%s%s%s.nc"%(self.outpath[dL], dL, version, camera, self.year, self.month, self.day)
 
         self.fnamesPatternExt = Dict({})
         for dL in fileLevels + dailyLevels:
-            self.fnamesPatternExt[dL] = "%s/%s_V%s*%s*%s*nc.[b,n]*"%(self.outpath[dL], dL, version, camera, self.case) #finds broken & nodata
+            self.fnamesPatternExt[dL] = "%s/%s_V%s_*%s*%s*nc.[b,n]*"%(self.outpath[dL], dL, version, camera, self.case) #finds broken & nodata
 
                 
         self.quicklook = Dict({})
@@ -279,21 +279,19 @@ class Filenames(object):
             
             #sometime the second changes while the new thread file is written, fix it:
             if not os.path.isfile(thisFname):
-                thisSplits = thisFname.split("_")
-                thisTime = datetime.datetime.strptime(thisSplits[-2], "%Y%m%d-%H%M%S")
-                thisTime = (thisTime + datetime.timedelta(seconds=1)).strftime("%Y%m%d-%H%M%S")
-                thisSplits[-2] = thisTime
-                thisFname = "_".join(thisSplits)
-                # it can be even BEFORE the _0 file:
-                if not os.path.isfile(thisFname):
+                for tdelta in [1,-1, 2, -2, 3, -3, 4, -4]:
                     thisSplits = thisFname.split("_")
                     thisTime = datetime.datetime.strptime(thisSplits[-2], "%Y%m%d-%H%M%S")
-                    #remove two, becuase 1 has been already added
-                    thisTime = (thisTime + datetime.timedelta(seconds=-2)).strftime("%Y%m%d-%H%M%S")
+                    thisTime = (thisTime + datetime.timedelta(seconds=tdelta)).strftime("%Y%m%d-%H%M%S")
+                    print("looking for file from other thread, looking at",thisTime)
                     thisSplits[-2] = thisTime
-                    thisFname = "_".join(thisSplits)
-                #now it should work!
-                assert os.path.isfile(thisFname)
+                    newFname = "_".join(thisSplits)
+                    if os.path.isfile(newFname):
+                        thisFname = newFname
+                        break
+                else:
+                    print("did not find file for other thread",thisTime)
+                    continue
 
             fname0All[nThread] = thisFname
         return fname0All
@@ -309,18 +307,21 @@ class Filenames(object):
         '''
         find file at difstance of x offsets
         '''
-        dirname = os.path.dirname(self.fname)
+        dirname = os.path.dirname(self.fname[level])
         case = self.year+self.month+self.day
         af = FindFiles(case, self.camera, self.config, self.version)
         allFiles = af.listFiles(level)
-        thisFileI = allFiles.index(self.fname[level])
+        try:
+            thisFileI = allFiles.index(self.fname[level])
+        except ValueError: # self.fname[level] does not exist (yet)
+            return None
         neighborFileI = thisFileI + offset
         #neighbor is on a different day
         if (neighborFileI >= len(allFiles) or (neighborFileI < 0)):
-            dirParts = self.dirname.split("/")
+            dirParts = dirname.split("/")
             dirParts[-3:] = ["*", "*", "*"]
             allDayFolders = glob.glob("/".join(dirParts))
-            neighborDayFolderI = allDayFolders.index(self.dirname) + offset
+            neighborDayFolderI = allDayFolders.index(dirname) + offset
             if (neighborDayFolderI >= len(allDayFolders)) or (neighborDayFolderI < 0):
                  # no neighbor file!
                 return None
@@ -331,7 +332,10 @@ class Filenames(object):
             allNeighborFiles = allNeighborFiles.listFiles(level)
             assert offset in [1, -1], "other offsets than 1, -1 not implemented yet!"
             if offset > 0:
-                neighborFile = allNeighborFiles[0]
+                try:
+                    neighborFile = allNeighborFiles[0]
+                except IndexError:
+                    return None
             else:
                 try:
                     neighborFile = allNeighborFiles[-1]

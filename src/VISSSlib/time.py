@@ -27,7 +27,7 @@ def fixMosaicTimeL1(dat1, config):
     diff = (datS.capture_time - datS.record_time)
 
     # no estiamte the drift
-    drifts = []
+    drifts1 = []
     #group netcdf into 1 minute chunks
     index1min = diff.capture_time.resample(capture_time="1T", label="right").first().capture_time.values
     if len(index1min) <= 2:
@@ -43,8 +43,8 @@ def fixMosaicTimeL1(dat1, config):
     #this is the one were we assume it is the true dirft
     #also time stamp or max.  is needed, this is why resample cannot be used directly
     for ii, grp in grps:
-        drifts.append(grp.isel(capture_time=grp.argmax()))
-    drifts = xr.concat(drifts, dim="capture_time")
+        drifts1.append(grp.isel(capture_time=grp.argmax()))
+    drifts = xr.concat(drifts1, dim="capture_time")
 
     # interpolate to original resolution
     # extrapolation required for beginning or end - works usually very good!
@@ -61,7 +61,8 @@ def fixMosaicTimeL1(dat1, config):
     dat1["capture_time_orig"] = deepcopy(dat1["capture_time"])
     dat1 = dat1.assign_coords(capture_time=bestestimate)
 
-    #the difference between bestestimate and capture time must jump more than 0.1% of the measurement interval
-    assert np.all((np.abs(((dat1.capture_time-dat1.capture_time_orig).diff("capture_time")/dat1.capture_time_orig.diff("capture_time")))) < 0.001)
+    #the difference between bestestimate and capture time must jump more than 1% of the measurement interval
+    timeDiff = (np.abs(((dat1.capture_time-dat1.capture_time_orig).diff("capture_time")/dat1.capture_time_orig.diff("capture_time"))))
+    assert np.all(timeDiff < 0.01), timeDiff.max()
 
     return dat1

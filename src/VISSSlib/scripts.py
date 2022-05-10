@@ -49,7 +49,7 @@ def loopLv1Quicklooks(settings, lv2Version, skipExisting=True):
     return
 
 
-def loopLv3CoefQuicklooks(settings, lv3Version, skipExisting=True):
+def loopMetaCoefQuicklooks(settings, version=__version__, skipExisting=True):
 
     config = tools.readSettings(settings)
 
@@ -75,8 +75,8 @@ def loopLv3CoefQuicklooks(settings, lv3Version, skipExisting=True):
         day = "%02i" % dd.day
         case = f"{year}{month}{day}"
 
-        fname, fig = quicklooks.createLv3CoefQuicklook(
-            case, config, lv3Version, skipExisting=skipExisting)
+        fname, fig = quicklooks.createMetaCoefQuicklook(
+            case, config, version=version, skipExisting=skipExisting)
         try:
             fig.close()
         except AttributeError:

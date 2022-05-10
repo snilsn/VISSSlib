@@ -544,7 +544,7 @@ def detectParticles(fname,
 
     fnameM = [f.replace(config["movieExtension"], "txt") for f in fnamesV.values()]
 
-    metaData, dropped_frames = metadata.getMetaData(
+    metaData, nDroppedFrames = metadata.getMetaData(
         fnameM, camera, config, testMovieFile=True)
 
     if metaData is None:
@@ -584,16 +584,19 @@ def detectParticles(fname,
         inVid[nThread] = cv2.VideoCapture(fnameV)
         nFramesVid += int(inVid[nThread].get(cv2.CAP_PROP_FRAME_COUNT))
 
-    if ((site == 'mosaic') and len(metaData.record_id)-1+dropped_frames == nFramesVid):
+    if ((site == 'mosaic') and nFrames+nDroppedFrames-1 == nFramesVid): 
         log.warning('lengths do not match %i %i (bug of MOSAiC C code) ' %
-                    (len(metaData.record_id)-1+dropped_frames, nFramesVid))
+                    (nFrames+nDroppedFrames-1, nFramesVid)) 
+    elif ((site == 'mosaic') and nFrames+nDroppedFrames == nFramesVid-1):
+        log.warning('lengths do not match %i %i (bug of MOSAiC C code) ' %
+                    (nFrames+nDroppedFrames, nFramesVid-1))
 
-    elif (len(metaData.record_id)+dropped_frames != nFramesVid):
+    elif (nFrames+nDroppedFrames != nFramesVid): 
         log.error('lengths do not match %i %i ' %
-                  (len(metaData.record_id)+dropped_frames, nFramesVid))
+                  (nFrames+nDroppedFrames, nFramesVid)) 
 
         raise RuntimeError('lengths do not match %i %i ' %
-                           (len(metaData.record_id)+dropped_frames, nFramesVid))
+                           (nFrames, nFramesVid)) 
 
     elif (nFrames < historySize):
         log.info('too few frames %i ' %

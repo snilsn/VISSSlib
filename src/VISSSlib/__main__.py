@@ -45,15 +45,15 @@ def main():
         quicklooks.createLv1Quicklook(case, camera, config, lv2Version,
                            skipExisting=skipExisting)
 
-    elif sys.argv[1] == "quicklooks.createLv3CoefQuicklook":
+    elif sys.argv[1] == "quicklooks.createMetaCoefQuicklook":
         case = sys.argv[2]
         config = sys.argv[3]
-        lv3Version = sys.argv[4]
+        version = sys.argv[4]
         try:
             skipExisting = bool(int(sys.argv[5]))
         except IndexError:
             skipExisting = True
-        quicklooks.createLv3CoefQuicklook(case, config, lv3Version,
+        quicklooks.createMetaCoefQuicklook(case, config, version=version,
                                skipExisting=skipExisting)
 
 
@@ -68,15 +68,15 @@ def main():
         scripts.loopLv1Quicklooks(settings, lv2Version, skipExisting=skipExisting)
 
 
-    elif sys.argv[1] == "scripts.loopLv3CoefQuicklooks":
+    elif sys.argv[1] == "scripts.loopMetaCoefQuicklooks":
         settings = sys.argv[2]
-        lv3Version = sys.argv[3]
+        version = sys.argv[3]
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
             skipExisting = True
 
-        scripts.loopLv3CoefQuicklooks(settings, lv3Version, skipExisting=skipExisting)
+        scripts.loopMetaCoefQuicklooks(settings, version=version, skipExisting=skipExisting)
 
 
     elif sys.argv[1] == "detection.detectParticles":
