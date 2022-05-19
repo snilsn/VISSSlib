@@ -42,7 +42,7 @@ def main():
         except IndexError:
             skipExisting = True
 
-        quicklooks.createLv1Quicklook(case, camera, config, lv2Version,
+        quicklooks.createLv1Quicklook(case, camera, settings, lv2Version,
                            skipExisting=skipExisting)
 
     elif sys.argv[1] == "quicklooks.createMetaCoefQuicklook":

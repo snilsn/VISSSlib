@@ -69,30 +69,30 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
 
     particlesPloted = 0
 
-    if os.path.isfile(ff.quicklook1) and skipExisting:
-        print("SKIPPING - file exists", ff.quicklook1)
+    if os.path.isfile(ff.quicklook.level1detect) and skipExisting:
+        print("SKIPPING - file exists", ff.quicklook.level1detect)
         return None, None
 
-    if (len(ff.fnames1) == 0) and (len(ff.fnames0) > 0):
-        print("NO DATA YET ", ff.quicklook1)
+    if (len(ff.listFiles("level1detect")) == 0) and (len(ff.listFiles("level0")) > 0):
+        print("NO DATA YET ", ff.quicklook.level1detect)
         return None, None
 
     if not ff.isCompleteL1:
         print("NOT COMPLETE YET %i/%i %s" %
-              (len(ff.fnames1Ext), len(ff.fnames0), ff.quicklook1))
-#         if (len(ff.fnames1Ext) == len(ff.fnames0)):
+              (len(ff.listFilesExt("level1detect")), len(ff.listFiles("level0")), ff.quicklook.level1detect))
+#         if (len(ff.listFilesExt("level1detect")) == len(ff.listFiles("level0"))):
 #             afshgsa
         return None, None
 
 #     else:
-    print("RUNNING ", ff.quicklook1)
+    print("RUNNING ", ff.quicklook.level1detect)
 
     ff.createQuicklookDirs()
 
     dats2 = []
 
-    for fname1 in ff.fnames1:
-        fname2 = fname1.replace('level1', 'level2')
+    for fname1 in ff.listFiles("metaFrames"):
+        fname2 = fname1.replace('metaFrames', 'level1detect')
         try:
             dat2 = xr.open_dataset(fname2)
         except FileNotFoundError:
@@ -131,7 +131,7 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
         print("merged")
 
         if len(limDat.fpid) == 0:
-            print("TOO FEW DATA ", ff.quicklook1)
+            print("TOO FEW DATA ", ff.quicklook.level1detect)
 
             draw = ImageDraw.Draw(new_im)
             draw.text((total_width//3, max_height//3),
@@ -221,7 +221,7 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
                         pidStr = '%07i' % pid
                         imName = '%s.png' % (pidStr)
                         imfname = '%s/%s' % (
-                            fn.fnameLevel2images.format(ppid=pidStr[:4]), imName)
+                            fn.imagepath.imagesL1detect.format(ppid=pidStr[:4]), imName)
                         try:
                             im = np.array(Image.open(imfname))
                         except FileNotFoundError:
@@ -229,7 +229,7 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
                             continue
 
                     im = np.pad(im, [(0, 1), (0, 1)])
-                    fid = np.where(fname == np.array(ff.fnames1))[0][0]
+                    fid = np.where(fname == np.array(ff.listFiles("metaFrames")))[0][0]
 
                     text = np.zeros((100, 100))
                     text = cv2.putText(text, '%i.%i' % (fid, pid),
@@ -313,9 +313,9 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
     draw.line((width + 15, 30, width +
                15+round(tenmm), 30), fill=0, width=5)
 
-    new_im.save(ff.quicklook1)
+    new_im.save(ff.quicklook.level1detect)
 
-    return ff.quicklook1, new_im
+    return ff.quicklook.level1detect, new_im
 
 
 class Packer_patched(packer.Packer):
