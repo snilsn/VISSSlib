@@ -32,6 +32,6 @@ from . import detection
 from . import metadata
 from . import matching
 from . import tracking
-from . import time
+from . import fixes
 from . import scripts
 

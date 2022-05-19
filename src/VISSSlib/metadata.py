@@ -24,9 +24,31 @@ import logging
 import logging.config
 
 from . import __version__
-from . import time
+from . import fixes
 from . import files
 from . import detection
+
+'''
+Mosaic problems with metadata:
+
+* capture_id overflows at 65535 - relatively easy to fix
+* capture_time drifts becuase it is only reset when camera starts
+* record_time is assigned in the processing queue, can be a couple of seconds 
+  off if queue is long
+* flipped capture_time: once in a while timestamps of two consecutive frames are 
+  flipped. Not clear whetehr frame itself is also flipped. So far only 
+  observed for follower. solution: remove flipped frames.
+* invented frames: sometimes a couple of frames are less than 1/fps apart. 
+  looks like an additonal frame is inserted and delta t is reduced accordingly
+  for approx. 6 frames to make up for additional frame. Origin of additonal 
+  frame is unclear
+* file_starttime: obtained from record_time, so problems with record_time apply apply
+
+'''
+
+
+
+
 
 def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, includeHeader=True):
 
@@ -65,7 +87,7 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
 
 
     if fixTime == "fixMosaicTimeL1":
-        metaDat = time.fixMosaicTimeL1(metaDat, config)
+        metaDat = fixes.fixMosaicTimeL1(metaDat, config)
 
     return metaDat, droppedFrames
 
