@@ -17,6 +17,7 @@ import logging
 log = logging.getLogger()
 
 from .tools import nicerNames, otherCamera
+from . import __version__
 
 
 dailyLevels = ["metaEvents", "metaMatchCoefficients"]
@@ -26,7 +27,7 @@ quicklookLevelsComb = [ "matchCoefficients"]
 imageLevels = ["imagesL1detect"]
 
 class FindFiles(object):
-    def __init__(self, case, camera, config, version):
+    def __init__(self, case, camera, config, version=__version__):
         
         '''
         find all files corresponding to certain case
@@ -127,7 +128,7 @@ class FindFiles(object):
 
 
 class Filenames(object):
-    def __init__(self, fname, config, version):
+    def __init__(self, fname, config, version=__version__):
         '''
         create matching filenames based on mov file
         Use always thread 0 file!
@@ -297,33 +298,37 @@ class Filenames(object):
         return fname0All
 
     @functools.lru_cache
-    def nextFile(self, level="level0"):
-        return self.findNeighborFile(+1, level=level)
+    def nextFile(self, level="level0", debug=False):
+        return self.findNeighborFile(+1, level=level, debug=debug)
     @functools.lru_cache
-    def prevFile(self, level="level0"):
-        return self.findNeighborFile(-1, level=level)
+    def prevFile(self, level="level0", debug=False):
+        return self.findNeighborFile(-1, level=level, debug=debug)
     
-    def findNeighborFile(self, offset, level="level0"):
+    def findNeighborFile(self, offset, level="level0", debug=False):
         '''
         find file at difstance of x offsets
         '''
+        if debug: print("find a neighbor", offset, level)
         dirname = os.path.dirname(self.fname[level])
         case = self.year+self.month+self.day
         af = FindFiles(case, self.camera, self.config, self.version)
         allFiles = af.listFiles(level)
+        if debug: print("found", allFiles)
         try:
             thisFileI = allFiles.index(self.fname[level])
         except ValueError: # self.fname[level] does not exist (yet)
+            print(" self.fname[level] does not exist (yet)")
             return None
         neighborFileI = thisFileI + offset
         #neighbor is on a different day
         if (neighborFileI >= len(allFiles) or (neighborFileI < 0)):
+            if debug: print("neighbor is on a different day")
             dirParts = dirname.split("/")
             dirParts[-3:] = ["*", "*", "*"]
             allDayFolders = glob.glob("/".join(dirParts))
             neighborDayFolderI = allDayFolders.index(dirname) + offset
             if (neighborDayFolderI >= len(allDayFolders)) or (neighborDayFolderI < 0):
-                 # no neighbor file!
+                if debug: print("no neighbor file on a different day")
                 return None
             neighborDayFolder = allDayFolders[neighborDayFolderI]
             year, month, day = neighborDayFolder.split("/")[-3:]
@@ -342,6 +347,7 @@ class Filenames(object):
                 except IndexError:
                     return None
         else:
+            if debug: print("neighbor is on same day")
             neighborFile = allFiles[neighborFileI]
         return neighborFile
 

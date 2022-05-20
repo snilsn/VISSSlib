@@ -50,8 +50,12 @@ Mosaic problems with metadata:
 
 
 
-def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, includeHeader=True):
+def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, includeHeader=False, idOffset=0):
 
+    # includeHeader = False since v20220518
+
+    if type(fnames) is str:
+        fnames = [fnames]
 
     nThreads = config["nThreads"]
     threshs = np.array(config["threshs"])
@@ -72,22 +76,61 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
         pass 
 
     metaDat = []
-    droppedFrames = 0
     for ii in range(len(fnames)):
 
-        metaDat1, droppedFrames1 = _getMetaData1(fnames[ii], camera, config, stopAfter=stopAfter, detectMotion4oldVersions=detectMotion4oldVersions, testMovieFile=testMovieFile, goodFile=goodFile, includeHeader=includeHeader)
-        droppedFrames += droppedFrames1
+        metaDat1 = _getMetaData1(fnames[ii], camera, config, stopAfter=stopAfter, detectMotion4oldVersions=detectMotion4oldVersions, testMovieFile=testMovieFile, goodFile=goodFile, includeHeader=includeHeader)
         if (metaDat1 is not None) and (len(metaDat1.capture_time) > 0):
             metaDat.append(metaDat1)
 
     if len(metaDat) == 0:
         metaDat = None
+        droppedFrames = 0
     else:
         metaDat = xr.concat(metaDat, dim='capture_time').sortby('capture_time')
 
+        droppedFrames = 0
 
-    if fixTime == "fixMosaicTimeL1":
-        metaDat = fixes.fixMosaicTimeL1(metaDat, config)
+        # fix time stamps are jumping around
+        jumps = np.diff(metaDat.capture_time.astype(int)) <0
+        nJumps = np.sum(jumps)
+        droppedIndices = []
+        if nJumps>0:
+            # At mosaic, it looks like frames are sometimes swapped when caption_id overflows
+            # dont try to fix but remove meta data
+            if config.visssGen  == "visss":
+                ss = np.where(jumps)[0]
+                assert nJumps < 20, "more than 20 is very fishy..."
+                if len(ss) > 1:
+                    assert np.all(np.diff(ss) == 1), ("if there is more than one "
+                                    "time index going backwards, they must be in a group")
+                for s1 in ss:
+                    print(fname, 'TIME JUMPED, DROPPING FRAMES around %i '%(s1))
+                    droppedIndices.append(s1-1) 
+                    droppedIndices.append(s1) 
+                    droppedIndices.append(s1+1)
+                droppedIndices = np.unique(droppedIndices)
+                metaDat = metaDat.drop_isel(capture_time=droppedIndices)
+            elif config.visssGen  == "visss2":
+                if nJumps == 1: #teh usual at the beginnign of the file
+                    raise RuntimeError("develop fix!!!")
+                    ss = np.where(jumps)[0][0]
+                    droppedIndices = list(range(ss+1))
+                    metaDat = metaDat.drop_isel(capture_time=droppedIndices)
+                else:
+                    raise NotImplementedError            
+            else:
+                raise RuntimeError("unknown VISSS generation %s"%config.visssGen)
+
+
+        droppedFrames += len(droppedIndices)
+        # end fix time stamps are jumping around
+
+
+        #### fix capture_id ####
+        metaDat, droppedFrames1 = fixes.removeGhostFrames(metaDat, config, intOverflow=True, idOffset=idOffset)
+        droppedFrames += droppedFrames1
+        #### end fix capture_id ####
+
 
     return metaDat, droppedFrames
 
@@ -106,7 +149,7 @@ def readHeaderData(fname, returnLasttime=False):
         firstLine = f.readline()
         if firstLine == "":
             log.error("%s: metaData empty" % fname)
-            return [None] * 10
+            return [None] * 11
 
         if firstLine.startswith('# VISSS file format version: 0.2'):
             asciiVersion = 0.2
@@ -146,15 +189,21 @@ def readHeaderData(fname, returnLasttime=False):
             capture_firsttime = None
 
     if returnLasttime:
-        lastLine = os.popen("tail -n 1 %s" % fname).read()
-        capture_lasttime = lastLine.split(',')[0].lstrip().rstrip()
-        last_id = lastLine.split(',')[2].lstrip().rstrip()
-        try:
+        lastLines = os.popen("tail -n 2 %s" % fname)
+        secondsButLastLine = lastLines.readline()
+        lastLine = lastLines.readline()
+        lastLines.close()
+        try: 
+            capture_lasttime = lastLine.split(',')[0].lstrip().rstrip()
             capture_lasttime = datetime.datetime.utcfromtimestamp(
             int(capture_lasttime)*1e-6)
-        except ValueError:
-            capture_lasttime = None
-            last_id = None
+            last_id = lastLine.split(',')[2].lstrip().rstrip()
+        except (IndexError, ValueError):
+            print("last line incomplete, using second but last line", fname)
+            capture_lasttime = secondsButLastLine.split(',')[0].lstrip().rstrip()
+            capture_lasttime = datetime.datetime.utcfromtimestamp(
+            int(capture_lasttime)*1e-6)
+            last_id = secondsButLastLine.split(',')[2].lstrip().rstrip()
     else:
         capture_lasttime = None
         last_id = None
@@ -176,53 +225,7 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
     if nThreads is None:
         nThread = 0
     else:
-        nThread = int(fname.split('_')[-1].split('.')[0])
-
-#     with open(metaFname) as f:
-#         firstLine = f.readline()
-#         if firstLine == "":
-#             log.error("%s: metaData empty" % fname)
-#             return None, 0
-
-#         if firstLine.startswith('# VISSS file format version: 0.2'):
-#             asciiVersion = 0.2
-#             asciiNames = ['capture_time', 'record_time',
-#                           'capture_id', 'mean', 'std']
-#             gitTag = f.readline().split(':')[1].lstrip().rstrip()
-#             gitBranch = f.readline().split(':')[1].lstrip().rstrip()
-#             skip = f.readline()
-# #        elif firstLine.startswith('# VISSS file format version: 0.3'):
-# #            asciiVersion = 0.3
-# #            asciiNames = ['capture_time', 'record_time',
-# #                          'capture_id'] + threshs.tolist()
-# #            gitTag = f.readline().split(':')[1].lstrip().rstrip()
-# #            gitBranch = f.readline().split(':')[1].lstrip().rstrip()
-# #            skip = f.readline()
-#         elif firstLine.startswith('# VISSS file format version: 0.3'):
-#             asciiVersion = 0.3
-#             asciiNames = ['capture_time', 'record_time',
-#                           'capture_id', 'queue_size'] + threshs
-#             gitTag = f.readline().split(':')[1].lstrip().rstrip()
-#             gitBranch = f.readline().split(':')[1].lstrip().rstrip()
-#             skip = f.readline()
-#         elif firstLine.startswith('# VISSS file format version: 0.4'):
-#             raise NotImplementedError
-#         elif firstLine.startswith('# VISSS file format version: 0.5'):
-#             raise NotImplementedError
-                       
-#         else:
-#             asciiVersion = 0.1
-#             asciiNames = ['capture_time', 'record_time', 'capture_id']
-#             gitTag = '-'
-#             gitBranch = '-'
-#         capture_starttime = f.readline()
-#         capture_starttime = capture_starttime.split(':')[1].lstrip().rstrip()
-#         capture_starttime = datetime.datetime.utcfromtimestamp(
-#             int(capture_starttime)*1e-6)
-#         serialnumber = f.readline().split(':')[1].lstrip().rstrip()
-#         configuration = f.readline().split(':')[1].lstrip().rstrip()
-#         hostname = f.readline().split(':')[1].lstrip().rstrip()
-    
+        nThread = int(fname.split('_')[-1].split('.')[0])    
 
     res = readHeaderData(metaFname, returnLasttime = False)
     (record_starttime, asciiVersion, gitTag, gitBranch, capture_starttime, capture_firsttime, capture_lasttime, last_id, 
@@ -257,46 +260,11 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
     # - capture time: only variable that is really unique, but can be off by a couple of seconds during MOSAiC...
     metaDat = metaDat.set_index('capture_time')
 
-    
-    # time stamps are jumping around
-    jumps = np.diff(metaDat.index) <0
-    nJumps = np.sum(jumps)
-    droppedIndices = []
-    if nJumps>0:
-        # At mosaic, it looks like frames are sometimes swapped when caption_id overflows
-        # dont try to fix but remove meta data
-        if config.site == "mosaic":
-            ss = np.where(jumps)[0]
-            assert nJumps < 20, "more than 20 is very fishy..."
-            if len(ss) > 1:
-                assert np.all(np.diff(ss) == 1), ("if there is more than one "
-                                "time index going backwards, they must be in a group")
-            for s1 in ss:
-                print(fname, 'TIME JUMPED, DROPPING FRAMES around %i '%(s1))
-                droppedIndices.append(s1-1) 
-                droppedIndices.append(s1) 
-                droppedIndices.append(s1+1)
-            droppedIndices = np.unique(droppedIndices)
-            metaDat = metaDat.drop(metaDat.index[droppedIndices])
-        else:
-            if nJumps == 1: #teh usual at the beginnign of the file
-                ss = np.where(jumps)[0][0]
-                droppedIndices = list(range(ss+1))
-                metaDat = metaDat.drop(metaDat.index[droppedIndices])
-
-            else:
-                raise NotImplementedError
-    droppedFrames = len(droppedIndices)
         
     # very rarely, data fields are missing
-    # metaDat = metaDat.dropna() # removed becuase ASCII and MOV must not get out of sync!
+    metaDat = metaDat.dropna() 
 
-    # just to be sure
-    try:
-        metaDat['capture_id'] = metaDat.capture_id.astype(np.int64)
-    except TypeError:
-        log.error("%s: metaDat[capture_id] not all int" % fname)
-        return None, 0
+
 
     #fixing doesn't work with the current strategy if multiple threads are used, so deactivating
     #if metaDat.shape[0] > 1:
@@ -313,6 +281,20 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
     #    newIndex = [0]
     #metaDat['capture_id'] = newIndex
     metaDat = xr.Dataset(metaDat)
+
+    # just to be sure
+    try:
+        metaDat['capture_id'] = metaDat.capture_id.astype(np.int64)
+    except:
+        #typically the last one is broken
+        metaDatTmp = metaDat.drop_isel(capture_time = -1)
+        # try again 
+        try:
+            metaDatTmp['capture_id'] = metaDatTmp.capture_id.astype(np.int64)
+            metaDat = metaDatTmp
+        except:
+            log.error("%s: metaDat[capture_id] not all int" % fname)
+            return None, 0
 
     metaDat['capture_time'] = xr.DataArray([datetime.datetime.utcfromtimestamp(
         t1*1e-6) for t1 in metaDat['capture_time'].values], coords=metaDat['capture_time'].coords)
@@ -450,7 +432,7 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
     # metaDat["movingObjects"] = metaDat["movingObjects"].astype(np.uint32)
     metaDat["nThread"] = metaDat["nThread"].astype(np.uint16)
 
-    return metaDat, droppedFrames
+    return metaDat
 
 
 def getEvents(fnames0, config, fname0status=None):
@@ -501,6 +483,8 @@ def getEvents(fnames0, config, fname0status=None):
         hist, _ = np.histogram(img.ravel(), bins=bins)
         hist = hist.cumsum()/nPixel
         metaDat['blocking'] = xr.DataArray([hist], dims=["file_starttime", "blockingThreshold"], coords=[[record_starttime],bins4xr])
+        metaDat['brightnessMean'] = xr.DataArray(np.array([img.mean()]), dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['brightnessStd'] = xr.DataArray(np.array([img.std()]), dims=["file_starttime"], coords=[[record_starttime]])
 
         metaDats.append(xr.Dataset(metaDat))
 
