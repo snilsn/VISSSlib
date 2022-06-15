@@ -50,7 +50,7 @@ Mosaic problems with metadata:
 
 
 
-def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, includeHeader=False, idOffset=0):
+def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, includeHeader=False, idOffset=0, fixIteration=3):
 
     # includeHeader = False since v20220518
 
@@ -75,6 +75,7 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
     except AttributeError:
         pass 
 
+    beyondRepair = False
     metaDat = []
     for ii in range(len(fnames)):
 
@@ -125,14 +126,16 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
         droppedFrames += len(droppedIndices)
         # end fix time stamps are jumping around
 
+        
+        if config.site == "mosaic":
+            #### fix capture_id ####
+            metaDat, droppedFrames1, beyondRepair = fixes.removeGhostFrames(metaDat, config, intOverflow=True, idOffset=idOffset, fixIteration=fixIteration)
+            droppedFrames += droppedFrames1
+            #### end fix capture_id ####
+        # elif config.model == "M1280": # does not really work with all the data gaps...
+        #     metaDat = fixes.fixIntOverflow(metaDat,idOffset=idOffset)
 
-        #### fix capture_id ####
-        metaDat, droppedFrames1 = fixes.removeGhostFrames(metaDat, config, intOverflow=True, idOffset=idOffset)
-        droppedFrames += droppedFrames1
-        #### end fix capture_id ####
-
-
-    return metaDat, droppedFrames
+    return metaDat, droppedFrames, beyondRepair
 
 
 def readHeaderData(fname, returnLasttime=False):
@@ -193,17 +196,23 @@ def readHeaderData(fname, returnLasttime=False):
         secondsButLastLine = lastLines.readline()
         lastLine = lastLines.readline()
         lastLines.close()
-        try: 
-            capture_lasttime = lastLine.split(',')[0].lstrip().rstrip()
-            capture_lasttime = datetime.datetime.utcfromtimestamp(
-            int(capture_lasttime)*1e-6)
-            last_id = lastLine.split(',')[2].lstrip().rstrip()
-        except (IndexError, ValueError):
-            print("last line incomplete, using second but last line", fname)
-            capture_lasttime = secondsButLastLine.split(',')[0].lstrip().rstrip()
-            capture_lasttime = datetime.datetime.utcfromtimestamp(
-            int(capture_lasttime)*1e-6)
-            last_id = secondsButLastLine.split(',')[2].lstrip().rstrip()
+
+        if lastLine.startswith("# Capture time"):
+            # ASCII file contains no data!
+            capture_lasttime = capture_firsttime
+            last_id = None
+        else:
+            try: 
+                capture_lasttime = lastLine.split(',')[0].lstrip().rstrip()
+                capture_lasttime = datetime.datetime.utcfromtimestamp(
+                                    int(capture_lasttime)*1e-6)
+                last_id = lastLine.split(',')[2].lstrip().rstrip()
+            except (IndexError, ValueError):
+                print("last line incomplete, using second but last line", fname)
+                capture_lasttime = secondsButLastLine.split(',')[0].lstrip().rstrip()
+                capture_lasttime = datetime.datetime.utcfromtimestamp(
+                                    int(capture_lasttime)*1e-6)
+                last_id = secondsButLastLine.split(',')[2].lstrip().rstrip()
     else:
         capture_lasttime = None
         last_id = None
@@ -231,6 +240,7 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
     (record_starttime, asciiVersion, gitTag, gitBranch, capture_starttime, capture_firsttime, capture_lasttime, last_id, 
             serialnumber, configuration, hostname) = res
 
+
     if record_starttime is None:
         return None, 0
 
@@ -251,6 +261,10 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
     #there is a frame in the video file for every line in the ASCII file (hopefully)
     metaDat.index = metaDat.index.set_names('record_id')
     metaDat = metaDat.reset_index('record_id')
+
+    #check for delayed clock reset, jump needs to be at least 10s to make sure
+    # we look at the right problem
+    metaDat = fixes.delayedClockReset(metaDat, config)
 
     # hard to decide which variable should be used as an index:
     # - record_id: doesn't work when using multiple threads
@@ -281,6 +295,7 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
     #    newIndex = [0]
     #metaDat['capture_id'] = newIndex
     metaDat = xr.Dataset(metaDat)
+
 
     # just to be sure
     try:
@@ -493,7 +508,7 @@ def getEvents(fnames0, config, fname0status=None):
 
     #add status information
     if fname0status is not None:
- 
+
         statusDat = pd.read_csv(fname0status, names=["file_starttime", "timestamp","event","user"],index_col=0)
         statusDat.index = pd.to_datetime(statusDat.index, format='%Y-%m-%d %H:%M:%S.%f')
         statusDat["event"] = [f"{e.lstrip()}-{u.lstrip()}" for e, u in zip(statusDat.event, statusDat.user)]

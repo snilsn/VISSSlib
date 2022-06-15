@@ -32,6 +32,17 @@ def main():
 
         scripts.loopCreateEvents(settings, skipExisting=skipExisting, nDays = nDays)
 
+    elif sys.argv[1] == "scripts.loopCreateMetaFrames":
+        settings = sys.argv[2]
+        nDays = int(sys.argv[3])
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+
+        scripts.loopCreateMetaFrames(settings, skipExisting=skipExisting, nDays = nDays)
+
+
     elif sys.argv[1] == "quicklooks.createLv1Quicklook":
         case = sys.argv[2]
         camera = sys.argv[3]

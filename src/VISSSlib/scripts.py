@@ -154,4 +154,80 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
                 print("NO DATA",case, outFile )
 
 
+def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"):
 
+    config = tools.readSettings(settings)
+
+    if nDays == 0:
+        if config["end"] == "today":
+            end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        else:
+            end = config["end"]
+
+        days = pd.date_range(
+            start=config["start"],
+            end=end,
+            freq="1D",
+            tz=None,
+            normalize=True,
+            name=None,
+            closed=None
+        )
+    else:
+        end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        days = pd.date_range(
+            end=end,
+            periods=nDays,
+            freq="1D",
+            tz=None,
+            normalize=True,
+            name=None,
+            closed=None
+        )
+
+    if cameras == "all":
+        cameras = [config.follower, config.leader]
+
+    for dd in days:
+        year = str(dd.year)
+        month = "%02i" % dd.month
+        day = "%02i" % dd.day
+        case = f"{year}{month}{day}"
+
+        for camera in cameras:
+
+            # find files
+            ff = files.FindFiles(case, camera, config)
+
+            for fname0 in ff.listFiles("level0"):
+
+                fn = files.Filenames(fname0, config)
+                if os.path.isfile(fn.fname.metaFrames) and skipExisting:
+                    print("%s exists"%fn.fname.metaFrames)
+                    continue
+                
+                if os.path.getsize(fname0.replace(config.movieExtension,"txt")) == 0:
+                    print("%s has size 0!"%fname0)
+                    continue
+                  
+                print(fname0)
+
+                fn.createDirs()
+                fname0all = list(fn.fnameAllThreads.values())
+
+                metaDat, droppedFrames, beyondRepair = metadata.getMetaData(fname0all, camera, config, idOffset=0)
+
+                if beyondRepair:
+                    print(f"{os.path.basename(fname0)}, broken beyond repair, {droppedFrames}, frames dropped, {idOffset}, offset\n")
+                
+                if metaDat is not None:
+                    comp = dict(zlib=True, complevel=5)
+                    encoding = {
+                        var: comp for var in metaDat.data_vars}
+                    metaDat.to_netcdf(fn.fname.metaFrames, encoding=encoding)
+                    print("%s written"%fn.fname.metaFrames)
+                else:
+                    with open(fn.fname.metaFrames+".nodata", "w") as f:
+                        f.write("no data recorded")
+
+    return

@@ -22,7 +22,7 @@ from . import __version__
 
 dailyLevels = ["metaEvents", "metaMatchCoefficients"]
 fileLevels = ["level1detect", "level1match", "level1track", "metaFrames"]#, "metaFixedCaptureId"]
-quicklookLevelsSep = ["metaEvents", "level1detect"]
+quicklookLevelsSep = ["metaFrames", "metaEvents", "level1detect", "level1match"]
 quicklookLevelsComb = [ "matchCoefficients"]
 imageLevels = ["imagesL1detect"]
 
@@ -91,10 +91,10 @@ class FindFiles(object):
         self.quicklook = Dict({})
         self.quicklookPath = Dict({})
         for qL in quicklookLevelsSep + quicklookLevelsComb:
-            self.quicklookPath[qL] =config["pathQuicklooks"].format(site=config['site'], level=qL)
+            self.quicklookPath[qL] =f'{config["pathQuicklooks"].format(site=config["site"], level=qL)}/{self.year}'
 
         for qL in quicklookLevelsSep:
-            self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{self.computer}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
+            self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
         for qL in quicklookLevelsComb:
             self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
 
@@ -152,7 +152,7 @@ class Filenames(object):
         self.timestamp = self.case[-6:]
 
         self.datetime = datetime.datetime.strptime(self.case, "%Y%m%d-%H%M%S")
-        self.datetime64= np.datetime64(self.datetime)
+        self.datetime64= np.datetime64(self.datetime, "ns")
 
         if config["nThreads"] is not None:
             self.basename = '_'.join(self.basename.split('_')[:-1])
@@ -238,7 +238,10 @@ class Filenames(object):
             fnames += nextFf.listFiles(level)
         
         # get timestamps of surrounding files
-        ts = np.array([f.split("_")[-1][:-3] for f in fnames])
+        if level == "level0":
+            ts = np.array([f.split("_")[-2] for f in fnames])
+        else:
+            ts = np.array([f.split("_")[-1][:-3] for f in fnames])
         ts = pn.to_datetime(ts, format="%Y%m%d-%H%M%S")
 
         plusDelta = np.timedelta64(self.config["newFileInt"] + graceInterval, "s")
@@ -325,7 +328,9 @@ class Filenames(object):
             if debug: print("neighbor is on a different day")
             dirParts = dirname.split("/")
             dirParts[-3:] = ["*", "*", "*"]
-            allDayFolders = glob.glob("/".join(dirParts))
+            allDayFolders = sorted(glob.glob("/".join(dirParts)))
+            if debug: print("glob", "/".join(dirParts))
+            if debug: print("allDayFolders", allDayFolders)
             neighborDayFolderI = allDayFolders.index(dirname) + offset
             if (neighborDayFolderI >= len(allDayFolders)) or (neighborDayFolderI < 0):
                 if debug: print("no neighbor file on a different day")
@@ -333,6 +338,7 @@ class Filenames(object):
             neighborDayFolder = allDayFolders[neighborDayFolderI]
             year, month, day = neighborDayFolder.split("/")[-3:]
             neighborCase = "".join([year, month, day])
+            if debug: print("neighborCase", neighborCase)
             allNeighborFiles = FindFiles(neighborCase, self.camera, self.config, self.version)
             allNeighborFiles = allNeighborFiles.listFiles(level)
             assert offset in [1, -1], "other offsets than 1, -1 not implemented yet!"
@@ -402,7 +408,7 @@ class FilenamesFromLevel(Filenames):
     #     self.timestamp = self.case[-6:]
 
     #     self.datetime = datetime.datetime.strptime(f"{self.year}{self.month}{self.day}-{self.timestamp}", "%Y%m%d-%H%M%S")
-    #     self.datetime64= np.datetime64(self.datetime)
+    #     self.datetime64= np.datetime64(self.datetime, "ns")
 
     #     self.outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["pathOut"].format(level=0), self.computer, self.camera, self.year, self.month, self.day)
     #     if config["nThreads"] is None:

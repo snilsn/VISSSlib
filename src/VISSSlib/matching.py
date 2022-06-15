@@ -16,10 +16,16 @@ from copy import deepcopy
 from . import __version__
 from . import tools
 
-deltaY = deltaH = 1
+deltaY = deltaH = deltaI = 1.
 
 
 def probability(x, mu, sigma, delta):
+
+    x = x.astype(float)
+    mu = np.float(mu)
+    sigma = np.float(sigma)
+    delta = np.float(delta)
+
     x1 = x-(delta/2)
     x2 = x+(delta/2)
     return scipy.stats.norm.cdf(x2, loc=mu, scale=sigma) - scipy.stats.norm.cdf(x1, loc=mu, scale=sigma)
@@ -42,7 +48,7 @@ def removeDoubleCounts(mPart, mProp, doubleCounts):
     return mPart, mProp
 
 
-def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, muY, muH, muT, deltaT, config, minProp, maxMatches, minNumber4Stats):
+def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT, muI, deltaT, config, minProp, maxMatches, minNumber4Stats):
     '''
     match magic function
     
@@ -51,41 +57,66 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, muY, muH, muT, deltaT,
     minNumber4Stats: min. number of samples to estimate sigmas and mus
     '''
     
-    print("using", sigmaY, sigmaH, sigmaT, muY, muH, muT)  
+    print("using", sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT, muI)  
     
-    fyCenter = (follower1D.roi.sel(ROI_elements="y") +
-                (follower1D.roi.sel(ROI_elements="h")/2))
-    lyCenter = (leader1D.roi.sel(ROI_elements="y") +
-                (leader1D.roi.sel(ROI_elements="h")/2))
+    if sigmaY is not None:
+        fyCenter = (follower1D.roi.sel(ROI_elements="y") +
+                    (follower1D.roi.sel(ROI_elements="h")/2))
+        lyCenter = (leader1D.roi.sel(ROI_elements="y") +
+                    (leader1D.roi.sel(ROI_elements="h")/2))
 
-    diffY = (np.array([fyCenter.values]) -
-             np.array([lyCenter.values]).T)
-    diffT = (np.array([follower1D.capture_time.values]) -
-             np.array([leader1D.capture_time.values]).T).astype(int)*1e-9
-    diffH = (np.array([follower1D.roi.sel(ROI_elements='h').values]) -
-             np.array([leader1D.roi.sel(ROI_elements='h').values]).T)
+        diffY = (np.array([fyCenter.values]) -
+                 np.array([lyCenter.values]).T)
+        propY = probability(
+            diffY,
+            muY,
+            sigmaY,
+            deltaY
+        )
+    else:
+        propY = 1
 
-    propH = probability(
-        np.float32(diffH),
-        np.float32(muH),
-        np.float32(sigmaH),
-        np.float32(deltaH)
-    )
-    propY = probability(
-        np.float32(diffY),
-        np.float32(muY),
-        np.float32(sigmaY),
-        np.float32(deltaY)
-    )
-    propT = probability(
-        np.float32(diffT),
-        np.float32(muT),
-        np.float32(sigmaT),
-        np.float32(deltaT)
-    )
+    if sigmaH is not None:
+        diffH = (np.array([follower1D.roi.sel(ROI_elements='h').values]) -
+                 np.array([leader1D.roi.sel(ROI_elements='h').values]).T)
+
+        propH = probability(
+            diffH,
+            muH,
+            sigmaH,
+            deltaH
+        )
+    else:
+        propH = 1.
+
+    if sigmaT is not None:
+
+        diffT = (np.array([follower1D.capture_time.values]) -
+                 np.array([leader1D.capture_time.values]).T).astype(int)*1e-9
+        propT = probability(
+            diffT,
+            muT,
+            sigmaT,
+            deltaT
+        )
+    else:
+        propT = 1.
     
+    if sigmaI is not None:
+
+        diffI = (np.array([follower1D.capture_id.values]) -
+                 np.array([leader1D.capture_id.values]).T)
+        propI = probability(
+            diffI,
+            muI,
+            sigmaI,
+            deltaI
+        )
+    else:
+        propI = 1.
+
     # estimate joint probability
-    propP = propY*propT*propH
+    propP = propY*propT*propH*propI
     print(propP.shape, propP.dtype)
 
     matchedParticles = {}
@@ -93,7 +124,7 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, muY, muH, muT, deltaT,
 
     # try to solve this from both perspectives
     for camera, prop1, dat2 in zip(
-        [tools.nicerNames(config["leader"]), tools.nicerNames(config["follower"])], 
+        [config["leader"], config["follower"]], 
         [propP, propP.T], 
         [leader1D, follower1D]
     ):
@@ -108,10 +139,10 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, muY, muH, muT, deltaT,
         matchedProbabilities[camera] = xr.DataArray(matchedProbabilities[camera], coords=[range(
             len(dat2.fpid)), range(matchedParticles[camera].shape[1])], dims=["fpidII", 'match'])
 
-    del propH, propP, propY, propT
+    del propH, propP, propY, propT, propI
 
     for reverseFactor in [1, -1]:
-        cam1, cam2 = [tools.nicerNames(config["leader"]), tools.nicerNames(config["follower"])][::reverseFactor]
+        cam1, cam2 = [config["leader"], config["follower"]][::reverseFactor]
 
         matchedParticles[cam1] = matchedParticles[cam1].where(
             matchedProbabilities[cam1] > minProp)
@@ -141,8 +172,8 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, muY, muH, muT, deltaT,
             doubleCounts) == 0, "%s particles have still been matched twice" % cam1
 
     for reverseFactor in [1, -1]:
-        cam1, cam2 = [tools.nicerNames(config["leader"]),
-                      tools.nicerNames(config["follower"])][::reverseFactor]
+        cam1, cam2 = [config["leader"],
+                      config["follower"]][::reverseFactor]
         matchedParticles[cam1] = matchedParticles[cam1][:, 0]
         matchedProbabilities[cam1] = matchedProbabilities[cam1][:, 0]
 
@@ -156,7 +187,7 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, muY, muH, muT, deltaT,
         print("no matched particles")
         return None
 
-    cam1, cam2 = [tools.nicerNames(config["leader"]), tools.nicerNames(config["follower"])]
+    cam1, cam2 = [config["leader"], config["follower"]]
 
     pairs1 = set(zip(
         matchedParticles[cam1].fpidII.values, matchedParticles[cam1].values.astype(int)))
@@ -168,24 +199,28 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, muY, muH, muT, deltaT,
     # sort pairs together
     dats = []
     dats.append(leader1D.isel(
-        fpid=matchedParticles[tools.nicerNames(config["leader"])].fpidII.values.astype(int)))
+        fpid=matchedParticles[config["leader"]].fpidII.values.astype(int)))
     dats.append(follower1D.isel(
-        fpid=matchedParticles[tools.nicerNames(config["leader"])].values.astype(int)))
+        fpid=matchedParticles[config["leader"]].values.astype(int)))
 
     for dd, d1 in enumerate(dats):
 
-        tmpPID = deepcopy(d1.fpid)
+        pid = deepcopy(d1.pid.values)
+        file_starttime = deepcopy(d1.file_starttime.values)
         d1 = d1.rename(fpid='pair_id')
         d1 = d1.assign_coords(pair_id=list(
-            range(len(matchedParticles[tools.nicerNames(config["leader"])].fpidII))))
+            range(len(matchedParticles[config["leader"]].fpidII))))
+
+        d1["pid"] = xr.DataArray(pid, coords=[d1.pair_id])
+        d1["file_starttime"] = xr.DataArray(file_starttime, coords=[d1.pair_id])
         dats[dd] = d1
 
     matchedDat = xr.concat(dats, dim='camera')
     matchedDat = matchedDat.assign_coords(
-        camera=[tools.nicerNames(config["leader"]), tools.nicerNames(config["follower"])])
+        camera=[config["leader"], config["follower"]])
     # add propabilities
     matchedDat["matchScore"] = xr.DataArray(
-        matchedProbabilities[tools.nicerNames(config["leader"])
+        matchedProbabilities[config["leader"]
                              ].values.astype(np.float32),
         coords=[matchedDat.pair_id]
     )
@@ -208,9 +243,15 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, muY, muH, muT, deltaT,
         di = di[np.isfinite(di)].astype(int)*1e-9
         new_sigmaT = bn.nanstd(di)
         new_muT = bn.nanmedian(di)
-        print(" match coefficients, ",new_muT, new_muY)
+
+        di = matchedDat.capture_id.diff('camera').values
+        new_sigmaI = bn.nanstd(di)
+        new_muI = bn.nanmedian(di)
+
+        print(" match coefficients, ",new_muY, new_muH,new_muT, new_muI)
     else:
         print("setting match coefficients to NAN")
-        new_sigmaY = new_muY = new_sigmaH = new_muH = new_sigmaT = new_muT = np.nan
+        new_sigmaY = new_muY = new_sigmaH = new_muH = np.nan
+        new_sigmaT = new_muT = new_sigmaT = new_muT = np.nan
     
-    return matchedDat, disputedPairs, new_sigmaY, new_muY, new_sigmaH, new_muH, new_sigmaT, new_muT
+    return matchedDat, disputedPairs, new_sigmaY, new_muY, new_sigmaH, new_muH, new_sigmaT, new_muT, new_sigmaI, new_muI
