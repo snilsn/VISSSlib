@@ -480,9 +480,9 @@ def getEvents(fnames0, config, fname0status=None):
         capture_firsttime = np.datetime64(capture_firsttime)
         capture_lasttime = np.datetime64(capture_lasttime)
 
-        metaDat['capture_starttime'] = xr.DataArray(np.array([capture_starttime]), dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['capture_firsttime'] = xr.DataArray(np.array([capture_firsttime]), dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['capture_lasttime'] = xr.DataArray(np.array([capture_lasttime]), dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['capture_starttime'] = xr.DataArray(np.array([capture_starttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['capture_firsttime'] = xr.DataArray(np.array([capture_firsttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
+        metaDat['capture_lasttime'] = xr.DataArray(np.array([capture_lasttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
         metaDat['serialnumber'] = xr.DataArray([serialnumber], dims=["file_starttime"], coords=[[record_starttime]])
         metaDat['configuration'] = xr.DataArray([configuration], dims=["file_starttime"], coords=[[record_starttime]])
         metaDat['hostname'] = xr.DataArray([hostname], dims=["file_starttime"], coords=[[record_starttime]])
