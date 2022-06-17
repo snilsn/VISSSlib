@@ -563,7 +563,7 @@ def detectParticles(fname,
         return 0
 
     if testMovieFile and (goodFile is not None) and (goodFile != "None"):
-        for fnameV in fnamesV:
+        for fnameV in fnamesV.values():
             # check for broken files:
             process = subprocess.Popen(['ffprobe', fnameV],
                                        stdout=subprocess.PIPE,
@@ -576,10 +576,10 @@ def detectParticles(fname,
                     # Process has finished, read rest of the output
                     break
             if return_code == 0:
-                log.info('OK ', fnameV)
+                log.info('OK '+ fnameV)
                 pass
             else:
-                log.info('BROKEN ', fnameV)
+                log.info('BROKEN ' + fnameV)
                 brokenFile = '%s.broken' % fnameV
                 repairedFile = '%s_fixed.%s' % (".".join(fnameV.split(".")[:-1]), config["movieExtension"])
                 process = subprocess.Popen(['/home/mmaahn/bin/untrunc', goodFile, fnameV],
@@ -590,7 +590,7 @@ def detectParticles(fname,
                     log.info(output.strip())
                     return_code = process.poll()
                     if return_code is not None:
-                        log.info('RETURN CODE', return_code)
+                        log.info('RETURN CODE' + return_code)
                         # Process has finished, read rest of the output
                         for output in process.stdout.readlines():
                             log.info(output.strip())
@@ -601,7 +601,7 @@ def detectParticles(fname,
                 else:
                     log.error('WAS NOT ABLE TO FIX %s'%fnameV)
                     raise RuntimeError
-                log.info('REPAIRED ', fnameV)
+                log.info('REPAIRED '+ fnameV)
 
 
     log.info(f"{fn.year}, {fn.month}, {fn.day}, {fname}")
@@ -638,14 +638,18 @@ def detectParticles(fname,
     #     raise RuntimeError('lengths do not match %i %i ' %
     #                        (nFrames, nFramesVid)) 
 
-    if (nFrames < historySize):
+    if (nFrames <= historySize):
+        # for few frames, better than nothing!
+        historySize = 4
+    
+    if (nFrames <= 4):
         log.info('too few frames %i ' %
                  (nFrames))
 
-        with open('%s.nodata' % fn.fname.metaDetect, 'w') as f:
+        with open('%s.notenoughframes' % fn.fname.metaDetect, 'w') as f:
             f.write('too few frames %i ' %
                     (nFrames))
-        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+        with open('%s.notenoughframes' % fn.fname.level1detect, 'w') as f:
             f.write('too few frames %i ' %
                     (nFrames))
 
