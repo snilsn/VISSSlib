@@ -486,6 +486,26 @@ def checkMotion(subFrame, oldFrame, threshs):
 
     return nChangedPixel
 
+
+# get trainign data
+def _getTrainingFrames(fnamesV, historySize):
+
+    inVidTraining = {}
+    for nThread, fnameV in fnamesV.items():
+        inVidTraining[nThread] = cv2.VideoCapture(fnameV)
+
+    trainingFrames = []
+    inVidTrainingIter = itertools.cycle(list(inVidTraining.values()))
+    for tt in range(historySize):
+        ret, frame = next(inVidTrainingIter).read()
+        if frame is not None:
+            trainingFrames.append(frame)
+
+    for nThread in inVidTraining.keys():
+        inVidTraining[nThread].release()
+    return trainingFrames
+
+
 def detectParticles(fname,
                     settings,
                     testing=False,
@@ -616,12 +636,29 @@ def detectParticles(fname,
     nFrames = len(metaData.capture_time)
     pps = range(nFrames)
 
-    inVid = {}
-    nFramesVid = 0
-    for nThread, fnameV in fnamesV.items():
-        inVid[nThread] = cv2.VideoCapture(fnameV)
-        nFramesVid += int(inVid[nThread].get(cv2.CAP_PROP_FRAME_COUNT))
+    trainingFrames = _getTrainingFrames(fnamesV, historySize)
+    log.info(f"found {len(trainingFrames)} for training.")
+    fname1 = deepcopy(fname)
+    # to few data, look into old files
+    ii = 0
+    while len(trainingFrames) < historySize:
+        fname11 = files.Filenames(fname1,config).prevFile()
 
+        if (ii > 5) or (fname11 is None):
+            with open('%s.notenoughframes' % fn.fname.level1detect, 'w') as f:
+                f.write('too few frames %i ' %
+                        (nFrames))
+            log.error('%s too few frames %i ' %
+                        (fn.fname.level1detect, nFrames))
+            sys.exit(0)
+
+        fnamesV1 = files.Filenames(fname11, config).fnameAllThreads
+        trainingFrames1 = _getTrainingFrames(fnamesV1, historySize)
+        log.warning(f"added {len(trainingFrames1)} from {ii} previous file {fname11}.")
+        trainingFrames = trainingFrames1 + trainingFrames
+
+        fname1 = fname11
+        ii+=1
     # lets assume that dropped rames are all at the end now and we figured all the other issues out
 
     # if ((site == 'mosaic') and nFrames+nDroppedFrames-1 == nFramesVid): 
@@ -638,22 +675,6 @@ def detectParticles(fname,
     #     raise RuntimeError('lengths do not match %i %i ' %
     #                        (nFrames, nFramesVid)) 
 
-    if (nFrames <= historySize):
-        # for few frames, better than nothing!
-        historySize = 4
-    
-    if (nFrames <= 4):
-        log.info('too few frames %i ' %
-                 (nFrames))
-
-        with open('%s.notenoughframes' % fn.fname.metaDetect, 'w') as f:
-            f.write('too few frames %i ' %
-                    (nFrames))
-        with open('%s.notenoughframes' % fn.fname.level1detect, 'w') as f:
-            f.write('too few frames %i ' %
-                    (nFrames))
-
-        sys.exit(0)
 
     snowParticles = detectedParticles(
         maxDarkestPoint=130,  # 100 # 40,
@@ -665,24 +686,30 @@ def detectParticles(fname,
         cropImage=cropImage
     )
 
-    inVidIter = itertools.cycle(list(inVid.values()))
-    for tt in pps[:historySize]:
-        print('training', tt)
-        ret, frame = next(inVidIter).read()
+    #just in case we have now too many frames by opening older files
+    trainingFrames = trainingFrames[-historySize:]
+
+    # do training
+    for ff, frame in enumerate(trainingFrames):
+
         res = snowParticles.update(frame,
-                                   tt,
-                                   int(metaData.capture_id[tt].values),
-                                   int(metaData.record_id[tt].values),
-                                   metaData.capture_time[tt].values,
-                                   metaData.record_time[tt].values,
+                                   ff,
+                                   -99,
+                                   -99,
+                                   -99,
+                                   -99,
                                    training=True)
 
-    for nThread in inVid.keys():
-        inVid[nThread].release()
-        inVid[nThread] = cv2.VideoCapture(fnamesV[nThread])
+
+        log.info('training %i' % ff)
 
     foundParticles = np.zeros((nFrames, len(Dbins)))
     movingObjects = np.zeros((nFrames))
+
+
+    inVid = {}
+    for nThread, fnameV in fnamesV.items():
+        inVid[nThread] = cv2.VideoCapture(fnameV)
 
     frame = None
     for pp in pps:
