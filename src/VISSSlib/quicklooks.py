@@ -39,7 +39,8 @@ def crop(image):
     return image[np.min(y_nonzero):np.max(y_nonzero)+1, np.min(x_nonzero):np.max(x_nonzero)+1]
 
 
-def createLv1Quicklook(timestamp, camera, config, lv2Version,
+def createLevel1detectQuicklook(timestamp, camera, config, 
+                       version = __version__,
                        minBlur=100,
                        minSize=17,
                        container_width=200,
@@ -63,7 +64,7 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
     font = ImageFont.truetype(f"{mpl_ttf_dir}/DejaVuSans.ttf", 35)
     fontL = ImageFont.truetype(f"{mpl_ttf_dir}/DejaVuSans.ttf", 16)
 
-    ff = files.FindFiles(timestamp, camera, config, lv2Version)
+    ff = files.FindFiles(timestamp, camera, config, version)
 
     site = config["site"]
 
@@ -77,7 +78,7 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
         print("NO DATA YET ", ff.quicklook.level1detect)
         return None, None
 
-    if not ff.isCompleteL1:
+    if not ff.isCompleteL1detect:
         print("NOT COMPLETE YET %i/%i %s" %
               (len(ff.listFilesExt("level1detect")), len(ff.listFiles("level0")), ff.quicklook.level1detect))
 #         if (len(ff.listFilesExt("level1detect")) == len(ff.listFiles("level0"))):
@@ -96,8 +97,11 @@ def createLv1Quicklook(timestamp, camera, config, lv2Version,
         try:
             dat2 = xr.open_dataset(fname2)
         except FileNotFoundError:
-            print("FileNotFoundError (probably no data)", fname2)
-            continue
+            if os.path.isfile(f"{fname2}.nodata"):
+                continue
+            else:
+                raise FileNotFoundError(fname2)
+
         dat2 = dat2[["Dmax", "blur", "touchesBorder",
                      "record_time", "record_id", "roi"]]
         dat2 = dat2.where((dat2.blur > minBlur) & (dat2.Dmax > minSize) & (

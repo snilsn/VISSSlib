@@ -2,8 +2,13 @@
 
 import yaml
 import warnings
+import datetime
+
 from addict import Dict
 from copy import deepcopy
+
+import pandas as pd
+
 
 LOGGING_CONFIG = { 
     'version': 1,
@@ -66,3 +71,31 @@ def otherCamera(camera, config):
     else:
         raise ValueError
 
+def getDateRange(nDays, config):
+    if nDays == 0:
+        if config["end"] == "today":
+            end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        else:
+            end = config["end"]
+
+        days = pd.date_range(
+            start=config["start"],
+            end=end,
+            freq="1D",
+            tz=None,
+            normalize=True,
+            name=None,
+            inclusive=None
+        )
+    else:
+        end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        days = pd.date_range(
+            end=end,
+            periods=nDays,
+            freq="1D",
+            tz=None,
+            normalize=True,
+            name=None,
+            inclusive=None
+        )
+    return days

@@ -21,7 +21,7 @@ from . import __version__
 
 
 dailyLevels = ["metaEvents", "metaMatchCoefficients"]
-fileLevels = ["level1detect", "level1match", "level1track", "metaFrames"]#, "metaFixedCaptureId"]
+fileLevels = ["level1detect", "level1match", "level1track", "metaFrames", "metaDetection"]#, "metaFixedCaptureId"]
 quicklookLevelsSep = ["metaFrames", "metaEvents", "level1detect", "level1match"]
 quicklookLevelsComb = [ "matchCoefficients"]
 imageLevels = ["imagesL1detect"]
@@ -106,17 +106,16 @@ class FindFiles(object):
     @functools.lru_cache
     def listFilesExt(self, level):
         return sorted(filter( os.path.isfile,
-                                glob.glob(self.fnamesPatternExt[level]) ))
+                                glob.glob(self.fnamesPatternExt[level])+glob.glob(self.fnamesPattern[level]) ))
     
+    @property
+    def isCompleteL1detect(self):
+        return (len(self.listFiles("level0")) == len(self.listFilesExt("level1detect")))
 
-    @functools.lru_cache
-    def isCompleteL1(self):
-        return (len(self.listFiles("level0")) == len(self.listFilesExt("level1")))
 
-
-    @functools.lru_cache
-    def isCompleteL3(self):
-        return (len(self.listFiles("level2")) == len(self.listFilesExt("level3Ext")))
+    # @property
+    # def isCompleteL3(self):
+    #     return (len(self.listFiles("level2")) == len(self.listFilesExt("level3Ext")))
 
 
     def createQuicklookDirs(self):

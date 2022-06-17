@@ -3,6 +3,7 @@
 import sys
 import os
 import itertools
+import subprocess
 
 # import matplotlib.pyplot as plt
 import numpy as np
@@ -492,6 +493,7 @@ def detectParticles(fname,
                     historySize=20,
                     minDmax4Plotting=17,
                     minBlur4Plotting=100,
+                    testMovieFile = True,
                     ):
 
     logging.config.dictConfig(tools.get_logging_config('detection_run.log'))
@@ -544,27 +546,63 @@ def detectParticles(fname,
 
     fnameM = [f.replace(config["movieExtension"], "txt") for f in fnamesV.values()]
 
-    metaData, nDroppedFrames = metadata.getMetaData(
-        fnameM, camera, config, testMovieFile=True)
+    # metaData, nDroppedFrames = metadata.getMetaData(
+    #     fnameM, camera, config, testMovieFile=True)
+    metaData = xr.open_dataset(fn.fname.metaFrames)
 
-    if metaData is None:
-        log.error('ERROR Unable to get meta data: ' + fname)
-        raise RuntimeError('ERROR Unable to get meta data: ' + fname)
+    # if metaData is None:
+    #     log.error('ERROR Unable to get meta data: ' + fname)
+    #     raise RuntimeError('ERROR Unable to get meta data: ' + fname)
     if len(metaData.capture_time) == 0:
         log.info('nothing moves: ' + fname)
 
-        with open('%s.nodata' % fn.fname.metaFrames, 'w') as f:
+        with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
             f.write('no data')
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data')
-
         return 0
 
-    # clean up memory if requried
-    try:
-        del foundParticles, snowParticlesXR, snowParticles
-    except:
-        pass
+    if testMovieFile and (goodFile is not None) and (goodFile != "None"):
+        for fnameV in fnamesV:
+            # check for broken files:
+            process = subprocess.Popen(['ffprobe', fnameV],
+                                       stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE,
+                                       universal_newlines=True)
+            while True:
+                output = process.stdout.readline()
+                return_code = process.poll()
+                if return_code is not None:
+                    # Process has finished, read rest of the output
+                    break
+            if return_code == 0:
+                log.info('OK ', fnameV)
+                pass
+            else:
+                log.info('BROKEN ', fnameV)
+                brokenFile = '%s.broken' % fnameV
+                repairedFile = '%s_fixed.%s' % (".".join(fnameV.split(".")[:-1]), config["movieExtension"])
+                process = subprocess.Popen(['/home/mmaahn/bin/untrunc', goodFile, fnameV],
+                                           stdout=subprocess.PIPE,
+                                           universal_newlines=True)
+                while True:
+                    output = process.stdout.readline()
+                    log.info(output.strip())
+                    return_code = process.poll()
+                    if return_code is not None:
+                        log.info('RETURN CODE', return_code)
+                        # Process has finished, read rest of the output
+                        for output in process.stdout.readlines():
+                            log.info(output.strip())
+                        break
+                if return_code == 0:
+                    os.rename(fnameV, brokenFile)
+                    os.rename(repairedFile, fnameV)
+                else:
+                    log.error('WAS NOT ABLE TO FIX %s'%fnameV)
+                    raise RuntimeError
+                log.info('REPAIRED ', fnameV)
+
 
     log.info(f"{fn.year}, {fn.month}, {fn.day}, {fname}")
     fn.createDirs()
@@ -584,25 +622,27 @@ def detectParticles(fname,
         inVid[nThread] = cv2.VideoCapture(fnameV)
         nFramesVid += int(inVid[nThread].get(cv2.CAP_PROP_FRAME_COUNT))
 
-    if ((site == 'mosaic') and nFrames+nDroppedFrames-1 == nFramesVid): 
-        log.warning('lengths do not match %i %i (bug of MOSAiC C code) ' %
-                    (nFrames+nDroppedFrames-1, nFramesVid)) 
-    elif ((site == 'mosaic') and nFrames+nDroppedFrames == nFramesVid-1):
-        log.warning('lengths do not match %i %i (bug of MOSAiC C code) ' %
-                    (nFrames+nDroppedFrames, nFramesVid-1))
+    # lets assume that dropped rames are all at the end now and we figured all the other issues out
 
-    elif (nFrames+nDroppedFrames != nFramesVid): 
-        log.error('lengths do not match %i %i ' %
-                  (nFrames+nDroppedFrames, nFramesVid)) 
+    # if ((site == 'mosaic') and nFrames+nDroppedFrames-1 == nFramesVid): 
+    #     log.warning('lengths do not match %i %i (bug of MOSAiC C code) ' %
+    #                 (nFrames+nDroppedFrames-1, nFramesVid)) 
+    # elif ((site == 'mosaic') and nFrames+nDroppedFrames == nFramesVid-1):
+    #     log.warning('lengths do not match %i %i (bug of MOSAiC C code) ' %
+    #                 (nFrames+nDroppedFrames, nFramesVid-1))
 
-        raise RuntimeError('lengths do not match %i %i ' %
-                           (nFrames, nFramesVid)) 
+    # elif (nFrames+nDroppedFrames != nFramesVid): 
+    #     log.error('lengths do not match %i %i ' %
+    #               (nFrames+nDroppedFrames, nFramesVid)) 
 
-    elif (nFrames < historySize):
+    #     raise RuntimeError('lengths do not match %i %i ' %
+    #                        (nFrames, nFramesVid)) 
+
+    if (nFrames < historySize):
         log.info('too few frames %i ' %
                  (nFrames))
 
-        with open('%s.nodata' % fn.fname.metaFrames, 'w') as f:
+        with open('%s.nodata' % fn.fname.metaDetect, 'w') as f:
             f.write('too few frames %i ' %
                     (nFrames))
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
@@ -747,7 +787,7 @@ def detectParticles(fname,
     comp = dict(zlib=True, complevel=5)
     encoding = {
         var: comp for var in metaData.data_vars}
-    metaData.to_netcdf(fn.fname.metaFrames, encoding=encoding)
+    metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
 
     if hasData and not testing:
         snowParticlesXR = snowParticles.collectResults()
@@ -755,7 +795,7 @@ def detectParticles(fname,
         comp = dict(zlib=True, complevel=5)
         encoding = {var: comp for var in snowParticlesXR.data_vars}
 
-        snowParticlesXR.to_netcdf(fn.fname.level1detect, encoding=encoding)
+        snowParticlesXR.to_netcdf(fn.fname.level1detect, encoding=encoding, engine="netcdf4")
 
     else:
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
