@@ -617,7 +617,11 @@ def detectParticles(fname,
                         break
                 if return_code == 0:
                     os.rename(fnameV, brokenFile)
-                    os.rename(repairedFile, fnameV)
+                    try:
+                        os.rename(repairedFile, fnameV)
+                    except FileNotFoundError:
+                        #sometime utrunc names the files mp4?!
+                        os.rename(repairedFile.replace(".mp4",f'.{config["movieExtension"]}'), fnameV)
                 else:
                     log.error('WAS NOT ABLE TO FIX %s'%fnameV)
                     raise RuntimeError('WAS NOT ABLE TO FIX %s'%fnameV)
