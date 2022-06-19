@@ -610,7 +610,7 @@ def detectParticles(fname,
                     log.info(output.strip())
                     return_code = process.poll()
                     if return_code is not None:
-                        log.info('RETURN CODE' + return_code)
+                        log.info('RETURN CODE %i' % return_code)
                         # Process has finished, read rest of the output
                         for output in process.stdout.readlines():
                             log.info(output.strip())
@@ -620,7 +620,7 @@ def detectParticles(fname,
                     os.rename(repairedFile, fnameV)
                 else:
                     log.error('WAS NOT ABLE TO FIX %s'%fnameV)
-                    raise RuntimeError
+                    raise RuntimeError('WAS NOT ABLE TO FIX %s'%fnameV)
                 log.info('REPAIRED '+ fnameV)
 
 
@@ -638,8 +638,9 @@ def detectParticles(fname,
 
     trainingFrames = _getTrainingFrames(fnamesV, historySize)
     log.info(f"found {len(trainingFrames)} for training.")
+
+    # to few data in trainign data, look into previous files
     fname1 = deepcopy(fname)
-    # to few data, look into old files
     ii = 0
     while len(trainingFrames) < historySize:
         fname11 = files.Filenames(fname1,config).prevFile()
@@ -659,8 +660,10 @@ def detectParticles(fname,
 
         fname1 = fname11
         ii+=1
-    # lets assume that dropped rames are all at the end now and we figured all the other issues out
+    #just in case we have now too many frames by adding older files
+    trainingFrames = trainingFrames[-historySize:]
 
+    # lets assume that dropped rames are all at the end now and we figured all the other issues out
     # if ((site == 'mosaic') and nFrames+nDroppedFrames-1 == nFramesVid): 
     #     log.warning('lengths do not match %i %i (bug of MOSAiC C code) ' %
     #                 (nFrames+nDroppedFrames-1, nFramesVid)) 
@@ -686,12 +689,10 @@ def detectParticles(fname,
         cropImage=cropImage
     )
 
-    #just in case we have now too many frames by opening older files
-    trainingFrames = trainingFrames[-historySize:]
 
     # do training
     for ff, frame in enumerate(trainingFrames):
-
+        #meta data does not matter fro training
         res = snowParticles.update(frame,
                                    ff,
                                    -99,
@@ -738,10 +739,26 @@ def detectParticles(fname,
 
         ret, frame = inVid[nThread].read()
         if frame is None:
-            raise ValueError('TOO FEW FRAMES????')
+            # there is a known problem that a movie file is broken if it contains
+            # only a single frame. this happens sometimes for a new measurement
+            # because everything is moving for the first frame. just skip it
+            # because it is only a single frame 
+            firstRecordedFrame = metaData1.nMovingPixel.values[0] == (config.frame_height * config.frame_width)
+            singleFrameInFile = (np.sum(metaData.nThread == nThread) == 1)
 
-        threshs = np.array([20, 30, 40, 60, 80, 100, 120])
-        nChangedPixel = checkMotion(frame, oldFrame, threshs)
+            if firstRecordedFrame and singleFrameInFile:
+                log.warning("detected single frame issue %s thread %i"%(fname,nThread))
+                with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+                    f.write('no data (single frame problem)')  
+                continue
+            else:
+                raise ValueError('TOO FEW FRAMES???? %i of %i, %s thread %i'%(pp,nFrames,fname,nThread))
+
+        try:
+            nChangedPixel = metaData1.nMovingPixel.values
+        except AttributeError:
+            # mosaic meta data does not inlcude # of moving pixels
+            nChangedPixel = checkMotion(frame, oldFrame, config.threshs)
 
         passesThreshold = nChangedPixel >= minMovingPixels
         if not passesThreshold.any():
