@@ -41,8 +41,6 @@ def crop(image):
 
 def createLevel1detectQuicklook(timestamp, camera, config, 
                        version = __version__,
-                       minBlur=100,
-                       minSize=17,
                        container_width=200,
                        container_height_max=300,
                        nTiles=60,
@@ -51,6 +49,9 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                        readParticlesFromFiles=True,
                        skipExisting=True,
                        ):
+
+    minBlur = config["minBlur4Plotting"]
+    minSize = config["minDmax4Plotting"]
 
     if type(config) is str:
         config = readSettings(config)
@@ -74,7 +75,12 @@ def createLevel1detectQuicklook(timestamp, camera, config,
         print("SKIPPING - file exists", ff.quicklook.level1detect)
         return None, None
 
-    if (len(ff.listFiles("level1detect")) == 0) and (len(ff.listFiles("level0")) > 0):
+    if site != "mosaic":
+        if (len(ff.listFiles("level0")) == 0) and (len(ff.listFiles("level0status")) == 0):
+            print("NO DATA YET (TRANSFERRED?)", ff.quicklook.level1detect)
+            return None, None
+
+    if (len(ff.listFilesExt("level1detect")) == 0) and (len(ff.listFiles("level0")) > 0):
         print("NO DATA YET ", ff.quicklook.level1detect)
         return None, None
 
@@ -98,6 +104,10 @@ def createLevel1detectQuicklook(timestamp, camera, config,
             dat2 = xr.open_dataset(fname2)
         except FileNotFoundError:
             if os.path.isfile(f"{fname2}.nodata"):
+                continue
+            elif os.path.isfile(f"{fname2}.broken.txt"):
+                continue
+            elif os.path.isfile(f"{fname2}.notenoughframes"):
                 continue
             else:
                 raise FileNotFoundError(fname2)
@@ -547,3 +557,176 @@ def createMetaCoefQuicklook(case, config, version=__version__, skipExisting=True
     fig.savefig(outFile)
     return outFile, fig
 
+
+def metaFramesQuicklook(
+                case, camera, config, version=__version__, skipExisting=True):
+
+    """
+    Anja Stallmach 2022
+
+    """
+
+    if type(config) is str:
+        config = readSettings(config)
+        
+
+    global metaDats
+    metaDats = []
+
+    camera_new= camera.split('_')[0]+'-'+camera.split('_')[1]
+
+
+    #get level 0 file names
+    ff = files.FindFiles(case, camera, config, version)
+    fOut = ff.quicklook.metaFrames
+
+
+    if skipExisting and os.path.isfile(fOut):
+        print(case, camera, "skip exisiting")
+        return None, None
+
+
+    print(case, camera, fOut)
+
+    if len(ff.listFiles("level0")) == 0 and len(ff.listFiles("level0status")) == 0:
+        print(case, "no data")
+
+        return None, None
+
+    try:
+        level0status = ff.listFiles("level0status")[0]
+    except IndexError:
+        level0status = None
+
+    print("reading events")
+    if len(ff.listFiles("metaEvents")) == 0:
+        print(f'event data not found')
+        return None, None
+    try:
+        events = xr.open_dataset(ff.listFiles("metaEvents")[0])
+    except :
+        print(f'{ff.listFiles("metaEvents")[0]} broken')
+        return None, None
+
+    if not ff.isCompleteMetaFrames:
+        print(f'meta frames not complete')
+        return None, None
+
+    #iterate to get meta data
+    # if len(ff.listFiles("metaFrames")) > 0:
+    #     print("reading metaFrames")
+        # try: #faster?
+        #     metaDats = xr.open_mfdataset(ff.listFiles("metaFrames"), combine="by_coords")
+        # except ValueError:
+        #     metaDats = xr.open_mfdataset(ff.listFiles("metaFrames"), combine="nested")
+
+    # else:
+    #     print(f'metaFrames not found')
+    #     return None, None
+    print("reading metaFrames")
+    metaDats = []
+    for fname1 in ff.listFiles("metaFrames"):
+        metaDat = xr.open_dataset(fname1)
+        keys = [ "capture_time"]
+        if "queue_size" in metaDat.variables:
+            keys.append("queue_size")
+        else:
+            keys.append("record_time")
+        metaDat = metaDat[keys]
+        metaDats.append(deepcopy(metaDat))
+        metaDat.close()
+    if len(metaDats) == 0:
+        metaDats = None
+    else:
+        metaDats = xr.concat(metaDats, dim='capture_time')
+        metaDats = metaDats.sortby('capture_time')
+
+    ts =  events.file_starttime.where((events.event == 'sleep-trigger') | (events.event == 'stop-trigger'))
+
+    print("plotting")
+    #plotting
+    fig, (ax1, ax2, ax3) = plt.subplots(3, figsize=(20,15), gridspec_kw={'hspace':0.3})
+    # plt.rcParams['text.usetex'] = False
+    # plt.rcParams['lines.linewidth'] = 1.5
+    mid = (fig.subplotpars.right + fig.subplotpars.left)/2
+    plt.suptitle('VISSS Status-Plot \n'+f'{ff.year}-{ff.month}-{ff.day}'+', '+config["name"]+'', fontsize=25, y=0.995, fontweight='bold', x=mid)
+    fig.text(mid, 0.07, 'time', fontsize=20, ha='center')
+
+    
+    if metaDats is not None:
+        if "queue_size" in keys:
+            queue=metaDats.queue_size
+            ax1.plot(metaDats.capture_time, queue)
+            ax1.set_ylabel('frames in queue', fontsize=20)
+        else:
+            delay=(metaDats.record_time-metaDats.capture_time).astype(int)/1e9
+            ax1.plot(metaDats.capture_time, delay)
+            ax1.set_ylabel('record delay [s]', fontsize=20)
+
+    ylim = ax1.get_ylim() 
+    ax1.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
+    ax1.set_title(r"$\bf{" + str(camera_new) + "}$""\n""queue size", fontsize=20)
+    ax1.set_ylim(ylim)
+    ax1.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
+    ax1.tick_params(axis='both', labelsize=15)
+    ax1.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+    ax1.grid()
+
+    if metaDats is not None:
+        frames=metaDats.capture_time.notnull().resample(capture_time="1T").sum()
+        ax2.plot(frames.capture_time, frames)
+    ylim = [0,config.fps*60*1.1]
+    ax2.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
+    ax2.set_ylim(ylim)
+    ax2.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
+    ax2.set_title('total frames / min', fontsize=20)
+    ax2.set_ylabel('frames', fontsize=20)
+    ax2.tick_params(axis='both', labelsize=15)
+    ax2.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+    ax2.grid()
+
+    if len(events.blocking.isel(blockingThreshold=[2, 4, 6, 8, 10]).dropna("file_starttime")) != 0:
+        events.blocking.isel(blockingThreshold=[2, 4, 6, 8, 10]).dropna("file_starttime").plot.line(x="file_starttime")
+        ylim = [0,1]
+        ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5)
+        ax3.set_ylim(ylim)
+        ax3.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
+        ax3.set_title('blocking', fontsize=20)
+        ax3.set_ylabel('pixels below \n blocking threshold', fontsize=20)
+        ax3.set_xlabel('')
+        plt.setp(ax3.get_xticklabels(), rotation=False, ha="center", rotation_mode="anchor")
+        ax3.tick_params(axis='both', labelsize=15)
+        ax3.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+        ax3.grid()
+
+    else: 
+        ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5)
+        ax3.set_ylim(0,1)
+        ax3.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
+        ax3.set_title('blocking', fontsize=20)
+        ax3.set_ylabel('pixels below \n blocking threshold', fontsize=20)
+        ax3.set_xlabel('')
+        ax3.tick_params(axis='both', labelsize=15)
+        ax3.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+        ax3.grid()
+
+    firstEvent = True
+    for event in events.event:
+        if str(event.values).startswith("start"):
+            for bx in [ax1,ax2,ax3]:
+                if firstEvent:
+                    label="restarted"
+                    firstEvent = False
+                else:
+                    label = None
+                bx.axvline(event.file_starttime.values, color="red", ls=":", label=label)
+
+    ax1.legend(fontsize=15, bbox_to_anchor=(1, 1.3))
+
+    ff.createQuicklookDirs()
+    fig.savefig(fOut)
+
+    if metaDats is not None: metaDats.close()
+    events.close()
+    
+    return fOut, fig

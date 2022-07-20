@@ -19,6 +19,29 @@ from . import metadata
 from . import __version__
 
 
+
+def loopMetaFramesQuicklooks(settings, version=__version__, skipExisting=True, nDays=0):
+
+    config = tools.readSettings(settings)
+    instruments = config["instruments"]
+    computers = config["computers"]
+    
+    pathOut='/projekt1/ag_maahn/astallmach/VISSS/StatusPlots' #change to final path
+    
+    
+    days = tools.getDateRange(nDays, config)
+
+
+    for dd in days:
+        year = str(dd.year)
+        month = "%02i" % dd.month
+        day = "%02i" % dd.day
+        case = f"{year}{month}{day}"
+        print(case)
+        for computer, camera in zip(computers, instruments):
+            quicklooks.metaFramesQuicklook(case, camera, config, version=version, skipExisting=skipExisting)
+
+
 def loopLevel1detectQuicklooks(settings, version=__version__, nDays = 0, skipExisting=True):
 
     config = tools.readSettings(settings)
@@ -37,12 +60,17 @@ def loopLevel1detectQuicklooks(settings, version=__version__, nDays = 0, skipExi
         for computer, camera in zip(computers, instruments):
             #         print(case, computer, camera)
 
-            f, i = quicklooks.createLevel1detectQuicklook(
-                case, camera, config, version=version, skipExisting=skipExisting)
+            fname, fig = quicklooks.createLevel1detectQuicklook(
+                case, 
+                camera, 
+                config, 
+                version=version, 
+                skipExisting=skipExisting,
+                )
             try:
-                i.close()
+                fig.close()
             except AttributeError:
-                pass    
+                pass
     return
 
 
@@ -97,7 +125,7 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
         for camera in config.instruments:
             
             fn = files.FindFiles(case, camera, config, __version__)
-            fnames0 = fn.listFiles("level0")
+            fnames0 = fn.listFiles("level0txt")
 
             if len(fnames0) == 0:
                 print("no data", case )
@@ -130,32 +158,7 @@ def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"
 
     config = tools.readSettings(settings)
 
-    if nDays == 0:
-        if config["end"] == "today":
-            end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
-        else:
-            end = config["end"]
-
-        days = pd.date_range(
-            start=config["start"],
-            end=end,
-            freq="1D",
-            tz=None,
-            normalize=True,
-            name=None,
-            inclusive=None
-        )
-    else:
-        end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
-        days = pd.date_range(
-            end=end,
-            periods=nDays,
-            freq="1D",
-            tz=None,
-            normalize=True,
-            name=None,
-            inclusive=None
-        )
+    days = tools.getDateRange(nDays, config)
 
     if cameras == "all":
         cameras = [config.follower, config.leader]
@@ -171,15 +174,21 @@ def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"
             # find files
             ff = files.FindFiles(case, camera, config)
 
-            for fname0 in ff.listFiles("level0"):
+            for fname0 in ff.listFiles("level0txt"):
 
                 fn = files.Filenames(fname0, config)
-                if os.path.isfile(fn.fname.metaFrames) and skipExisting:
+                if os.path.isfile(fn.fname.metaFrames)  and skipExisting:
                     print("%s exists"%fn.fname.metaFrames)
+                    continue
+
+                if os.path.isfile(f"{fn.fname.metaFrames}.nodata") and skipExisting:
+                    print("%s.nodata exists"%fn.fname.metaFrames)
                     continue
                 
                 if os.path.getsize(fname0.replace(config.movieExtension,"txt")) == 0:
                     print("%s has size 0!"%fname0)
+                    with open(fn.fname.metaFrames+".nodata", "w") as f:
+                        f.write("%s has size 0!"%fname0)
                     continue
                   
                 print(fname0)
@@ -228,18 +237,27 @@ def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, stdout=subp
     camera = fn.camera
     
     fn.createDirs()
-    if skipExisting and (os.path.isfile('%s.broken.txt' % fn.fname.level1detect)):
-        log.info('%s, output broken %s' % (fname, fn.fname.level1detect))
-        return 1
-    elif skipExisting and ( os.path.isfile('%s.nodata' % fn.fname.metaFrames)):
-        log.info('%s, output nodata %s' % (fname, fn.fname.metaFrames))
-        return 1
-    elif skipExisting and ( os.path.isfile('%s' % fn.fname.level1detect)):
-        log.info('%s, output exists %s' % (fname, fn.fname.level1detect))
+    if skipExisting and ( os.path.isfile('%s' % fn.fname.level1detect)):
+        # log.info('output exists %s %s' % (fname, fn.fname.level1detect))
+        return 0
+    elif skipExisting and ( os.path.isfile('%s.nodata' % fn.fname.level1detect)):
+        # log.info('output exists %s %s' % (fname, fn.fname.level1detect))
+        return 0
+    elif skipExisting and (os.path.isfile('%s.broken.txt' % fn.fname.level1detect)):
+        log.error('output broken %s %s' % (fname, fn.fname.level1detect))
         return 1
     elif skipExisting and ( os.path.isfile('%s.processing.txt' % fn.fname.level1detect)):
-        log.info('%s, output processing %s' % (fname, fn.fname.level1detect))
-        return 1
+        log.info('output processing %s %s' % (fname, fn.fname.level1detect))
+        return 0
+    elif skipExisting and ( os.path.isfile('%s.nodata' % fn.fname.metaFrames)):
+        log.info('metaFrames contains no data %s %s' % (fname, fn.fname.metaFrames))
+        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+            f.write('metaFrames contains no data %s %s' % (fname, fn.fname.metaFrames))
+        return 0
+    else:
+        pass
+
+
 
     with open('%s.processing.txt' % fn.fname.level1detect, 'w') as f:
         f.write('%i %s' % (os.getpid(), socket.gethostname()))
@@ -290,32 +308,7 @@ def loopCreateLevel1detect(settings, skipExisting=True, nDays = 0, cameras = "al
     log = logging.getLogger()
 
 
-    if nDays == 0:
-        if config["end"] == "today":
-            end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
-        else:
-            end = config["end"]
-
-        days = pd.date_range(
-            start=config["start"],
-            end=end,
-            freq="1D",
-            tz=None,
-            normalize=True,
-            name=None,
-            inclusive=None
-        )
-    else:
-        end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
-        days = pd.date_range(
-            end=end,
-            periods=nDays,
-            freq="1D",
-            tz=None,
-            normalize=True,
-            name=None,
-            inclusive=None
-        )
+    days = tools.getDateRange(nDays, config)
     if cameras == "all":
         cameras = [config.follower, config.leader]
 

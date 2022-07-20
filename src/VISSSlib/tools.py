@@ -63,24 +63,27 @@ def readSettings(fname):
         config = yaml.load(stream, Loader=yaml.Loader)
     return Dict(config)
 
-def otherCamera(camera, config):
-    if camera == config["instruments"][0]:
-        return config["instruments"][1]
-    elif camera == config["instruments"][1]:
-        return config["instruments"][0]
-    else:
-        raise ValueError
-
 def getDateRange(nDays, config):
+    if config["end"] == "today":
+        end = datetime.datetime.utcnow() 
+        end2 = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+    else:
+        end = end2 = config["end"]
+    
     if nDays == 0:
-        if config["end"] == "today":
-            end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
-        else:
-            end = config["end"]
-
         days = pd.date_range(
             start=config["start"],
-            end=end,
+            end=end2,
+            freq="1D",
+            tz=None,
+            normalize=True,
+            name=None,
+            inclusive=None
+        )
+    elif type(nDays) is str:
+        days = pd.date_range(
+            start=nDays,
+            periods=1,
             freq="1D",
             tz=None,
             normalize=True,
@@ -88,9 +91,8 @@ def getDateRange(nDays, config):
             inclusive=None
         )
     else:
-        end = datetime.datetime.utcnow() - datetime.timedelta(days=1)
         days = pd.date_range(
-            end=end,
+            end=end2,
             periods=nDays,
             freq="1D",
             tz=None,
@@ -99,3 +101,11 @@ def getDateRange(nDays, config):
             inclusive=None
         )
     return days
+
+def otherCamera(camera, config):
+    if camera == config["instruments"][0]:
+        return config["instruments"][1]
+    elif camera == config["instruments"][1]:
+        return config["instruments"][0]
+    else:
+        raise ValueError

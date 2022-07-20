@@ -50,7 +50,7 @@ Mosaic problems with metadata:
 
 
 
-def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, includeHeader=False, idOffset=0, fixIteration=3):
+def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=False, includeHeader=False, idOffset=0, fixIteration=3):
 
     # includeHeader = False since v20220518
 
@@ -165,7 +165,10 @@ def readHeaderData(fname, returnLasttime=False):
             gitBranch = f.readline().split(':')[1].lstrip().rstrip()
             skip = f.readline()
         elif firstLine.startswith('# VISSS file format version: 0.4'):
-            raise NotImplementedError
+            asciiVersion = 0.4
+            gitTag = f.readline().split(':')[1].lstrip().rstrip()
+            gitBranch = f.readline().split(':')[1].lstrip().rstrip()
+            skip = f.readline()
         elif firstLine.startswith('# VISSS file format version: 0.5'):
             raise NotImplementedError
                        
@@ -193,13 +196,19 @@ def readHeaderData(fname, returnLasttime=False):
 
     if returnLasttime:
         lastLines = os.popen("tail -n 2 %s" % fname)
-        secondsButLastLine = lastLines.readline()
+        secondButLastLine = lastLines.readline()
         lastLine = lastLines.readline()
         lastLines.close()
 
         if lastLine.startswith("# Capture time"):
             # ASCII file contains no data!
             capture_lasttime = capture_firsttime
+            last_id = None
+        elif lastLine.startswith("# Last capture time"):
+            # meta data version 0.4 and later
+            capture_lasttime = int(lastLine.split(":")[1])
+            capture_lasttime = datetime.datetime.utcfromtimestamp(
+                                    int(capture_lasttime)*1e-6)
             last_id = None
         else:
             try: 
@@ -209,10 +218,10 @@ def readHeaderData(fname, returnLasttime=False):
                 last_id = lastLine.split(',')[2].lstrip().rstrip()
             except (IndexError, ValueError):
                 print("last line incomplete, using second but last line", fname)
-                capture_lasttime = secondsButLastLine.split(',')[0].lstrip().rstrip()
+                capture_lasttime = secondButLastLine.split(',')[0].lstrip().rstrip()
                 capture_lasttime = datetime.datetime.utcfromtimestamp(
                                     int(capture_lasttime)*1e-6)
-                last_id = secondsButLastLine.split(',')[2].lstrip().rstrip()
+                last_id = secondButLastLine.split(',')[2].lstrip().rstrip()
     else:
         capture_lasttime = None
         last_id = None
@@ -242,12 +251,12 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
 
 
     if record_starttime is None:
-        return None, 0
+        return None
 
     if asciiVersion == 0.2:
         asciiNames = ['capture_time', 'record_time',
                           'capture_id', 'mean', 'std']
-    elif asciiVersion ==  0.3:
+    elif (asciiVersion ==  0.3) or (asciiVersion ==  0.4):
         asciiNames = ['capture_time', 'record_time',
                           'capture_id', 'queue_size'] + list(threshs)
     elif asciiVersion ==  0.1:
@@ -309,7 +318,7 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
             metaDat = metaDatTmp
         except:
             log.error("%s: metaDat[capture_id] not all int" % fname)
-            return None, 0
+            return None
 
     metaDat['capture_time'] = xr.DataArray([datetime.datetime.utcfromtimestamp(
         t1*1e-6) for t1 in metaDat['capture_time'].values], coords=metaDat['capture_time'].coords)
@@ -425,7 +434,7 @@ def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=
     else:
         metaDat['nMovingPixel'] = xr.concat([metaDat[t] for t in threshs], dim=xr.DataArray(
             threshs, dims=['nMovingPixelThresh'], name='nMovingPixelThresh')).T
-        if asciiVersion in [0.3]:
+        if asciiVersion in [0.3, 0.4]:
             # remove threshs columns which are not needed any more due to the concat above
             if includeHeader:
                 metaDat = metaDat[['capture_time', 'record_time', 'capture_id', 'record_id', 'capture_starttime', 'queue_size',
@@ -462,10 +471,10 @@ def getEvents(fnames0, config, fname0status=None):
     bins = [0] + list(range(11,122,10)) + [130]
     bins4xr = list(range(10,132,10))
 
-    for fname0 in fnames0:
+    for fname0Txt in fnames0:
 
-        fname0Img = fname0.replace(config["movieExtension"],"jpg")
-        fname0Txt = fname0.replace(config["movieExtension"],"txt")
+        fname0Img = fname0Txt.replace("txt","jpg")
+        fname0 = fname0Txt.replace("txt",config["movieExtension"])
 
         metaDat = {}
         res = readHeaderData(fname0Txt, returnLasttime=True)

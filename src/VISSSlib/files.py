@@ -76,9 +76,13 @@ class FindFiles(object):
         if config["nThreads"] is None:
             self.fnamesPattern.level0 = '%s/*%s*.%s' % (
                 self.outpath.level0, self.case, config["movieExtension"])
+            self.fnamesPattern.level0txt = '%s/*%s*.%s' % (
+                self.outpath.level0, self.case, "txt")
         else:
             self.fnamesPattern.level0 = '%s/*%s*_0.%s' % (
                 self.outpath.level0, self.case, config["movieExtension"])
+            self.fnamesPattern.level0txt = '%s/*%s*_0.%s' % (
+                self.outpath.level0, self.case, "txt")
         self.fnamesPattern.level0status = f"{self.outpath['level0']}/*_{config['visssGen']}_{camera}_{self.case}_status.txt"
         for dL in dailyLevels:
             self.fnamesPattern[dL] = "%s/%s_V%s_*%s*%s%s%s.nc"%(self.outpath[dL], dL, version, camera, self.year, self.month, self.day)
@@ -101,6 +105,8 @@ class FindFiles(object):
         
     @functools.lru_cache
     def listFiles(self, level):
+        if level not in self.fnamesPattern.keys():
+            raise ValueError(f"Level not found, level must be in {self.fnamesPattern.keys()}")
         return sorted(filter( os.path.isfile,
                                 glob.glob(self.fnamesPattern[level]) ))
     @functools.lru_cache
@@ -111,6 +117,9 @@ class FindFiles(object):
     @property
     def isCompleteL1detect(self):
         return (len(self.listFiles("level0")) == len(self.listFilesExt("level1detect")))
+    @property
+    def isCompleteMetaFrames(self):
+        return (len(self.listFiles("level0txt")) == len(self.listFilesExt("metaFrames")))
 
 
     # @property

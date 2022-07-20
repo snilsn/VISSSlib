@@ -492,9 +492,15 @@ def _getTrainingFrames(fnamesV, historySize):
 
     inVidTraining = {}
     for nThread, fnameV in fnamesV.items():
-        inVidTraining[nThread] = cv2.VideoCapture(fnameV)
+        vid = cv2.VideoCapture(fnameV)
+        if int(vid.get(cv2.CAP_PROP_FRAME_COUNT)) > 0:
+            inVidTraining[nThread] = vid
 
     trainingFrames = []
+    if len(inVidTraining) == 0:
+        # print("empty training file")
+        return trainingFrames
+
     inVidTrainingIter = itertools.cycle(list(inVidTraining.values()))
     for tt in range(historySize):
         ret, frame = next(inVidTrainingIter).read()
@@ -511,8 +517,6 @@ def detectParticles(fname,
                     testing=False,
                     writeImg=True,
                     historySize=20,
-                    minDmax4Plotting=17,
-                    minBlur4Plotting=100,
                     testMovieFile = True,
                     ):
 
@@ -537,6 +541,8 @@ def detectParticles(fname,
     cropImage = config["cropImage"]
     site = config["site"]
     goodFiles = config["goodFiles"]
+    minBlur4Plotting = config["minBlur4Plotting"]
+    minDmax4Plotting = config["minDmax4Plotting"]
 
     fn = files.Filenames(fname, config, __version__)
     camera = fn.camera
@@ -568,8 +574,18 @@ def detectParticles(fname,
 
     # metaData, nDroppedFrames = metadata.getMetaData(
     #     fnameM, camera, config, testMovieFile=True)
-    metaData = xr.open_dataset(fn.fname.metaFrames)
-
+    try:
+        metaData = xr.open_dataset(fn.fname.metaFrames)
+    except FileNotFoundError:
+        if os.path.isfile(f"{fn.fname.metaFrames}.nodata"):
+            with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
+                f.write('no data in %s'%fn.fname.metaFrames)
+            with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+                f.write('no data in %s'%fn.fname.metaFrames)
+            log.warning('metaFrames contains no data: ' + fn.fname.metaFrames)
+        else:
+            log.warning('metaFrames data not found: ' + fn.fname.metaFrames)
+        return 0
     # if metaData is None:
     #     log.error('ERROR Unable to get meta data: ' + fname)
     #     raise RuntimeError('ERROR Unable to get meta data: ' + fname)

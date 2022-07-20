@@ -42,7 +42,7 @@ class VideoReader(cv2.VideoCapture):
             if saveMode:
                 if int(self.get(cv2.CAP_PROP_POS_FRAMES)) < ii:
                     while(int(self.get(cv2.CAP_PROP_POS_FRAMES)) < ii):
-                        print('fast forwarding', int(self.get(cv2.CAP_PROP_POS_FRAMES)), ii, )
+                        # print('fast forwarding', int(self.get(cv2.CAP_PROP_POS_FRAMES)), ii, )
                         _, _ = self.read()
                 elif int(self.get(cv2.CAP_PROP_POS_FRAMES)) > ii:
                     raise RuntimeError('Cannot go back in save mode')

@@ -34,7 +34,10 @@ def main():
 
     elif sys.argv[1] == "scripts.loopCreateMetaFrames":
         settings = sys.argv[2]
-        nDays = int(sys.argv[3])
+        if int(sys.argv[3])<1000:
+            nDays = int(sys.argv[3])
+        else:
+            nDays = str(sys.argv[3])
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
@@ -90,6 +93,20 @@ def main():
         scripts.loopMetaCoefQuicklooks(settings, version=version, skipExisting=skipExisting)
 
 
+    elif sys.argv[1] == "scripts.loopMetaFramesQuicklooks":
+        settings = sys.argv[2]
+        if int(sys.argv[3])<1000:
+            nDays = int(sys.argv[3])
+        else:
+            nDays = str(sys.argv[3])
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+
+        scripts.loopMetaFramesQuicklooks(settings, nDays=nDays, skipExisting=skipExisting)
+
+
     elif sys.argv[1] == "detection.detectParticles":
 
         fname = sys.argv[2]
@@ -102,13 +119,21 @@ def main():
     elif sys.argv[1] == "scripts.loopCreateLevel1detect":
 
         settings = sys.argv[2]
-        nDays = int(sys.argv[3])
+        if int(sys.argv[3])<1000:
+            nDays = int(sys.argv[3])
+        else:
+            nDays = str(sys.argv[3])
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
             skipExisting = True
 
         scripts.loopCreateLevel1detect(settings, skipExisting=skipExisting, nDays = nDays, cameras = "all", nCPU=None)
+
+
+
+
+
 
 
     else:
