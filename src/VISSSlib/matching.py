@@ -5,8 +5,10 @@
 import numpy as np
 import xarray as xr
 import scipy.stats
+import pandas as pd
 #import av
 import bottleneck as bn
+import pyOptimalEstimation as pyOE
 
 import logging
 log = logging.getLogger()
@@ -18,6 +20,87 @@ from . import tools
 
 deltaY = deltaH = deltaI = 1.
 
+
+def calc_Fz(phi, theta, Ofz, Lx, Lz, Fy):
+    '''
+    Parameters
+    ----------
+    phi : 
+        Follower roll
+    theta :
+        Follower pitch
+    Ofz :
+        Offset Follower z
+    Lx :
+        Leader x coordinate (in common xyz)
+    Lz :
+        Leader z coordinate (in common xyz)
+    Fy :
+        Follower y coordinate (in common xyz)
+        
+    Returns
+    -------
+    Fz :
+        Offset and rotation corrected Follower z coordinate (in common xyz)
+
+    
+    Leader pitch, roll, and yaw as well as Follower yaw assumed to be 0.
+    
+    Olx (offset of leader in x) and Ofy (offset of follower in y) can be 
+    ignored becuase only the difference for Fz is evaluated - 
+    and Ofz can fix all shifts of the coordinate system
+    '''
+    Lzp = Lz #+ Olz
+    Fyp = Fy #+ Ofy
+    Lxp = Lx #+ Olx
+    phi = np.deg2rad(phi)
+    theta = np.deg2rad(theta)
+
+    Fzp = ((np.sin(theta) * Lxp) - (np.sin(phi)*Fyp) + (np.cos(theta)*Lzp))/np.cos(phi)
+    Fz = Fzp - Ofz
+    return Fz
+
+def forward(x, Lx=None, Lz=None, Fy=None):
+    '''
+    forward model for pyOptimalEstimation
+    '''
+    y = calc_Fz(x.phi, x.theta, x.Ofz, Lx, Lz, Fy)
+    y = pd.Series(y, index=np.array(range(len(y))))
+    return y
+
+def retrieveRotation(dat3, x_ap, x_cov_diag, y_cov_diag, verbose=False):
+    '''
+    apply Optimal Estimation to retrieve rotation of cameras
+    '''
+    
+    nPart = len(dat3.pair_id)
+
+    # Leader & Follower z coordinate
+    Lz, Fz = (dat3.roi.sel(ROI_elements="y") +
+                        (dat3.roi.sel(ROI_elements="h")/2)).values
+    
+    # LEader x and Follower y coordinate
+    Lx, Fy = (dat3.roi.sel(ROI_elements="x") +
+                        (dat3.roi.sel(ROI_elements="w")/2)).values
+
+    x_vars = ["phi", "theta", "Ofz"]
+    y_vars = np.array(range(nPart))
+
+    x_cov = np.identity(len(x_vars)) * np.array(x_cov_diag)
+    y_cov = np.identity(nPart) * np.array(y_cov_diag)
+
+    y_obs = Fz
+
+    forwardKwArgs = {"Lz": Lz, "Lx": Lx, "Fy": Fy}
+
+    # create optimal estimation object
+    oe = pyOE.optimalEstimation(
+        x_vars, x_ap, x_cov, y_vars, y_obs, y_cov, forward,
+        forwardKwArgs=forwardKwArgs, verbose=verbose
+        )
+
+    oe.doRetrieval()
+    return oe.x_op, oe.x_op_err
 
 def probability(x, mu, sigma, delta):
 
@@ -48,7 +131,7 @@ def removeDoubleCounts(mPart, mProp, doubleCounts):
     return mPart, mProp
 
 
-def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT, muI, deltaT, config, minProp, maxMatches, minNumber4Stats):
+def doMatch(leader1D, follower1D, sigma, mu, delta, config, minProp, maxMatches, minNumber4Stats, rotate):
     '''
     match magic function
     
@@ -57,9 +140,45 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT,
     minNumber4Stats: min. number of samples to estimate sigmas and mus
     '''
     
-    print("using", sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT, muI)  
+    print("using", sigma, mu, delta)  
     
-    if sigmaY is not None:
+    prop = {}
+    
+    
+    # particle Z position difference in joint coordinate system
+    if "Z" in sigma.keys():
+        
+
+        Fz = (follower1D.roi.sel(ROI_elements="y") +
+                    (follower1D.roi.sel(ROI_elements="h")/2)).values.T
+        Lz = (leader1D.roi.sel(ROI_elements="y") +
+                    (leader1D.roi.sel(ROI_elements="h")/2)).values
+        Fy = (follower1D.roi.sel(ROI_elements="x") +
+                    (follower1D.roi.sel(ROI_elements="w")/2)).values.T
+        Lx = (leader1D.roi.sel(ROI_elements="x") +
+                    (leader1D.roi.sel(ROI_elements="w")/2)).values
+
+
+        Fz = Fz.reshape((1, len(Fz)))
+        Lz = Lz.reshape((len(Lz), 1))
+        Fy = Fy.reshape((1, len(Fy)))
+        Lx = Lx.reshape((len(Lx), 1))
+        
+        Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
+
+        diffZ = Fz-Fz_estimated
+        
+        prop["Z"] = probability(
+            diffZ,
+            mu["Z"],
+            sigma["Z"],
+            delta["Z"]
+        )
+    else:
+        prop["Z"] = 1
+    
+    # particle camera Y position difference
+    if "Y" in sigma.keys():
         fyCenter = (follower1D.roi.sel(ROI_elements="y") +
                     (follower1D.roi.sel(ROI_elements="h")/2))
         lyCenter = (leader1D.roi.sel(ROI_elements="y") +
@@ -67,57 +186,60 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT,
 
         diffY = (np.array([fyCenter.values]) -
                  np.array([lyCenter.values]).T)
-        propY = probability(
+        prop["Y"] = probability(
             diffY,
-            muY,
-            sigmaY,
-            deltaY
+            mu["Y"],
+            sigma["Y"],
+            delta["Y"]
         )
     else:
-        propY = 1
+        prop["Y"] = 1
 
-    if sigmaH is not None:
+    # particle height difference
+    if "H" in sigma.keys():
         diffH = (np.array([follower1D.roi.sel(ROI_elements='h').values]) -
                  np.array([leader1D.roi.sel(ROI_elements='h').values]).T)
 
-        propH = probability(
+        prop["H"] = probability(
             diffH,
-            muH,
-            sigmaH,
-            deltaH
+            mu["H"],
+            sigma["H"],
+            delta["H"]
         )
     else:
-        propH = 1.
+        prop["H"] = 1.
 
-    if sigmaT is not None:
+    # capture_time difference
+    if "T" in sigma.keys():
 
         diffT = (np.array([follower1D.capture_time.values]) -
                  np.array([leader1D.capture_time.values]).T).astype(int)*1e-9
-        propT = probability(
+        prop["T"] = probability(
             diffT,
-            muT,
-            sigmaT,
-            deltaT
+            mu["T"],
+            sigma["T"],
+            delta["T"]
         )
     else:
-        propT = 1.
+        prop["T"] = 1.
     
-    if sigmaI is not None:
+    # capture_id difference
+    if "I" in sigma.keys():
 
         diffI = (np.array([follower1D.capture_id.values]) -
                  np.array([leader1D.capture_id.values]).T)
-        propI = probability(
+        prop["I"] = probability(
             diffI,
-            muI,
-            sigmaI,
-            deltaI
+            mu["I"],
+            sigma["I"],
+            delta["I"]
         )
     else:
-        propI = 1.
+        prop["I"] = 1.
 
     # estimate joint probability
-    propP = propY*propT*propH*propI
-    print(propP.shape, propP.dtype)
+    propJoint = prop["Y"]*prop["T"]*prop["H"]*prop["I"]*prop["Z"]
+    print(propJoint.shape, propJoint.dtype)
 
     matchedParticles = {}
     matchedProbabilities = {}
@@ -125,7 +247,7 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT,
     # try to solve this from both perspectives
     for camera, prop1, dat2 in zip(
         [config["leader"], config["follower"]], 
-        [propP, propP.T], 
+        [propJoint, propJoint.T], 
         [leader1D, follower1D]
     ):
 
@@ -139,7 +261,7 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT,
         matchedProbabilities[camera] = xr.DataArray(matchedProbabilities[camera], coords=[range(
             len(dat2.fpid)), range(matchedParticles[camera].shape[1])], dims=["fpidII", 'match'])
 
-    del propH, propP, propY, propT, propI
+    del propJoint, prop
 
     for reverseFactor in [1, -1]:
         cam1, cam2 = [config["leader"], config["follower"]][::reverseFactor]
@@ -148,12 +270,12 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT,
             matchedProbabilities[cam1] > minProp)
         matchedProbabilities[cam1] = matchedProbabilities[cam1].where(
             matchedProbabilities[cam1] > minProp)
-
+        
         for kk in range(maxMatches):
             u, c = np.unique(
                 matchedParticles[cam1][:, 0], return_counts=True)
             doubleCounts = u[np.where(c > 1)[0]]
-
+            doubleCounts = doubleCounts[np.isfinite(doubleCounts)]
             if len(doubleCounts) != 0:
                 print(
                     cam1, "particles have been matched twice, fixing", kk)
@@ -168,6 +290,8 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT,
         u, c = np.unique(
             matchedParticles[cam1][:, 0], return_counts=True)
         doubleCounts = u[np.where(c > 1)[0]]
+        doubleCounts = doubleCounts[np.isfinite(doubleCounts)]
+
         assert len(
             doubleCounts) == 0, "%s particles have still been matched twice" % cam1
 
@@ -225,33 +349,67 @@ def doMatch(leader1D, follower1D, sigmaY, sigmaH, sigmaT, sigmaI, muY, muH, muT,
         coords=[matchedDat.pair_id]
     )
 
+
     # estimate new offsets, potentially for the next file
 
+    new_mu = {}
+    new_sigma= {}
+    
     if len(matchedDat.pair_id) >= minNumber4Stats:
         yCenter = (matchedDat.roi.sel(ROI_elements='y') +
                    (matchedDat.roi.sel(ROI_elements="h")/2))
         di = yCenter.diff('camera').values
-        new_sigmaY = bn.nanstd(di)
-        new_muY = bn.nanmedian(di)
+        new_sigma["Y"] = bn.nanstd(di)
+        new_mu["Y"] = bn.nanmedian(di)
 
         di = matchedDat.roi.sel(
             ROI_elements='h').diff("camera").values
-        new_sigmaH = bn.nanstd(di)
-        new_muH = bn.nanmedian(di)
+        new_sigma["H"] = bn.nanstd(di)
+        new_mu["H"] = bn.nanmedian(di)
 
         di = matchedDat.capture_time.diff('camera').values
         di = di[np.isfinite(di)].astype(int)*1e-9
-        new_sigmaT = bn.nanstd(di)
-        new_muT = bn.nanmedian(di)
+        new_sigma["T"] = bn.nanstd(di)
+        new_mu["T"] = bn.nanmedian(di)
 
         di = matchedDat.capture_id.diff('camera').values
-        new_sigmaI = bn.nanstd(di)
-        new_muI = bn.nanmedian(di)
+        new_sigma["I"] = bn.nanstd(di)
+        new_mu["I"] = bn.nanmedian(di)
 
-        print(" match coefficients, ",new_muY, new_muH,new_muT, new_muI)
+        print(" match coefficients, ",new_mu)
     else:
         print("setting match coefficients to NAN")
-        new_sigmaY = new_muY = new_sigmaH = new_muH = np.nan
-        new_sigmaT = new_muT = new_sigmaT = new_muT = np.nan
+        new_sigma["Y"] = new_mu["Y"] = new_sigma["H"] = new_mu["H"] = np.nan
+        new_sigma["T"] = new_mu["T"] = new_sigma["T"] = new_mu["T"] = np.nan
     
-    return matchedDat, disputedPairs, new_sigmaY, new_muY, new_sigmaH, new_muH, new_sigmaT, new_muT, new_sigmaI, new_muI
+    return matchedDat, disputedPairs, new_sigma, new_mu
+
+def addPosition(matchedDat, rotate, rotate_err, config):
+    '''
+    add postion variable to match dataset based on retrieved rotation parameters
+    '''
+
+    Fz = (matchedDat.sel(camera=config.follower).roi.sel(ROI_elements="y") +
+                (matchedDat.sel(camera=config.follower).roi.sel(ROI_elements="h")/2)).squeeze()
+    Fy = (matchedDat.sel(camera=config.follower).roi.sel(ROI_elements="x") +
+                (matchedDat.sel(camera=config.follower).roi.sel(ROI_elements="w")/2)).squeeze()
+    Lx = (matchedDat.sel(camera=config.leader).roi.sel(ROI_elements="x") +
+                (matchedDat.sel(camera=config.leader).roi.sel(ROI_elements="w")/2)).squeeze()
+    Lz = (matchedDat.sel(camera=config.leader).roi.sel(ROI_elements="y") +
+                (matchedDat.sel(camera=config.leader).roi.sel(ROI_elements="h")/2)).values
+
+    Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
+
+    matchedDat["position_elements"] = ["x", "y", "z", "z_rotated"]
+    matchedDat["position"] = xr.DataArray([Lx, Fy, Fz, Fz_estimated], coords=[matchedDat.position_elements, matchedDat.pair_id] )
+
+    nid = len(matchedDat.pair_id)
+    matchedDat["rotation"] = np.array(["mean", "err"])
+    matchedDat["phi"] = xr.DataArray(np.ones((nid,2))*np.array([rotate["phi"], rotate_err["phi"]]), coords=[matchedDat.pair_id, matchedDat["rotation"] ] )
+    matchedDat["theta"] = xr.DataArray(np.ones((nid,2))*np.array([rotate["theta"], rotate_err["theta"]]), coords=[matchedDat.pair_id, matchedDat["rotation"] ] )
+    matchedDat["Ofz"] = xr.DataArray(np.ones((nid,2))*np.array([rotate["Ofz"], rotate_err["Ofz"]]), coords=[matchedDat.pair_id, matchedDat["rotation"] ] )
+
+    return matchedDat
+
+
+

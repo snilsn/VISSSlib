@@ -78,7 +78,8 @@ class VideoReaderMeta(object):
 
         self.movFilePattern = movFilePattern
         self.threads = np.unique(self.metaL1.nThread)
-
+        if len(self.threads)>1:
+            self.movFilePattern = self.movFilePattern.replace("_0.", "_{thread}.")
         self.video = {}
         self.position = 0
         self.positions = {}
@@ -104,21 +105,20 @@ class VideoReaderMeta(object):
             self.video[tt].release()
         self._openVideo()
         
-    def getNextFrame(self):
+    def getNextFrame(self, markParticles=False):
         ii = self.position + 1
         if self.metaL2:
-            return self.getFrameByIndexWithParticles(ii)
+            return self.getFrameByIndexWithParticles(ii, markParticles=markParticles)
         else:
             return self.getFrameByIndex(ii)
         
-    def getPrevFrame(self):
+    def getPrevFrame(self, markParticles=False):
         ii = self.position - 1
         if self.metaL2:
-            return self.getFrameByIndexWithParticles(ii)
+            return self.getFrameByIndexWithParticles(ii, markParticles=markParticles)
         else:
             return self.getFrameByIndex(ii)
          
-    @functools.lru_cache(maxsize=100, typed=False)
     def getFrameByIndex(self, ii):
         '''
         like read, but with meta data and appropriate thread
@@ -127,29 +127,41 @@ class VideoReaderMeta(object):
             return False, None, None
         
         try:
-            self.currentMetaL1 = self.metaL1.isel(capture_time=ii)
+            captureTime = self.metaL1.capture_time[ii].values
         except IndexError:
             return False, None, None
-        
-        self.currentThread = int(self.currentMetaL1.nThread.values)
-        rr = int(self.currentMetaL1.record_id.values)
-        self.res, self.curentFrame = self.video[self.currentThread].getFrameByIndex(rr, saveMode=self.saveMode)
-        self.position = ii
-        self.positions[self.currentThread] = self.video[self.currentThread].position
+
+        return self.getFrameByCaptureTime(captureTime)
+
+    @functools.lru_cache(maxsize=100, typed=False)
+    def getFrameByCaptureTime(self, captureTime):
+        '''
+        like read, but with capturetime, meta data and appropriate thread
+        '''
+        try:
+            self.currentMetaL1 = self.metaL1.sel(capture_time=captureTime)
+        except IndexError:
+            self.res = None
+            self.curentFrame = None
+            self.currentMetaL1 = None
+            self.position = None
+        else:
+            self.currentThread = int(self.currentMetaL1.nThread.values)
+            rr = int(self.currentMetaL1.record_id.values)
+            self.res, self.curentFrame = self.video[self.currentThread].getFrameByIndex(rr, saveMode=self.saveMode)
+            self.position = np.where(self.metaL1.capture_time==captureTime)[0][0]
+            self.positions[self.currentThread] = self.video[self.currentThread].position
 
         return self.res, self.curentFrame, self.currentMetaL1
 
-    
-
     @functools.lru_cache(maxsize=100, typed=False)
-    def getFrameByIndexWithParticles(self, ii, markParticles=False, highlightPid=None):
-        '''
-        like read, but with even more meta data and appropriate thread
-        '''
-   
+    def getFrameByCaptureTimeWithParticles(self, captureTime, markParticles=False, highlightPid=None):
+
         assert self.metaL2 is not None
         
-        self.getFrameByIndex(ii)
+        res, _, _ = self.getFrameByCaptureTime(captureTime)
+        if res is None:
+            return None, None, None, None
     
         self.curentFrameC = cv2.cvtColor(self.curentFrame, cv2.COLOR_GRAY2BGR)
 
@@ -178,6 +190,22 @@ class VideoReaderMeta(object):
                             (int(partic1.roi[0]+w+5), int(partic1.roi[1]+self.config['height_offset'])), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
 
         return self.res, self.curentFrameC, self.currentMetaL1, self.currentMetaL2
+
+
+    def getFrameByIndexWithParticles(self, ii, markParticles=False, highlightPid=None):
+        '''
+        like read, but with even more meta data and appropriate thread
+        '''
+   
+        if ii < 0:
+            return False, None, None, None
+        
+        try:
+            captureTime = self.metaL1.capture_time[ii].values
+        except IndexError:
+            return False, None, None, None
+    
+        return self.getFrameByCaptureTimeWithParticles(captureTime, markParticles=markParticles, highlightPid=highlightPid)
 
     
     @property

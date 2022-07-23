@@ -8,7 +8,9 @@ from addict import Dict
 from copy import deepcopy
 
 import pandas as pd
+import numpy as np
 
+from . import files
 
 LOGGING_CONFIG = { 
     'version': 1,
@@ -109,3 +111,104 @@ def otherCamera(camera, config):
         return config["instruments"][0]
     else:
         raise ValueError
+
+def getMode(a):
+    (_, idx, counts) = np.unique(a, return_index=True, return_counts=True)
+    index = idx[np.argmax(counts)]
+    mode = a[index]
+    return a
+
+
+def open_mflevel1detect(fnames, config, removeTouchBorders=True, start=None, end=None):
+    '''
+    helper function to open multiple level1detect files at once
+    '''
+    if type(fnames) is not list:
+        fnames = [fnames]
+        
+    dats = []
+    for fname in fnames:
+        dat = xr.open_dataset(fname)
+        ffl1 = files.FilenamesFromLevel(fname, config)
+
+        if start is not None:
+            dat = dat.isel(pid=(dat.capture_time >= start))
+        if end is not None:
+            dat = dat.isel(pid=(dat.capture_time <= end))
+        if removeTouchBorders:
+            dat = dat.isel(pid=(~dat.touchesBorder.any('side')))
+            
+        dat = dat.assign_coords(
+        file_starttime=[ffl1.datetime64])
+        dat = dat.stack(fpid=["pid", "file_starttime"])
+
+        if len(dat.fpid) ==0:
+            continue
+        
+        dats.append(dat)
+        
+    if len(dats) > 0:
+        dats = xr.concat(dats, dim="fpid")
+        return dats
+    else:
+        return None
+
+def removeBlockedData(dat1D, events, threshold=0.1):
+    '''
+    remove data where window was blocked more than 10%
+    '''
+
+    blocked = (events.blocking.sel(blockingThreshold=50) > threshold)
+   
+    # interpolate blocking status to observed particles
+    isBlocked = blocked.sel(file_starttime=dat1D.capture_time, method="nearest")
+    dat1D.isel(fpid=(~isBlocked))
+    
+    if len(dat1D.fpid) == 0:
+        print("no data after removing blocked data")
+        return None
+    else:
+        return dat1D
+
+
+def estimateCaptureIdDiff(ffl1, graceInterval=2):
+
+    '''
+    estimate capture id difference between two cameras
+    '''
+
+    mfl = xr.open_dataset(ffl1.fname.metaFrames)
+    mff = xr.open_mfdataset(ffl1.filenamesOtherCamera(level="metaFrames", graceInterval=graceInterval))
+
+    nPoints = 500
+    if len(mfl.capture_time)>nPoints:
+        points = np.linspace(0,len(mfl.capture_time),nPoints, dtype=int, endpoint=False)
+    else:
+        points = range(len(mfl.capture_time))
+    idDiffs = []
+    for point in points:
+        absDiff = np.abs(mfl.capture_time.isel(capture_time=point).values - mff.capture_time)
+        pMin = np.min(absDiff).values
+        if pMin < np.timedelta64(1,"ms"):
+            pII = absDiff.argmin().values
+            idDiff = mff.capture_id.values[pII] - mfl.capture_id.isel(capture_time=point).values
+            idDiffs.append(idDiff)
+    mfl.close()
+    mff.close()
+    
+    if len(idDiffs)>1:
+        (vals, idx, counts) = np.unique(idDiffs, return_index=True, return_counts=True)
+        idDiff = vals[np.argmax(counts)]
+        ratioSame = np.sum(idDiffs == idDiff)/len(idDiffs)
+        if ratioSame > 0.75:
+            print(f"capture_id determined {idDiff}, {ratioSame*100}% have the same value" )
+            return idDiff
+        else:
+            print(f"capture_id varies too much, only {ratioSame*100}% have the same value {idDiff}" )
+            idDiff = None
+
+    else:
+        print(f"len(idDiffs) {len(idDiffs)} is too short" )
+        idDiff = None
+
+    return idDiff

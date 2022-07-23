@@ -31,6 +31,7 @@ from . import files
 from . import __version__
 
 print("next time look at background and store it!")
+print("next time store thread no. in level1detect")
 
 class movementDetection(object):
     def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
