@@ -60,7 +60,6 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
     nThreads = config["nThreads"]
     threshs = np.array(config["threshs"])
     goodFiles = config["goodFiles"]
-    fixTime = config["fixTime"]
     
     computers = config["computers"]
     instruments = config["instruments"]
@@ -127,7 +126,7 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
         # end fix time stamps are jumping around
 
         
-        if config.site == "mosaic":
+        if "removeGhostFrames" in config.fixes:
             #### fix capture_id ####
             metaDat, droppedFrames1, beyondRepair = fixes.removeGhostFrames(metaDat, config, intOverflow=True, idOffset=idOffset, fixIteration=fixIteration)
             droppedFrames += droppedFrames1
@@ -152,7 +151,7 @@ def readHeaderData(fname, returnLasttime=False):
         firstLine = f.readline()
         if firstLine == "":
             log.error("%s: metaData empty" % fname)
-            return [None] * 11
+            return [record_starttime] + [None] * 10
 
         if firstLine.startswith('# VISSS file format version: 0.2'):
             asciiVersion = 0.2
@@ -228,17 +227,15 @@ def readHeaderData(fname, returnLasttime=False):
     return record_starttime, asciiVersion, gitTag, gitBranch, capture_starttime, capture_firsttime, capture_lasttime, last_id, serialnumber, configuration, hostname
 
 
-def _getMetaData1(fname, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, goodFile=None, includeHeader=True):
+def _getMetaData1(metaFname, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, goodFile=None, includeHeader=True):
 
     nThreads = config["nThreads"]
     threshs = np.array(config["threshs"])
 
     log = logging.getLogger()
-
-    movieExtension = fname.split('.')[-1]
     
     ### meta data ####
-    metaFname = fname.replace(movieExtension, 'txt')
+    fname = metaFname.replace('txt', config.movieExtension)
 
     if nThreads is None:
         nThread = 0
@@ -481,24 +478,38 @@ def getEvents(fnames0, config, fname0status=None):
 
         (record_starttime, asciiVersion, gitTag, gitBranch, capture_starttime, capture_firsttime, capture_lasttime, last_id,
             serialnumber, configuration, hostname) = res
-        if record_starttime is None:
-            continue
 
         record_starttime = np.datetime64(record_starttime)
-        capture_starttime = np.datetime64(capture_starttime)
-        capture_firsttime = np.datetime64(capture_firsttime)
-        capture_lasttime = np.datetime64(capture_lasttime)
 
-        metaDat['capture_starttime'] = xr.DataArray(np.array([capture_starttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['capture_firsttime'] = xr.DataArray(np.array([capture_firsttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['capture_lasttime'] = xr.DataArray(np.array([capture_lasttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['serialnumber'] = xr.DataArray([serialnumber], dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['configuration'] = xr.DataArray([configuration], dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['hostname'] = xr.DataArray([hostname], dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['gitTag'] = xr.DataArray([gitTag], dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['gitBranch'] = xr.DataArray([gitBranch], dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['filename'] = xr.DataArray([fname0.split('/')[-1]], dims=["file_starttime"], coords=[[record_starttime]])
-        metaDat['event'] = xr.DataArray(["newfile"], dims=["file_starttime"], coords=[[record_starttime]])
+        if capture_starttime is None:
+            # we need to keep trck of broken files because the number of "newfiles" and "brokenfiles" in the event file is 
+            # needed to keep track of completeness
+            metaDat['event'] = xr.DataArray(["brokenfile"], dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['capture_starttime'] = xr.DataArray(np.array([np.nan]).astype("datetime64[ns]"), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['capture_firsttime'] = xr.DataArray(np.array([np.nan]).astype("datetime64[ns]"), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['capture_lasttime'] = xr.DataArray(np.array([np.nan]).astype("datetime64[ns]"), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['serialnumber'] = xr.DataArray(np.array([np.nan]).astype("object"), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['configuration'] = xr.DataArray(np.array([np.nan]).astype("object"), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['hostname'] = xr.DataArray(np.array([np.nan]).astype("object"), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['gitTag'] = xr.DataArray(np.array([np.nan]).astype("object"), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['gitBranch'] = xr.DataArray(np.array([np.nan]).astype("object"), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['filename'] = xr.DataArray(np.array([np.nan]).astype("object"), dims=["file_starttime"], coords=[[record_starttime]])
+
+        else:
+            capture_starttime = np.datetime64(capture_starttime)
+            capture_firsttime = np.datetime64(capture_firsttime)
+            capture_lasttime = np.datetime64(capture_lasttime)
+
+            metaDat['event'] = xr.DataArray(["newfile"], dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['capture_starttime'] = xr.DataArray(np.array([capture_starttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['capture_firsttime'] = xr.DataArray(np.array([capture_firsttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['capture_lasttime'] = xr.DataArray(np.array([capture_lasttime], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['serialnumber'] = xr.DataArray([serialnumber], dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['configuration'] = xr.DataArray([configuration], dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['hostname'] = xr.DataArray([hostname], dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['gitTag'] = xr.DataArray([gitTag], dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['gitBranch'] = xr.DataArray([gitBranch], dims=["file_starttime"], coords=[[record_starttime]])
+            metaDat['filename'] = xr.DataArray([fname0.split('/')[-1]], dims=["file_starttime"], coords=[[record_starttime]])
 
         #estimate Blocking
         img = mpl.image.imread(fname0Img)[config.height_offset:]

@@ -34,7 +34,7 @@ def main():
 
     elif sys.argv[1] == "scripts.loopCreateMetaFrames":
         settings = sys.argv[2]
-        if int(sys.argv[3])<1000:
+        if len(sys.argv[3])<6:
             nDays = int(sys.argv[3])
         else:
             nDays = str(sys.argv[3])
@@ -95,7 +95,7 @@ def main():
 
     elif sys.argv[1] == "scripts.loopMetaFramesQuicklooks":
         settings = sys.argv[2]
-        if int(sys.argv[3])<1000:
+        if len(sys.argv[3])<6:
             nDays = int(sys.argv[3])
         else:
             nDays = str(sys.argv[3])
@@ -119,7 +119,7 @@ def main():
     elif sys.argv[1] == "scripts.loopCreateLevel1detect":
 
         settings = sys.argv[2]
-        if int(sys.argv[3])<1000:
+        if len(sys.argv[3])<6:
             nDays = int(sys.argv[3])
         else:
             nDays = str(sys.argv[3])
@@ -131,7 +131,19 @@ def main():
         scripts.loopCreateLevel1detect(settings, skipExisting=skipExisting, nDays = nDays, cameras = "all", nCPU=None)
 
 
+    elif sys.argv[1] == "scripts.loopCreateLevel1match":
 
+        settings = sys.argv[2]
+        if len(sys.argv[3])<6:
+            nDays = int(sys.argv[3])
+        else:
+            nDays = str(sys.argv[3])
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+
+        scripts.loopCreateLevel1match(settings, skipExisting=skipExisting, nDays = nDays)
 
 
 

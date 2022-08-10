@@ -49,7 +49,8 @@ class VideoReader(cv2.VideoCapture):
             else:
                 self.set(cv2.CAP_PROP_POS_FRAMES, ii)
         res, frame = self.read()
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if frame is not None:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         return res, frame
 
     @property
@@ -64,30 +65,36 @@ class VideoReader(cv2.VideoCapture):
 # can cause segfaults!
 
 class VideoReaderMeta(object):
-    def __init__(self, movFilePattern, metaL1, metaL2=None, saveMode=False, config=None):
-        if type(metaL1) is xr.Dataset:
-            self.metaL1 = metaL1
+    def __init__(self, movFilePattern, metaFrames, lv1detect=None, lv1match=None, saveMode=False, config=None):
+        if type(metaFrames) is xr.Dataset:
+            self.metaFrames = metaFrames
         else:
-            self.metaL1 = xr.open_dataset(metaL1)
-        if (metaL2 is None) or (type(metaL2) is xr.Dataset):
-            self.metaL2 = metaL2
+            self.metaFrames = xr.open_dataset(metaFrames)
+        if (lv1detect is None) or (type(lv1detect) is xr.Dataset):
+            self.lv1detect = lv1detect
         else:
-            self.metaL2 = xr.open_dataset(metaL2)
+            self.lv1detect = xr.open_dataset(lv1detect)
+        if (lv1match is None) or (type(lv1match) is xr.Dataset):
+            self.lv1match = lv1match
+        else:
+            raise ValurError("provide level1match as Dataset with data selected for corresponding camera")
         self.saveMode = saveMode
         self.config = config
 
         self.movFilePattern = movFilePattern
-        self.threads = np.unique(self.metaL1.nThread)
+        self.threads = np.unique(self.metaFrames.nThread)
         if len(self.threads)>1:
             self.movFilePattern = self.movFilePattern.replace("_0.", "_{thread}.")
+        if config:
+            assert self.movFilePattern.endswith(config.movieExtension)
         self.video = {}
         self.position = 0
         self.positions = {}
         self.currentThread = None
         
         self.currentFrame = None
-        self.currentMetaL1 = None
-        self.currentMetaL2 = None
+        self.currentMetaFrames = None
+        self.currentlv1detect = None
         self.currentPids = None
         
         self._openVideo()
@@ -107,14 +114,14 @@ class VideoReaderMeta(object):
         
     def getNextFrame(self, markParticles=False):
         ii = self.position + 1
-        if self.metaL2:
+        if self.lv1detect:
             return self.getFrameByIndexWithParticles(ii, markParticles=markParticles)
         else:
             return self.getFrameByIndex(ii)
         
     def getPrevFrame(self, markParticles=False):
         ii = self.position - 1
-        if self.metaL2:
+        if self.lv1detect:
             return self.getFrameByIndexWithParticles(ii, markParticles=markParticles)
         else:
             return self.getFrameByIndex(ii)
@@ -127,7 +134,7 @@ class VideoReaderMeta(object):
             return False, None, None
         
         try:
-            captureTime = self.metaL1.capture_time[ii].values
+            captureTime = self.metaFrames.capture_time[ii].values
         except IndexError:
             return False, None, None
 
@@ -139,57 +146,86 @@ class VideoReaderMeta(object):
         like read, but with capturetime, meta data and appropriate thread
         '''
         try:
-            self.currentMetaL1 = self.metaL1.sel(capture_time=captureTime)
+            self.currentMetaFrames = self.metaFrames.sel(capture_time=captureTime)
         except IndexError:
             self.res = None
             self.curentFrame = None
-            self.currentMetaL1 = None
+            self.currentMetaFrames = None
             self.position = None
         else:
-            self.currentThread = int(self.currentMetaL1.nThread.values)
-            rr = int(self.currentMetaL1.record_id.values)
+            self.currentThread = int(self.currentMetaFrames.nThread.values)
+            rr = int(self.currentMetaFrames.record_id.values)
             self.res, self.curentFrame = self.video[self.currentThread].getFrameByIndex(rr, saveMode=self.saveMode)
-            self.position = np.where(self.metaL1.capture_time==captureTime)[0][0]
+            self.position = np.where(self.metaFrames.capture_time==captureTime)[0][0]
             self.positions[self.currentThread] = self.video[self.currentThread].position
 
-        return self.res, self.curentFrame, self.currentMetaL1
+        return self.res, self.curentFrame, self.currentMetaFrames
 
     @functools.lru_cache(maxsize=100, typed=False)
-    def getFrameByCaptureTimeWithParticles(self, captureTime, markParticles=False, highlightPid=None):
+    def getFrameByCaptureTimeWithParticles(self, captureTime, pad = 4, markParticles=False, highlightPid=None):
 
-        assert self.metaL2 is not None
+        assert self.lv1detect is not None
         
         res, _, _ = self.getFrameByCaptureTime(captureTime)
-        if res is None:
-            return None, None, None, None
+        if (res is None) or (res == False):
+            return None, None, None, None, None
     
         self.curentFrameC = cv2.cvtColor(self.curentFrame, cv2.COLOR_GRAY2BGR)
 
         ct = self.currentCaptureTime
-        self.currentMetaL2 = self.metaL2.where(self.metaL2.capture_time==ct).dropna('pid')
-        self.currentPids = self.currentMetaL2.pid
+        try: 
+            self.currentlv1detect = self.lv1detect.isel(pid=(self.lv1detect.capture_time==ct))
+        except:
+            self.currentlv1detect = self.lv1detect.isel(fpid=(self.lv1detect.capture_time==ct))
 
-        assert np.all(self.currentMetaL1.capture_time == self.currentMetaL2.capture_time)
+        self.currentPids = self.currentlv1detect.pid
+
+        assert np.all(self.currentMetaFrames.capture_time == self.currentlv1detect.capture_time)
             
+        colors=[(0, 255, 0), (255, 0, 0), (0, 0 , 255), (255, 255, 0), (0, 255, 255)] * 30
+
+        matchedDats = []
+
         if markParticles:
-            for jj, pid in enumerate(self.currentMetaL2.pid.values):
-                partic1 = self.currentMetaL2.sel(pid=pid)
+            for jj, pid in enumerate(self.currentlv1detect.pid.values):
+                try: 
+                    partic1 = self.currentlv1detect.sel(pid=pid)
+                except KeyError:
+                    partic1 = self.currentlv1detect.sel(fpid=(self.currentlv1detect.pid==pid)).squeeze()
                 (x, y, w, h) = partic1.roi.values.astype(int)
                 y = y + self.config['height_offset']
-                colors=[(0, 255, 0), (255, 0, 0), (0, 0 , 255), (255, 255, 0), (0, 255, 255)] * 30
-                if pid == highlightPid:
+                
+                if (highlightPid == "meta") and pid in self.lv1match.pid:
+                    matchedDats.append(self.lv1match.isel(fpair_id = self.lv1match.pid == pid))
+                    color = (255,255,255)
+                elif highlightPid == pid:
                     color = (255,255,255)
                 else:
                     color = colors[jj]
 
-                cv2.rectangle(self.curentFrameC, (x, y),
-                          (x + w, y + h), color, 2)
+                x1, y1, x2, y2 = x - pad, y - pad, x + w + pad, y + h+ pad
+
+                if x1 < 0:
+                    x1= 0
+                if y1 < 0:
+                    y1= 0
+                if x2 >= self.curentFrameC.shape[1]:
+                    x2= self.curentFrameC.shape[1]-1
+                if y2 >= self.curentFrameC.shape[0]:
+                    y2= self.curentFrameC.shape[0]-1
+
+                cv2.rectangle(self.curentFrameC, (x1, y1), (x2, y2), color, 2)
                 extra1 = str(partic1.record_time.values)[:-6].split('T')[-1]
                 extra2 = '%i'%partic1.Dmax.values
                 cv2.putText(self.curentFrameC, '%i %s %s' % (partic1.pid, extra1, extra2),
                             (int(partic1.roi[0]+w+5), int(partic1.roi[1]+self.config['height_offset'])), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
 
-        return self.res, self.curentFrameC, self.currentMetaL1, self.currentMetaL2
+            if len(matchedDats) > 0:
+                matchedDats = xr.concat(matchedDats, dim="fpair_id")
+            else:
+                matchedDats = None
+
+        return self.res, self.curentFrameC, self.currentMetaFrames, self.currentlv1detect, matchedDats
 
 
     def getFrameByIndexWithParticles(self, ii, markParticles=False, highlightPid=None):
@@ -198,22 +234,22 @@ class VideoReaderMeta(object):
         '''
    
         if ii < 0:
-            return False, None, None, None
+            return False, None, None, None, None
         
         try:
-            captureTime = self.metaL1.capture_time[ii].values
+            captureTime = self.metaFrames.capture_time[ii].values
         except IndexError:
-            return False, None, None, None
+            return False, None, None, None, None
     
         return self.getFrameByCaptureTimeWithParticles(captureTime, markParticles=markParticles, highlightPid=highlightPid)
 
     
     @property
     def currentCaptureTime(self):
-        if self.currentMetaL1 is None:
+        if self.currentMetaFrames is None:
             return None
         else:
-            return np.datetime64(self.currentMetaL1.capture_time.values)
+            return np.datetime64(self.currentMetaFrames.capture_time.values)
     
             
     @property
@@ -228,7 +264,7 @@ class VideoReaderMeta(object):
             self.video[tt].release()
 
     def getParticle(self, pid,heightOffset=64):
-        particle = self.metaL2.sel(pid=pid)
+        particle = self.lv1detect.sel(pid=pid)
         kk = int(particle.record_id.values)
         _, frame1, _ = self.getFrameByIndex(kk)
         x, y, w, h = particle.roi.values.astype(int)

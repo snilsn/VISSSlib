@@ -14,6 +14,7 @@ import xarray as xr
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from image_packer import packer
 
@@ -29,6 +30,77 @@ from .av import VideoReaderMeta
 
 from . import __version__
 from . import files
+from . import tools
+
+
+
+def plotVar(pVar, capture_time, ax, ylabel=None, axhline=None, xlabel=None, resample="5T", func="mean", color="C1", label=None, ratiovar=None):
+
+    if axhline is not None:
+        ax.axhline(axhline,color="k", lw=0.5)
+
+    try:
+        capture_time = capture_time.isel(camera=0)
+    except ValueError:
+        pass
+
+    pVar = xr.DataArray(pVar, coords=[capture_time.values], dims=["time"])
+    pVar = pVar.sortby("time") #this is not the time to make a fuzz about jumping indices
+    pVar = pVar.resample(time=resample)
+
+    if func=="mean":
+        pMean = pVar.mean()
+        pStd = pVar.std()
+
+        pMean.plot(ax=ax, marker=".", color=color, label=label)
+        ax.fill_between(pMean.time, pMean-pStd, pMean+pStd, alpha=0.3, color=color)
+    elif func=="count":
+        pCount = pVar.count()
+        pCount.plot(ax=ax, marker=".", color=color, label=label)
+    elif func=="first":
+        pFirst = pVar.first()
+        pFirst.plot(ax=ax, marker=".", color=color, label=label)
+    elif func=="ratio":
+        (ratiovar.count()/pVar.count()).plot(ax=ax, marker=".", color=color, label=label)
+    else:
+        raise ValueError(f"Do not know {func}")
+
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel(xlabel)
+    
+    return ax, pVar
+
+
+def plot2dhist(pVar, capture_time, ax, cax,bins, ylabel=None, log=True, resample="5T",cbarlabel=None):
+
+    pVar = xr.DataArray(pVar, coords=[capture_time.isel(camera=0).values], dims=["time"])
+    pVar = pVar.resample(time=resample)
+
+    binMeans = (bins[1:] + bins[:-1])/2.
+    hists = []
+    labels = []
+    for l, p in pVar:
+        labels.append(l)
+        hists.append(100*np.histogram(p, bins=bins)[0]/np.sum(np.isfinite(p.values)))
+
+    hists = xr.DataArray(hists, coords=[labels, binMeans], dims=["time", "bins"])
+    hists = hists.where(hists!=0)
+
+    hists = hists.resample(time=resample).first() #little trick to fill up missing values
+    # import pdb; pdb.set_trace()
+
+    divider = make_axes_locatable(ax)
+
+
+    pc = hists.T.plot.pcolormesh(ax=ax, cbar_ax=cax, cbar_kwargs={"label":cbarlabel})
+    
+    if log: ax.set_yscale("log")
+    
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel(None)
+    ax.set_ylim(bins[0], bins[-1])
+
+    return ax, pVar
 
 
 def crop(image):
@@ -72,9 +144,14 @@ def createLevel1detectQuicklook(timestamp, camera, config,
     particlesPloted = 0
 
     if os.path.isfile(ff.quicklook.level1detect) and skipExisting:
-        print("SKIPPING - file exists", ff.quicklook.level1detect)
-        return None, None
-
+        if len(ff.listFiles("level0")) == 0:
+            print("SKIPPING - file exists and no level0 data", ff.quicklook.level1detect)
+            return None, None
+        if os.path.getmtime(ff.quicklook.level1detect) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
+            print("file exists but older than event file, redoing", ff.quicklook.level1detect)
+        else:
+            print("SKIPPING - file exists", ff.quicklook.level1detect)
+            return None, None
     if site != "mosaic":
         if (len(ff.listFiles("level0")) == 0) and (len(ff.listFiles("level0status")) == 0):
             print("NO DATA YET (TRANSFERRED?)", ff.quicklook.level1detect)
@@ -85,8 +162,9 @@ def createLevel1detectQuicklook(timestamp, camera, config,
         return None, None
 
     if not ff.isCompleteL1detect:
-        print("NOT COMPLETE YET %i/%i %s" %
-              (len(ff.listFilesExt("level1detect")), len(ff.listFiles("level0")), ff.quicklook.level1detect))
+        print("NOT COMPLETE YET %i of %i %s" %
+              (len(ff.listFilesExt("level1detect")), len(ff.listFiles("level0txt")),  ff.quicklook.level1detect))
+
 #         if (len(ff.listFilesExt("level1detect")) == len(ff.listFiles("level0"))):
 #             afshgsa
         return None, None
@@ -559,7 +637,7 @@ def createMetaCoefQuicklook(case, config, version=__version__, skipExisting=True
 
 
 def metaFramesQuicklook(
-                case, camera, config, version=__version__, skipExisting=True):
+                case, camera, config, version=__version__, skipExisting=True, plotCompleteOnly=True):
 
     """
     Anja Stallmach 2022
@@ -582,8 +660,17 @@ def metaFramesQuicklook(
 
 
     if skipExisting and os.path.isfile(fOut):
-        print(case, camera, "skip exisiting")
+        if os.path.getmtime(fOut) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
+            print("file exists but older than event file, redoing", fOut)
+        else:
+            print(case, camera, "skip exisiting")
+            return None, None
+
+    if plotCompleteOnly and not ff.isCompleteMetaFrames:
+        print("NOT COMPLETE YET %i of %i %s" %
+              (len(ff.listFilesExt("metaFrames")), len(ff.listFiles("level0txt")),  ff.fnamesPattern.level1match))
         return None, None
+
 
 
     print(case, camera, fOut)
@@ -673,7 +760,7 @@ def metaFramesQuicklook(
     ax1.grid()
 
     if metaDats is not None:
-        frames=metaDats.capture_time.notnull().resample(capture_time="1T").sum()
+        frames=metaDats.capture_time.notnull().resample(capture_time="5T").sum()
         ax2.plot(frames.capture_time, frames)
     ylim = [0,config.fps*60*1.1]
     ax2.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
@@ -730,3 +817,129 @@ def metaFramesQuicklook(
     events.close()
     
     return fOut, fig
+
+
+
+
+
+def createLevel1matchQuicklook(case, config, skipExisting = True, version=__version__, plotCompleteOnly=True):
+    leader = config["leader"]
+
+    # find files
+    fl = files.FindFiles(case, leader, config, version)
+    #get level 0 file names
+    fOut = fl.quicklook.level1match
+
+    if os.path.isfile(fl.quicklook.level1match) and skipExisting:
+        if len(fl.listFiles("level0")) == 0:
+            print("SKIPPING - file exists and no level0 data", fl.quicklook.level1match)
+            return None, None
+        if os.path.getmtime(fl.quicklook.level1match) < os.path.getmtime(fl.listFiles("metaEvents")[0]):
+            print("file exists but older than event file, redoing", fl.quicklook.level1match)
+        else:
+            print("SKIPPING - file exists", fl.quicklook.level1match)
+            return None, None
+
+    if (len(fl.listFiles("level0")) == 0) and (len(fl.listFiles("level0status")) == 0):
+        print("NO DATA YET (TRANSFERRED?)", fl.quicklook.level1match)
+        return None, None
+
+    if (len(fl.listFilesExt("level1match")) == 0) and (len(fl.listFiles("level0")) > 0):
+        print("NO DATA YET ", fl.quicklook.level1match)
+        return None, None
+
+    if plotCompleteOnly and not fl.isCompleteL1match:
+        print("NOT COMPLETE YET %i of %i %s" %
+              (len(fl.listFilesExt("level1match")), len(fl.listFiles("level0txt")),  fl.fnamesPattern.level1match))
+        return None, None
+
+    fnames1M = fl.listFiles("level1match")
+    if len(fnames1M) == 0:
+        print("No precipitation", case, fl.fnamesPattern.level1match)
+        fig, axcax = plt.subplots(nrows=1, ncols=1, figsize=(10,15))
+        axcax.axis('off')
+        axcax.set_title(f"VISSS level1match {config.name} {case} \n No precipitation")
+        fig.savefig(fOut)
+        return fOut, fig    
+
+    print("Running", fOut)
+
+    fnames1DL = fl.listFiles("level1detect")
+    ff = files.FindFiles(case, config.follower, config, version)
+    fnames1DF = ff.listFiles("level1detect")
+
+    assert len(fnames1DL)>0
+    assert len(fnames1DF)>0
+
+    datM = tools.open_mflevel1match(fnames1M, config)        
+    datDL = tools.open_mflevel1detect(fnames1DL, config, applyFixes=False, datVars=["Dmax", "capture_time", "touchesBorder"])        
+    datDF = tools.open_mflevel1detect(fnames1DF, config, applyFixes=False, datVars=["Dmax", "capture_time", "touchesBorder"])        
+
+    fig, axcax = plt.subplots(nrows=9, ncols=2, figsize=(10,15),gridspec_kw={"width_ratios":[1, 0.01], "height_ratios":[2, 2, 2, 1, 1, 1, 1, 1, 1]})
+    
+    fig.suptitle(f"VISSS level1match {config.name} {case}")
+
+
+    ax = axcax[:,0]
+    cax = axcax[:,1]
+    
+    
+    Dmax = datM.Dmax.mean("camera").values
+    _, rs = plotVar(Dmax, datM.capture_time, ax[0], "Counts [-]", func="count", label="matched", color="C1")
+    _, rs1 = plotVar(datDL.Dmax, datDL.capture_time, ax[0], "Counts [-]", func="ratio", label="ratio leader", color="C2", ratiovar=rs)
+    _, rs1 = plotVar(datDF.Dmax, datDF.capture_time, ax[0], "Counts [-]", func="ratio", label="ratio follower", color="C3", ratiovar=rs)
+    ax[0].set_yscale("log")
+    cax[0].axis('off')
+    ax[0].legend()
+
+
+
+    bins=np.logspace(0,2.5,21)
+    _, _ = plot2dhist(Dmax, datM.capture_time, ax[1], cax[1],bins, ylabel="Dmax [px]", cbarlabel="%")
+    
+    matchScore = datM.matchScore.values
+    bins=np.logspace(-10,0, 41)
+    _, _ = plot2dhist(matchScore, datM.capture_time, ax[2], cax[2], bins, ylabel="match score [-]", cbarlabel="%")
+    
+    zDiff = datM.position.sel(position_elements=["z", "z_rotated"]).diff("position_elements").values.squeeze()
+    _, rs = plotVar(zDiff, datM.capture_time, ax[3], "z difference [px]", axhline=0)
+    cax[3].axis('off')
+    
+    
+    hDiff = datM.roi.sel(ROI_elements="h").diff("camera").values.squeeze()
+    _, _ = plotVar(hDiff, datM.capture_time, ax[4], "h difference [px]", axhline=0)
+    cax[4].axis('off')
+
+    tDiff = datM.capture_time.diff("camera").values.squeeze().astype(int)*1e-9
+    _, _ = plotVar(tDiff, datM.capture_time, ax[5], "t difference [s]", axhline=0)
+    cax[5].axis('off')
+
+
+    theta = datM.theta.sel(rotation="mean").values.squeeze()
+    _, _ = plotVar(theta, datM.capture_time.isel(camera=0), ax[6], "theta", axhline=config.rotate.theta)
+    phi = datM.phi.sel(rotation="mean").values.squeeze()
+    _, _ = plotVar(phi, datM.capture_time.isel(camera=0), ax[7], "phi", axhline=config.rotate.phi)
+    Ofz = datM.Ofz.sel(rotation="mean").values.squeeze()
+    _, _ = plotVar(Ofz, datM.capture_time.isel(camera=0), ax[8], "Ofz", axhline=config.rotate.Ofz)
+
+    cax[6].axis('off')
+    cax[7].axis('off')
+    cax[8].axis('off')
+
+    
+    for ii in range(8):
+        ax[ii].get_shared_x_axes().join(ax[ii], ax[-1])
+        ax[ii].set_xticklabels([])
+    for ii in range(9):
+        ax[ii].grid(True)
+
+    ax[8].set_xlim(np.datetime64(f'{fl.year}-{fl.month}-{fl.day}T00:00'), np.datetime64(f'{fl.year}-{fl.month}-{fl.day}T00:00')+np.timedelta64(1, 'D'))
+
+    fig.tight_layout(w_pad=0.05, h_pad=0.005)
+
+    fl.createQuicklookDirs()
+    print("DONE", fOut)
+    fig.savefig(fOut)
+    
+    return fOut, fig    
+

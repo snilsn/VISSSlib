@@ -76,22 +76,59 @@ def fixMosaicTimeL1(dat1, config):
     return dat1
 
 
-def fixIntOverflow(metaDat, maxInt=65535, storeOrig=True, idOffset=0):
+def captureIdOverflows(dat, config, storeOrig=True, idOffset=0, dim="pid"):
     '''
-    For M1250, capture_id is 16 bit integer
+    For M1280, capture_id is 16 bit integer and does overflow very few minutes
+    fixed in raw data in version 0.3  06/2022
     '''
+    maxInt = 65535
 
     if storeOrig:
-        metaDat["capture_id_orig"] = deepcopy(metaDat["capture_id"])
+        dat["capture_id_orig"] = deepcopy(dat["capture_id"])
+    
+    #constant offset
+    if idOffset != 0:
+        dat["capture_id"] += idOffset
+    
+    idDiffObserved = dat.capture_id.diff(dim)
+    idDiffEstimated = np.round(
+            dat.capture_time.diff(dim) / np.timedelta64(round(1/config.fps * 1e6),"us")
+        ).astype(int)
+    stepsObserved = (idDiffObserved<0) | (idDiffEstimated >= maxInt)
+    nStepsObserved = stepsObserved.sum()
 
-    metaDat["capture_id"] = metaDat["capture_id"] + idOffset
+    # estimate expected steps
+    firstII = dat.capture_id.values[0]
+    firstCaptureT = dat.capture_time.values[0]
+    lastCaptureT = dat.capture_time.values[-1]
 
-    overflows = np.where(metaDat.capture_id.diff("capture_time") < (-maxInt*0.01))[0]
-    for overflow in overflows:
+    deltaT = (lastCaptureT-firstCaptureT)/ np.timedelta64(1, 's')
+    nFrames = np.ceil(deltaT*config.fps).astype(int)
+    nStepsExpected = int((firstII+nFrames)/maxInt)
 
-        print("overflow at position", overflow)
-        metaDat["capture_id"][(overflow+1):] = metaDat.capture_id[(overflow+1):] + maxInt
-    return metaDat
+    if nStepsObserved == nStepsExpected == 0:
+        #nothing to do
+        return dat
+
+    if nStepsExpected == nStepsObserved:
+
+        jumpIIs = np.where(stepsObserved)[0]+1
+
+        for jumpII in jumpIIs:
+            dat["capture_id"][jumpII:] += maxInt
+
+    else:
+        raise RuntimeError("was einfallen lassen...")
+
+    assert np.all(dat.capture_id.diff(dim)>=0)
+    print(f"captureIdOverflows: expecting {nStepsExpected} jumps, found and fixed {(stepsObserved).sum()} jumps")
+
+    return dat
+
+def revertIdOverflowFix(dat):
+    dat = dat.rename({"capture_id": "capture_id_fixed"})
+    dat = dat.rename({"capture_id_orig": "capture_id"})
+    return dat
 
 def removeGhostFrames(metaDat, config, intOverflow=True, idOffset = 0, fixIteration = 3):
     '''
@@ -157,9 +194,10 @@ def removeGhostFrames(metaDat, config, intOverflow=True, idOffset = 0, fixIterat
     return metaDat, droppedFrames, beyondRepair
 
 def delayedClockReset(metaDat, config):
-
-    #check for delayed clock reset, jump needs to be at least 10s to make sure
-    # we look at the right problem
+    '''
+    check for delayed clock reset and truncate data if needed. jump needs to 
+    be at least 10s to make sure we look at the right problem
+    '''
     if  (metaDat.capture_time.diff() <= -10e6).any(): 
     
         resetII = np.where((metaDat.capture_time.diff() < -10e6))[0]
@@ -173,7 +211,6 @@ def delayedClockReset(metaDat, config):
             metaDat = metaDat.iloc[resetII:]
         else:
             #attempt to fix it!
-
             firstGoodTime = metaDat.capture_time.iat[resetII]
             firstGoodID = metaDat.capture_id.iat[resetII]
             deltaT = round(1/config.fps * 1e6)
@@ -181,3 +218,39 @@ def delayedClockReset(metaDat, config):
             metaDat.iloc[:resetII, metaDat.columns.get_loc('capture_time')] = firstGoodTime + offsets
 
     return metaDat
+
+def makeCaptureTimeEven(datF, config, dim="capture_time"):
+    '''
+    for the M1280 follower, the drift can be quite large so
+    that clocks drifts more than 1 frame apart within 10 mins.
+    Therefore, lets build a new time vector (based on a capture_id 
+    that we trust) with even spacing.
+    '''
+    print("making follower times even")
+    assert np.all(datF.capture_id.diff(dim)>=0), "capture_id mus increase monotonically "
+
+    slopeF = ((datF["capture_time"].diff(dim) /
+          datF["capture_id"].diff(dim))).astype(int)
+    
+    configSlope = int(round(1e9/config.fps, -3))
+    deltaSlope = 1000 # =1us
+
+    # make sure we do not have ghost frames in the data
+    if dim == "pid":
+        # we can have slope 0 in level1detect
+        slopeF = slopeF.isel(pid=(datF["capture_id"].diff(dim) !=0))
+    assert slopeF.min() >= (configSlope-deltaSlope)
+    assert slopeF.max() <= (configSlope+deltaSlope)
+
+    offset = datF.capture_time.values[0]
+    fixedTime = (((datF.capture_id-datF.capture_id[0]) * configSlope)+offset)
+    
+    datF["capture_time_orig"] = deepcopy(datF["capture_time"])
+    datF["capture_time"] = fixedTime
+    
+    return datF
+
+def revertMakeCaptureTimeEven(dat):
+    dat = dat.rename({"capture_time": "capture_time_even"})
+    dat = dat.rename({"capture_time_orig": "capture_time"})
+    return dat

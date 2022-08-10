@@ -30,9 +30,6 @@ from . import files
 
 from . import __version__
 
-print("next time look at background and store it!")
-print("next time store thread no. in level1detect")
-
 class movementDetection(object):
     def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
         
@@ -175,6 +172,7 @@ class detectedParticles(object):
         self.record_id = None
         self.capture_time = None
         self.record_time = None
+        self.nThread = None
         self.nParticle = 0
 
         #history 500, threshold=400
@@ -188,12 +186,13 @@ class detectedParticles(object):
 
         return
 
-    def update(self, frame, pp, capture_id, record_id, capture_time, record_time, training=False):
+    def update(self, frame, pp, capture_id, record_id, capture_time, record_time, nThread, training=False):
 
         self.capture_id = capture_id
         self.record_id = record_id
         self.capture_time = capture_time
         self.record_time = record_time
+        self.nThread = nThread
         self.lastFrame = {}
         if (self.verbosity > 2):
             print("particles.update", "FRAME", pp,  'Start %s' % 'update')
@@ -261,7 +260,7 @@ class detectedParticles(object):
         added = False
 
         # try:
-        self.lastParticle = singleParticle(self.capture_id, self.record_id, self.capture_time, self.record_time, self.pp, *args, **kwargs)
+        self.lastParticle = singleParticle(self.capture_id, self.record_id, self.capture_time, self.record_time, self.nThread, self.pp, *args, **kwargs)
         # except ZeroDivisionError:
         #     self.lastParticle = None
         #     return added, self.lastParticle
@@ -305,7 +304,11 @@ class detectedParticles(object):
 
     def collectResults(self):
         self.particleProps = xr.Dataset(coords = {'pid':list(self.all.keys()), 'percentiles': range(10,100,10)}) 
-        for key in ['Dmax', 'Dmin', 'area', 'aspectRatio', 'angle', 'roi', 'x', 'y', 'perimeter', 'pixMin', 'pixMax', 'pixMean', 'pixStd', 'pixSkew', 'pixKurtosis', 'blur', 'capture_id', 'record_id', 'capture_time', 'record_time', 'touchesBorder']:
+        for key in [
+            'Dmax', 'Dmin', 'area', 'aspectRatio', 'angle', 'roi', 'x', 'y', 'perimeter', 'pixMin', 'pixMax', 
+            'pixMean', 'pixStd', 'pixSkew', 'pixKurtosis', 'blur', 'capture_id', 'record_id', 'capture_time', 
+            'record_time', 'touchesBorder', 'nThread',
+            ]:
             arr = []
             for i in self.all.values():
                 arr.append(getattr(i, key))
@@ -340,7 +343,7 @@ class detectedParticles(object):
 
 class singleParticle(object):
 # TrackerKCF_create
-    def __init__(self, capture_id, record_id, capture_time, record_time,  pp1, frame1, cnt, verbosity=0, composite = True):
+    def __init__(self, capture_id, record_id, capture_time, record_time, nThread,  pp1, frame1, cnt, verbosity=0, composite = True):
         self.verbosity = verbosity
         #start with negative random id
         self.pid = pp1#np.random.randint(-999,-1) 
@@ -348,6 +351,7 @@ class singleParticle(object):
         self.capture_id = capture_id
         self.capture_time = capture_time
         self.record_time = record_time
+        self.nThread = nThread
         self.cnt = cnt
         self.composite = composite
         self.version = __version__.split(".")[0]
@@ -489,10 +493,11 @@ def checkMotion(subFrame, oldFrame, threshs):
 
 
 # get trainign data
-def _getTrainingFrames(fnamesV, historySize):
+def _getTrainingFrames(fnamesV, historySize, config):
 
     inVidTraining = {}
     for nThread, fnameV in fnamesV.items():
+        assert fnameV.endswith(config.movieExtension)
         vid = cv2.VideoCapture(fnameV)
         if int(vid.get(cv2.CAP_PROP_FRAME_COUNT)) > 0:
             inVidTraining[nThread] = vid
@@ -524,6 +529,8 @@ def detectParticles(fname,
     logging.config.dictConfig(tools.get_logging_config('detection_run.log'))
     log = logging.getLogger()
 
+    assert os.path.isfile(fname)
+
     config = tools.readSettings(settings)
 
     path = config["path"]
@@ -546,6 +553,7 @@ def detectParticles(fname,
     minDmax4Plotting = config["minDmax4Plotting"]
 
     fn = files.Filenames(fname, config, __version__)
+    print("running", fn.fname.level1detect)
     camera = fn.camera
 
     Dbins = np.arange(0, 201, 10).tolist()
@@ -563,15 +571,16 @@ def detectParticles(fname,
     computer = computerDict[camera]
     goodFile = goodFilesDict[camera]
 
-    if not os.path.isfile(fname):
-        log.error('ERROR Unable to open: ' + fname)
-        raise RuntimeError('ERROR Unable to open: ' + fname)
 
-    fnamesV = fn.fnameAllThreads
+    fnamesV = fn.fnameMovAllThreads
     if len(fnamesV) == 0:
-        raise RuntimeError("len(fnamesV) == 0")
+        with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
+            f.write('no data in %s'%fn.fname.metaFrames)
+        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+            f.write('no data in %s'%fn.fname.metaFrames)
+        log.warning('no movie files: ' + fname)
 
-    fnameM = [f.replace(config["movieExtension"], "txt") for f in fnamesV.values()]
+    # fnameM = [f.replace(config["movieExtension"], "txt") for f in fnamesV.values()]
 
     # metaData, nDroppedFrames = metadata.getMetaData(
     #     fnameM, camera, config, testMovieFile=True)
@@ -657,7 +666,7 @@ def detectParticles(fname,
     nFrames = len(metaData.capture_time)
     pps = range(nFrames)
 
-    trainingFrames = _getTrainingFrames(fnamesV, historySize)
+    trainingFrames = _getTrainingFrames(fnamesV, historySize, config)
     log.info(f"found {len(trainingFrames)} for training.")
 
     # to few data in trainign data, look into previous files
@@ -666,7 +675,7 @@ def detectParticles(fname,
     while len(trainingFrames) < historySize:
         fname11 = files.Filenames(fname1,config).prevFile()
 
-        if (ii > 5) or (fname11 is None):
+        if (ii > 20) or (fname11 is None):
             with open('%s.notenoughframes' % fn.fname.level1detect, 'w') as f:
                 f.write('too few frames %i ' %
                         (nFrames))
@@ -674,8 +683,8 @@ def detectParticles(fname,
                         (fn.fname.level1detect, nFrames))
             sys.exit(0)
 
-        fnamesV1 = files.Filenames(fname11, config).fnameAllThreads
-        trainingFrames1 = _getTrainingFrames(fnamesV1, historySize)
+        fnamesV1 = files.Filenames(fname11, config).fnameMovAllThreads
+        trainingFrames1 = _getTrainingFrames(fnamesV1, historySize, config)
         log.warning(f"added {len(trainingFrames1)} from {ii} previous file {fname11}.")
         trainingFrames = trainingFrames1 + trainingFrames
 
@@ -720,10 +729,17 @@ def detectParticles(fname,
                                    -99,
                                    -99,
                                    -99,
+                                   -99,
                                    training=True)
 
 
         log.info('training %i' % ff)
+
+    # write background to PNG file
+    cv2.imwrite(
+        fn.fname.metaDetection.replace(".nc",".png"),
+        snowParticles.backSub.getBackgroundImage(),
+        )
 
     foundParticles = np.zeros((nFrames, len(Dbins)))
     movingObjects = np.zeros((nFrames))
@@ -731,6 +747,7 @@ def detectParticles(fname,
 
     inVid = {}
     for nThread, fnameV in fnamesV.items():
+        assert fnameV.endswith(config.movieExtension)
         inVid[nThread] = cv2.VideoCapture(fnameV)
 
     frame = None
@@ -793,7 +810,9 @@ def detectParticles(fname,
                                    int(metaData1.capture_id.values),
                                    int(metaData1.record_id.values),
                                    metaData1.capture_time.values,
-                                   metaData1.record_time.values)
+                                   metaData1.record_time.values,
+                                   nThread,
+                                   )
         if res:
             movingObjects[pp] = snowParticles.nParticle
             Dmax = []
@@ -857,7 +876,7 @@ def detectParticles(fname,
     encoding = {
         var: comp for var in metaData.data_vars}
     metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
-
+    metaData.close()
     if hasData and not testing:
         snowParticlesXR = snowParticles.collectResults()
 
@@ -865,7 +884,7 @@ def detectParticles(fname,
         encoding = {var: comp for var in snowParticlesXR.data_vars}
 
         snowParticlesXR.to_netcdf(fn.fname.level1detect, encoding=encoding, engine="netcdf4")
-
+        snowParticlesXR.close()
     else:
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data')

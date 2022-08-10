@@ -10,7 +10,8 @@
 # __version__ = '20211029' # maxDarkestPoint=130 instead 100
 # __version__ = '20212016' # movingObjects variable to detect blowing snow better, maxNParticle=60
 # __version__ = '20220308' # fixed time stamp for mosaic!!
-# __version__ = '20220520' # reversed timestamp fix, applied capture_id fix instead!
+# __version__ = '20220521' # reversed timestamp fix, applied capture_id fix instead!
+# __version__ = '20220521' # Aug 3rd: added background image and nThread to level1detect without new version number
 
 # Version is pulled from git tag!!
 
@@ -35,4 +36,5 @@ from . import matching
 from . import tracking
 from . import fixes
 from . import scripts
+from . import analysis
 
