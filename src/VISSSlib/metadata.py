@@ -525,6 +525,23 @@ def getEvents(fnames0, config, fname0status=None):
 
     if len(metaDats) > 0:
         metaDats = xr.concat(metaDats, dim="file_starttime")
+    else:
+        metaDats = {}
+        metaDats['event'] = xr.DataArray([], dims=["file_starttime"], coords=[[]])
+        metaDats['capture_starttime'] = xr.DataArray(np.array([], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[]])
+        metaDats['capture_firsttime'] = xr.DataArray(np.array([], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[]])
+        metaDats['capture_lasttime'] = xr.DataArray(np.array([], dtype='datetime64[ns]'), dims=["file_starttime"], coords=[[]])
+        metaDats['serialnumber'] = xr.DataArray([], dims=["file_starttime"], coords=[[]])
+        metaDats['configuration'] = xr.DataArray([], dims=["file_starttime"], coords=[[]])
+        metaDats['hostname'] = xr.DataArray([], dims=["file_starttime"], coords=[[]])
+        metaDats['gitTag'] = xr.DataArray([], dims=["file_starttime"], coords=[[]])
+        metaDats['gitBranch'] = xr.DataArray([], dims=["file_starttime"], coords=[[]])
+        metaDats['filename'] = xr.DataArray([], dims=["file_starttime"], coords=[[]])
+
+        metaDats['blocking'] = xr.DataArray(np.zeros((0,len(bins4xr))), dims=["file_starttime", "blockingThreshold"], coords=[[],bins4xr])
+        metaDats['brightnessMean'] = xr.DataArray(np.array([]), dims=["file_starttime"], coords=[[]])
+        metaDats['brightnessStd'] = xr.DataArray(np.array([]), dims=["file_starttime"], coords=[[]])
+        metaDats = xr.Dataset(metaDats)
 
     #add status information
     if fname0status is not None:
@@ -539,7 +556,7 @@ def getEvents(fnames0, config, fname0status=None):
         except TypeError:
             metaDats = statusDat
             nEvents = len(statusDat["event"])
-            metaDats['capture_starttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats[''] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
             metaDats['capture_firsttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
             metaDats['capture_lasttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
             metaDats['serialnumber'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("object"), dims=["file_starttime"], coords=[metaDats.file_starttime])

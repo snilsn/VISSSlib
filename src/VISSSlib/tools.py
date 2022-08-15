@@ -306,9 +306,13 @@ def estimateCaptureIdDiff(leaderFile, followerFiles, config, dim, nPoints = 500,
         # redo capture_time based on first time stamp...
         followerDat = fixes.makeCaptureTimeEven(followerDat, config, dim)
 
-    return estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = nPoints, maxDiffMs = maxDiffMs)
+    idDiff =  estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = nPoints, maxDiffMs = maxDiffMs)
+    leaderDat.close()
+    followerDat.close()
     
-def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDiffMs = 1):
+    return idDiff
+    
+def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDiffMs = 1, timeDim="capture_time"):
     
     if len(leaderDat[dim]) == 0:
         raise RuntimeError(f"leaderDat has zero length" )
@@ -320,32 +324,32 @@ def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDif
         points = np.linspace(0,len(leaderDat[dim]),nPoints, dtype=int, endpoint=False)
     else:
         points = range(len(leaderDat[dim]))
+
     idDiffs = []
     for point in points:
-        absDiff = np.abs(leaderDat["capture_time"].isel(**{dim: point}).values - followerDat["capture_time"])
+        absDiff = np.abs(leaderDat[timeDim].isel(**{dim: point}).values - followerDat[timeDim])
         pMin = np.min(absDiff).values
         if pMin < np.timedelta64(int(maxDiffMs),"ms"):
             pII = absDiff.argmin().values
             idDiff = followerDat.capture_id.values[pII] - leaderDat.capture_id.isel(**{dim: point}).values
             idDiffs.append(idDiff)
-    leaderDat.close()
-    followerDat.close()
-    
-    print(f"using {len(idDiffs)} of {nPoints}")
 
-    if len(idDiffs)>1:
+    nIdDiffs = len(idDiffs)
+    print(f"using {nIdDiffs} of {len(points)}")
+
+    if nIdDiffs>1:
         (vals, idx, counts) = np.unique(idDiffs, return_index=True, return_counts=True)
         idDiff = vals[np.argmax(counts)]
-        ratioSame = np.sum(idDiffs == idDiff)/len(idDiffs)
+        ratioSame = np.sum(idDiffs == idDiff)/nIdDiffs
         print("estimateCaptureIdDiff statistic:", dict(zip(vals[np.argsort(counts)[::-1]], counts[np.argsort(counts)[::-1]])))
         if ratioSame > 0.75:
             print(f"capture_id determined {idDiff}, {ratioSame*100}% have the same value" )
-            return idDiff
+            return idDiff, nIdDiffs
         else:
             raise RuntimeError(f"capture_id varies too much, only {ratioSame*100}% of {len(vals)} samples have the same value {idDiff}, 2n place: {vals[np.argsort(counts)[-2]]}" )
 
     else:
-        raise RuntimeError(f"len(idDiffs) {len(idDiffs)} is too short" )
+        raise RuntimeError(f"nIdDiffs {nIdDiffs} is too short" )
 
 
 

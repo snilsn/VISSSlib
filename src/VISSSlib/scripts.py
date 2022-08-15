@@ -73,7 +73,7 @@ def loopLevel1detectQuicklooks(settings, version=__version__, nDays = 0, skipExi
     return
 
 
-def loopLevel1matchQuicklooks(settings, version=__version__, nDays = 0, skipExisting=True):
+def loopLevel1matchQuicklooks(settings, version=__version__, nDays = 0, skipExisting=True, plotCompleteOnly=True):
 
     config = tools.readSettings(settings)
 
@@ -93,6 +93,7 @@ def loopLevel1matchQuicklooks(settings, version=__version__, nDays = 0, skipExis
             config, 
             version=version, 
             skipExisting=skipExisting,
+            plotCompleteOnly=plotCompleteOnly,
             )
         try:
             fig.close()
@@ -155,10 +156,6 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
             fn = files.FindFiles(case, camera, config, __version__)
             fnames0 = fn.listFiles("level0txt")
 
-            if len(fnames0) == 0:
-                print("no data", case )
-                #continue
-
             fname0status = fn.listFiles(level="level0status")
             if len(fname0status) > 0:
                 fname0status = fname0status[0]  
@@ -187,7 +184,7 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
             try:
                 fn.createDirs()
                 metaDats.to_netcdf(eventFile)
-            except AttributeError:
+            except ValueError:
                 print("NO DATA",case, eventFile )
 
 
@@ -384,7 +381,7 @@ def loopCreateLevel1detect(settings, skipExisting=True, nDays = 0, cameras = "al
         p.close()
         p.join()
 
-
+    return p
 
 
 def loopCreateLevel1match(settings, skipExisting=True, nDays = 0, version=__version__):

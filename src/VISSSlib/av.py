@@ -215,7 +215,7 @@ class VideoReaderMeta(object):
                     y2= self.curentFrameC.shape[0]-1
 
                 cv2.rectangle(self.curentFrameC, (x1, y1), (x2, y2), color, 2)
-                extra1 = str(partic1.record_time.values)[:-6].split('T')[-1]
+                extra1 = str(partic1.capture_time.values)[:-6].split('T')[-1]
                 extra2 = '%i'%partic1.Dmax.values
                 cv2.putText(self.curentFrameC, '%i %s %s' % (partic1.pid, extra1, extra2),
                             (int(partic1.roi[0]+w+5), int(partic1.roi[1]+self.config['height_offset'])), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)

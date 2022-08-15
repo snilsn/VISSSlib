@@ -600,11 +600,15 @@ def matchParticles(fnameLv1Detect, config,
         )[0]
     followerRestarted = fEvents.file_starttime[followerRestartedII].values
 
-    timeBlocks = np.concatenate((
-        follower1DAll.capture_time.values[:1], 
-        followerRestarted, 
-        follower1DAll.capture_time.values[-1:]
-        ))
+
+    if config.site == "mosaic":
+        timeBlocks = followerRestarted
+    else: #for non-mosaic data: camera  clock is reset for every file, needs to be treated seperately
+        timeBlocks = np.concatenate((
+            follower1DAll.capture_time.values[:1], 
+            followerRestarted, 
+            follower1DAll.capture_time.values[-1:]
+            ))
     timeBlocks = np.sort(timeBlocks)
 
     leaderMinTime = leader1D.file_starttime.min() - np.timedelta64(1,"s")
@@ -636,17 +640,30 @@ def matchParticles(fnameLv1Detect, config,
         if maxDiffMs == "config":
             maxDiffMs = 1000/config.fps/2
         try:
-            captureIdOffset = tools.estimateCaptureIdDiffCore(leader1D, follower1D, "fpid", maxDiffMs=maxDiffMs, nPoints=nPoints)
+            captureIdOffset1, nMatched1 = tools.estimateCaptureIdDiffCore(leader1D, follower1D, "fpid", maxDiffMs=maxDiffMs, nPoints=nPoints, timeDim="capture_time")
         except RuntimeError as e:
+            captureIdOffset1 = nMatched1 = 0
+        try:
+            captureIdOffset2, nMatched2 = tools.estimateCaptureIdDiffCore(leader1D, follower1D, "fpid", maxDiffMs=maxDiffMs, nPoints=nPoints, timeDim="record_time")
+        except RuntimeError: 
+            captureIdOffset2 = nMatched2 = 0
+
+        if nMatched2 == nMatched1 == 0:
             print("tools.estimateCaptureIdDiff FAILED")
-            print(str(e))
+            if not rotationOnly:
 
-            with open('%s.broken.txt' % fname1Match, 'w') as f:
-                f.write("tools.estimateCaptureIdDiff(ffl1, config, graceInterval=2)")
-                f.write("\r")
-                f.write(str(e))
-            return fname1Match, np.nan, None, None
+                with open('%s.broken.txt' % fname1Match, 'w') as f:
+                    f.write("tools.estimateCaptureIdDiff(ffl1, config, graceInterval=2)")
+                    f.write("\r")
+                return fname1Match, np.nan, None, None
 
+
+        # In theory, capture time is much better, but there are cases were it is off. Try to identify them by chgecking whether record_time yielded more matches.
+        if nMatched2 > nMatched1:
+            captureIdOffset = captureIdOffset2
+            print(f"Taking offset from record_time {(captureIdOffset2, nMatched2)} intead of capture_time {(captureIdOffset1, nMatched1)}")
+        else:
+            captureIdOffset = captureIdOffset1
 
         sigma = {
             "Z" : 1.7, # estimated from OE results

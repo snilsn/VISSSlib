@@ -79,8 +79,8 @@ class stereoView(object):
         self.lv1match = tools.open_mflevel1match(fL.listFiles("level1match"), self.config)
         
         #get capture ID diffs
-        self.idDiff = tools.estimateCaptureIdDiffCore(*self.meta.values(), "capture_time")
-        idDiff2 = tools.estimateCaptureIdDiffCore(*self.lv1detect.values(), "fpid")
+        self.idDiff, nMatched = tools.estimateCaptureIdDiffCore(*self.meta.values(), "capture_time", nPoints=500, timeDim="record_time")
+        idDiff2, nMatched = tools.estimateCaptureIdDiffCore(*self.lv1detect.values(), "fpid", nPoints=500, timeDim="record_time")
         self.idDiffs[self.config.leader] = 0
         self.idDiffs[self.config.follower] = self.idDiff
 
@@ -208,7 +208,7 @@ class stereoView(object):
 class stereoGUI():
     def __init__(self, case, config):
     
-        self.sv = analysis.stereoView(case, config)
+        self.sv = stereoView(case, config)
         
         return 
         
