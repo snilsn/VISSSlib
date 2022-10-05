@@ -9,6 +9,7 @@ import logging
 import shlex
 from functools import partial
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -28,7 +29,7 @@ def loopMetaFramesQuicklooks(settings, version=__version__, skipExisting=True, n
     instruments = config["instruments"]
     computers = config["computers"]    
     
-    days = tools.getDateRange(nDays, config)
+    days = tools.getDateRange(nDays, config, endYesterday=False)
 
 
     for dd in days:
@@ -142,7 +143,7 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
     config = tools.readSettings(settings)
 
 
-    days = tools.getDateRange(nDays, config)
+    days = tools.getDateRange(nDays, config, endYesterday=False)
 
     for dd in days:
 
@@ -192,7 +193,7 @@ def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"
 
     config = tools.readSettings(settings)
 
-    days = tools.getDateRange(nDays, config)
+    days = tools.getDateRange(nDays, config, endYesterday=False)
 
     if cameras == "all":
         cameras = [config.follower, config.leader]
@@ -384,7 +385,7 @@ def loopCreateLevel1detect(settings, skipExisting=True, nDays = 0, cameras = "al
     return p
 
 
-def loopCreateLevel1match(settings, skipExisting=True, nDays = 0, version=__version__):
+def loopCreateLevel1match(settings, skipExisting=True, nDays = 0, version=__version__, useWorker=False, nCPU=None):
 
     config = tools.readSettings(settings)
 
@@ -392,51 +393,157 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0, version=__vers
     leader = config["leader"]
     follower = config["follower"]
     
+    if useWorker:
+        assert version == __version__
+        if nCPU is None:
+            nCPU = os.cpu_count()
+        p = multiprocessing.Pool(nCPU)
+        days = [str(day).split(" ")[0].replace("-","") for day in days]
+        p.map(partial(loopCreateLevel1matchWorker, settings=settings, skipExisting=skipExisting), days)
+        p.close()
+        p.join()
+
+
+    else:
+        for dd in days:
+            year = str(dd.year)
+            month = "%02i" % dd.month
+            day = "%02i" % dd.day
+            case = f"{year}{month}{day}"
+
+            # find files
+            fl = files.FindFiles(case, leader, config, version)
+
+            fnames1L = fl.listFilesExt("level1detect")
+            if len(fnames1L) == 0:
+                print("No leader files", case, config.leader , fl.fnamesPatternExt.level1detect)
+                continue
+
+            for fname1L in fnames1L:
+
+                ffl1  = files.FilenamesFromLevel(fname1L, config)
+                fname1Match = ffl1.fname["level1match"]
+
+                if fname1L.endswith("broken.txt") or fname1L.endswith("nodata") or fname1L.endswith("notenoughframes"):
+                    ffl1.createDirs()
+                    with open(f"{fname1Match}.nodata", "w") as f:
+                        f.write("no leader data")
+                    print("NO leader DATA", fname1Match)
+                    continue
+
+                if os.path.isfile(fname1Match) and skipExisting:
+                    print("SKIPPING", fname1Match)
+                    continue
+                if os.path.isfile('%s.broken.txt' % fname1Match) and skipExisting:
+                    print("SKIPPING BROKEN", fname1Match)
+                    continue
+                if os.path.isfile('%s.nodata' % fname1Match) and skipExisting:
+                    print("SKIPPING nodata", fname1Match)
+                    continue
+
+                try:
+                    fout, matchedDat, rot, rot_err = matching.matchParticles(fname1L, config)
+                except Exception as e:
+                    print("matching.matchParticles FAILED", fname1Match)
+                    print(str(e))
+                    ffl1.createDirs()
+                    with open('%s.broken.txt' % fname1Match, 'w') as f:
+                        f.write("in scripts: matching.matchParticles FAILED")
+                        f.write("\r")
+                        f.write(str(e))
+
+        return
+
+def loopCreateLevel1matchWorker(day, settings=None, skipExisting=True, nCPU=1, stdout=subprocess.DEVNULL):
+    logging.config.dictConfig(tools.get_logging_config('match_run.log'))
+    log = logging.getLogger()
+
+    BIN = os.path.join(sys.exec_prefix, "bin", "python")
+
+    if nCPU is None:
+        command = f"{BIN} -m VISSSlib scripts.loopCreateLevel1match   {settings} {day}"
+    else:
+        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib scripts.loopCreateLevel1match   {settings} {day}"
+
+    log.info(command)
+    errorlines = collections.deque([], 50)
+
+    with subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=stdout, universal_newlines=True) as proc:
+        try:
+            for line in proc.stdout:
+                print(str(line),end='')
+        except TypeError:
+            pass
+        for line in proc.stderr:
+            print(str(line),end='')
+            errorlines.append(line)
+        proc.wait() # required, otherwise returncode can be none is process is too fast
+        if proc.returncode != 0:
+
+            log.info(f"{day} BROKEN {proc.returncode}")
+        else:
+            log.info(f"{day} SUCCESS {proc.returncode}")
+
+        log.info(errorlines)
+
+def loopCheckCompleteness(settings, nDays = 0, cameras = "all", checkDuplicates=True, checkMissing=True):
+
+    config = tools.readSettings(settings)
+
+    days = tools.getDateRange(nDays, config)
+
+    if cameras == "all":
+        cameras = [config.follower, config.leader]
+
     for dd in days:
         year = str(dd.year)
         month = "%02i" % dd.month
         day = "%02i" % dd.day
         case = f"{year}{month}{day}"
 
-        # find files
-        fl = files.FindFiles(case, leader, config, version)
+        for camera in cameras:
+            # find files
+            ff = files.FindFiles(case, camera, config)
+            mf = ff.isCompleteMetaFrames
+            l1d = ff.isCompleteL1detect
+            l1m = ff.isCompleteL1match
+            products = ["metaFrames", "level1detect", "level1match"]
 
-        fnames1L = fl.listFilesExt("level1detect")
-        if len(fnames1L) == 0:
-            print("No leader files", case, config.leader , fl.fnamesPatternExt.level1detect)
-            continue
+            if camera == config.leader:
+                allDone = [mf, l1d, l1m]
+            else:
+                allDone = [mf, l1d]
+            if np.all(allDone):
+                print(camera, case, "all done", np.all(allDone))
+            else:
+                print(camera, case, "MISSING", allDone)
 
-        for fname1L in fnames1L:
+                firstMiss = products[np.where(np.array(allDone) == False)[0][0]]
+                recFiles = np.array(ff.listFiles("level0txt"))
+                nRec = len(recFiles)
+                procFiles = np.array(ff.listFilesExt(firstMiss))
+                nProc = len(procFiles)
+                print("# level0", nRec , "#", firstMiss, nProc)
 
-            ffl1  = files.FilenamesFromLevel(fname1L, config)
-            fname1Match = ffl1.fname["level1match"]
+                processedTimes = np.array([files.FilenamesFromLevel(f, config).datetime64 for f in ff.listFilesExt(firstMiss)])
 
-            if fname1L.endswith("broken.txt") or fname1L.endswith("nodata") or fname1L.endswith("notenoughframes"):
-                ffl1.createDirs()
-                with open(f"{fname1Match}.nodata", "w") as f:
-                    f.write("no leader data")
-                print("NO leader DATA", fname1Match)
-                continue
 
-            if os.path.isfile(fname1Match) and skipExisting:
-                print("SKIPPING", fname1Match)
-                continue
-            if os.path.isfile('%s.broken.txt' % fname1Match) and skipExisting:
-                print("SKIPPING BROKEN", fname1Match)
-                continue
-            if os.path.isfile('%s.nodata' % fname1Match) and skipExisting:
-                print("SKIPPING nodata", fname1Match)
-                continue
+                if checkDuplicates and nProc > nRec:
+                    print("too many files processed, check these files:")
+                    print("*"*50)
+                    seen = set()
+                    dupes = [x for x in processedTimes if x in seen or seen.add(x)]    
+                    dupeFiles = []
+                    for dupe in dupes:
+                        dupeFiles.append(procFiles[(dupe == processedTimes)])
+                    dupeFiles = np.concatenate(dupeFiles)
+                    for dupeFile in dupeFiles: print(dupeFile)
+                elif checkMissing:
+                    print("files missing")
+                    print("*"*50)
 
-            try:
-                fout, matchedDat, rot, rot_err = matching.matchParticles(fname1L, config)
-            except Exception as e:
-                print("matching.matchParticles FAILED")
-                print(str(e))
-
-                with open('%s.broken.txt' % fname1Match, 'w') as f:
-                    f.write("in scripts: matching.matchParticles FAILED")
-                    f.write("\r")
-                    f.write(str(e))
-
+                    recTimes = [files.Filenames(f, config).datetime64 for f in ff.listFiles("level0txt")]
+                    missingTimes = set(recTimes).difference( set(processedTimes))
+                    for missingTime in missingTimes:
+                        print(camera, firstMiss, missingTime)
     return

@@ -11,6 +11,9 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 
+import IPython.display
+import cv2
+
 from . import files
 from . import fixes
 
@@ -67,13 +70,20 @@ def readSettings(fname):
         config = yaml.load(stream, Loader=yaml.Loader)
     return Dict(config)
 
-def getDateRange(nDays, config):
+def getDateRange(nDays, config, endYesterday=True):
     if config["end"] == "today":
         end = datetime.datetime.utcnow() 
-        end2 = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        if endYesterday:
+            end2 = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        else:
+            end2 = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
     else:
         end = end2 = config["end"]
     
+    if (type(nDays) is int) or type(nDays) is float:
+        if nDays > 1000:
+            nDays = str(nDays)
+
     if nDays == 0:
         days = pd.date_range(
             start=config["start"],
@@ -120,6 +130,14 @@ def getDateRange(nDays, config):
             name=None,
             inclusive=None
         )
+
+    #double check to make sure we did not add too much
+    days = days[days>=pd.Timestamp(config.start)]
+    if config.end != "today":
+        days = days[days<=pd.Timestamp(config.end)]
+    else:
+        days = days[days<=datetime.datetime.utcnow() ]
+
     return days
 
 def otherCamera(camera, config):
@@ -180,7 +198,7 @@ def open_mfmetaFrames(fnames, config, start=None, end=None, applyFixes=True):
 
 
 
-def open_mflevel1detect(fnames, config, removeTouchBorders=True, start=None, end=None, applyFixes=True, datVars="all"):
+def open_mflevel1detect(fnamesExt, config, removeTouchBorders=True, start=None, end=None, applyFixes=True, datVars="all"):
     '''
     helper function to open multiple level1detect files at once
     '''
@@ -201,7 +219,33 @@ def open_mflevel1detect(fnames, config, removeTouchBorders=True, start=None, end
 
         return dat
 
+    if type(fnamesExt) is not list:
+        fnamesExt = [fnamesExt]
+
+    fnames = []
+    for fname in fnamesExt:
+        if fname.endswith("nodata"):
+            pass
+        elif fname.endswith("broken.txt"):
+            pass
+        elif fname.endswith("notenoughframes"):
+            pass
+        else:
+            fnames.append(fname)
+    if len(fnames) == 0:
+        return None
+
     dat = xr.open_mfdataset(fnames, combine="nested", concat_dim="pid", preprocess=preprocess).load()
+
+    if start is not None:
+        dat = dat.isel(pid=(dat.capture_time >= start))
+        if len(dat.pid) == 0:
+            return None
+        
+    if (end is not None):
+        dat = dat.isel(pid=(dat.capture_time <= end))
+        if len(dat.pid) == 0:
+            return None
 
     if applyFixes:
         # fix potential integer overflows if necessary
@@ -219,16 +263,6 @@ def open_mflevel1detect(fnames, config, removeTouchBorders=True, start=None, end
         
     if len(dat.fpid) == 0:
         return None
-    
-    if start is not None:
-        dat = dat.isel(fpid=(dat.capture_time >= start))
-        if len(dat.fpid) == 0:
-            return None
-        
-    if (end is not None):
-        dat = dat.isel(fpid=(dat.capture_time <= end))
-        if len(dat.fpid) == 0:
-            return None
         
     if removeTouchBorders:
         dat = dat.isel(fpid=(~dat.touchesBorder.any('side')))
@@ -239,13 +273,25 @@ def open_mflevel1detect(fnames, config, removeTouchBorders=True, start=None, end
     dat.load()
     return dat
 
-def open_mflevel1match(fnames, config):
+def open_mflevel1match(fnamesExt, config):
     '''
     helper function to open multiple level1match files at once
     '''
-    if type(fnames) is not list:
-        fnames = [fnames]
+    if type(fnamesExt) is not list:
+        fnamesExt = [fnamesExt]
         
+    fnames = []
+    for fname in fnamesExt:
+        if fname.endswith("nodata"):
+            pass
+        elif fname.endswith("broken.txt"):
+            pass
+        elif fname.endswith("notenoughframes"):
+            pass
+        else:
+            fnames.append(fname)
+    if len(fnames) == 0:
+        return None
 
     def preprocess(dat):
         # keep trqack of file start time
@@ -320,11 +366,13 @@ def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDif
         raise RuntimeError(f"followerDat has zero length" )
 
 
+    # cut number of investigated points in time if required
     if len(leaderDat[dim])>nPoints:
         points = np.linspace(0,len(leaderDat[dim]),nPoints, dtype=int, endpoint=False)
     else:
         points = range(len(leaderDat[dim]))
 
+    # loop through all points
     idDiffs = []
     for point in points:
         absDiff = np.abs(leaderDat[timeDim].isel(**{dim: point}).values - followerDat[timeDim])
@@ -337,11 +385,11 @@ def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDif
     nIdDiffs = len(idDiffs)
     print(f"using {nIdDiffs} of {len(points)}")
 
-    if nIdDiffs>1:
+    if nIdDiffs>0:
         (vals, idx, counts) = np.unique(idDiffs, return_index=True, return_counts=True)
         idDiff = vals[np.argmax(counts)]
         ratioSame = np.sum(idDiffs == idDiff)/nIdDiffs
-        print("estimateCaptureIdDiff statistic:", dict(zip(vals[np.argsort(counts)[::-1]], counts[np.argsort(counts)[::-1]])))
+        print("estimateCaptureIdDiff statistic:", dict(zip(vals[np.argsort(counts)[::-1]], counts[np.argsort(counts)[::-1]])), timeDim)
         if ratioSame > 0.75:
             print(f"capture_id determined {idDiff}, {ratioSame*100}% have the same value" )
             return idDiff, nIdDiffs
@@ -349,9 +397,17 @@ def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDif
             raise RuntimeError(f"capture_id varies too much, only {ratioSame*100}% of {len(vals)} samples have the same value {idDiff}, 2n place: {vals[np.argsort(counts)[-2]]}" )
 
     else:
-        raise RuntimeError(f"nIdDiffs {nIdDiffs} is too short" )
+        print(f"nIdDiffs {nIdDiffs} is too short" )
+        return None, nIdDiffs
 
 
+def getOtherCamera(config, camera):
+    if camera == config.instruments[0]:
+        return config.instruments[1]
+    elif camera == config.instruments[1]:
+        return config.instruments[0]
+    else:
+        raise ValueError
 
 
 def cutFollowerToLeader(leader, follower, gracePeriod=1, dim="fpid"):
@@ -364,4 +420,17 @@ def cutFollowerToLeader(leader, follower, gracePeriod=1, dim="fpid"):
         follower = follower.isel({dim:(follower.capture_time <= end)})
 
     return follower
+
+def nextCase(case):
+    return str(np.datetime64(f"{case[:4]}-{case[4:6]}-{case[6:8]}") + np.timedelta64(1,"D")).replace("-","")
+
+def prevCase(case):
+    return str(np.datetime64(f"{case[:4]}-{case[4:6]}-{case[6:8]}") - np.timedelta64(1,"D")).replace("-","")
+
+def displayImage(frame, doDisplay=True):
+    _, frame = cv2.imencode('.jpeg', frame)
+    if doDisplay:
+        IPython.display.display(IPython.display.Image(data=frame.tobytes()))
+    else:
+        return IPython.display.Image(data=frame.tobytes())
 

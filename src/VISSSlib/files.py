@@ -43,7 +43,7 @@ class FindFiles(object):
         self.config = config
         self.version = version
 
-        
+
         computerDict = {}
         for computer1, camera1 in zip(config["computers"], config["instruments"]):
             computerDict[camera1] = computer1
@@ -57,6 +57,12 @@ class FindFiles(object):
         except IndexError:
             self.timestamps = None
             
+        try:
+            self.datetime = datetime.datetime.strptime(self.case.ljust(15, "0"), "%Y%m%d-%H%M%S")
+        except ValueError:
+            self.datetime = datetime.datetime.strptime(self.case, "%Y%m%d")
+        self.datetime64= np.datetime64(self.datetime, "ns")
+
         self.logpath = "%s/%s_%s_%s/" % (config.path.format(level="logs"), self.computer, config.visssGen, self.camera)
         
         outpath = "%s/%s/%s/%s" % (config["pathOut"], self.year, self.month, self.day)
@@ -90,6 +96,8 @@ class FindFiles(object):
         self.fnamesPatternExt = Dict({})
         for dL in fileLevels + dailyLevels:
             self.fnamesPatternExt[dL] = "%s/%s_V%s_*%s*%s*nc.[b,n]*"%(self.outpath[dL], dL, version, camera, self.case) #finds broken & nodata
+        self.fnamesPatternExt.level0txt = ""
+        self.fnamesPatternExt.level0 = ""
 
         self.fnamesDaily = Dict({})
         for dL in dailyLevels:
@@ -118,6 +126,16 @@ class FindFiles(object):
         return sorted(filter( os.path.isfile,
                                 glob.glob(self.fnamesPatternExt[level])+glob.glob(self.fnamesPattern[level]) ))
     
+    @functools.lru_cache
+    def listFilesWithNeighbors(self, level):
+        fnames = self.listFiles(level)
+        if len(fnames) > 0:
+            ff1 = FilenamesFromLevel(fnames[0], self.config)
+            ff2 = FilenamesFromLevel(fnames[-1], self.config)
+            fnames = [ff1.prevFile(level=level)] + fnames + [ff2.nextFile(level=level)]
+
+        return fnames
+
     @property
     def isCompleteL1detect(self):
         return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level1detect")))
@@ -192,7 +210,11 @@ class Filenames(object):
         self.day = self.case[6:8]
         self.timestamp = self.case[-6:]
 
-        self.datetime = datetime.datetime.strptime(self.case, "%Y%m%d-%H%M%S")
+        try:
+            self.datetime = datetime.datetime.strptime(self.case, "%Y%m%d-%H%M%S")
+        except ValueError:
+            self.datetime = datetime.datetime.strptime(self.case, "%Y%m%d")
+
         self.datetime64= np.datetime64(self.datetime, "ns")
 
         if config["nThreads"] is not None:
@@ -258,7 +280,7 @@ class Filenames(object):
 
         ff = FindFiles(case, otherCam, self.config, self.version)
         # get fnames for correct level
-        fnames = ff.listFiles(level)
+        fnames = ff.listFilesExt(level)
         
         thisDayStart = self.datetime.replace(hour=0, minute=0, second=0)
         nextDayStart = thisDayStart + datetime.timedelta(days=1)
@@ -269,20 +291,20 @@ class Filenames(object):
         if earlyFile:
             prevCase = datetime.datetime.strftime(prevDayStart, "%Y%m%d")
             prevFf = FindFiles(prevCase, otherCam, self.config, self.version)
-            fnames = prevFf.listFiles(level) + fnames
+            fnames = prevFf.listFilesExt(level) + fnames
         
         #same for late files
         lateFile = (nextDayStart - self.datetime) <= datetime.timedelta(seconds=self.config["newFileInt"] + graceInterval)
         if lateFile:
             nextCase = datetime.datetime.strftime(nextDayStart, "%Y%m%d")
             nextFf = FindFiles(nextCase, otherCam, self.config, self.version)
-            fnames += nextFf.listFiles(level)
+            fnames += nextFf.listFilesExt(level)
         
         # get timestamps of surrounding files
-        if level == "level0":
+        if (self.config.nThreads is None) or ( level == "level0") or (level == "level0txt"):
             ts = np.array([f.split("_")[-2] for f in fnames])
         else:
-            ts = np.array([f.split("_")[-1][:-3] for f in fnames])
+            ts = np.array([f.split("_")[-1].split(".")[0] for f in fnames])
         ts = pn.to_datetime(ts, format="%Y%m%d-%H%M%S")
 
         plusDelta = np.timedelta64(self.config["newFileInt"] + graceInterval, "s")

@@ -51,6 +51,8 @@ class VideoReader(cv2.VideoCapture):
         res, frame = self.read()
         if frame is not None:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+
         return res, frame
 
     @property
@@ -172,6 +174,10 @@ class VideoReaderMeta(object):
     
         self.curentFrameC = cv2.cvtColor(self.curentFrame, cv2.COLOR_GRAY2BGR)
 
+        if self.config.cropImage is not None:
+            color = (255,255,255)
+            cv2.rectangle(self.curentFrameC, (self.config['cropImage'][0], self.config['cropImage'][1] + self.config['height_offset']), (self.config['cropImage'][0]+ (self.config.frame_width - 2*self.config['cropImage'][0]), self.config['cropImage'][1] + self.config['height_offset'] + (self.config.frame_height - 2*self.config['cropImage'][1])), color, 2)
+
         ct = self.currentCaptureTime
         try: 
             self.currentlv1detect = self.lv1detect.isel(pid=(self.lv1detect.capture_time==ct))
@@ -194,8 +200,12 @@ class VideoReaderMeta(object):
                     partic1 = self.currentlv1detect.sel(fpid=(self.currentlv1detect.pid==pid)).squeeze()
                 (x, y, w, h) = partic1.roi.values.astype(int)
                 y = y + self.config['height_offset']
-                
-                if (highlightPid == "meta") and pid in self.lv1match.pid:
+
+                if self.config.cropImage is not None:
+                    y = y + self.config['cropImage'][1]
+                    x = x + self.config['cropImage'][0]
+
+                if (self.lv1match is not None) and (highlightPid == "meta") and pid in self.lv1match.pid:
                     matchedDats.append(self.lv1match.isel(fpair_id = self.lv1match.pid == pid))
                     color = (255,255,255)
                 elif highlightPid == pid:
@@ -217,8 +227,15 @@ class VideoReaderMeta(object):
                 cv2.rectangle(self.curentFrameC, (x1, y1), (x2, y2), color, 2)
                 extra1 = str(partic1.capture_time.values)[:-6].split('T')[-1]
                 extra2 = '%i'%partic1.Dmax.values
+
+                posY = int(partic1.roi[1]+self.config['height_offset'])
+                posX = int(partic1.roi[1]+self.config['height_offset'])
+                if self.config.cropImage is not None:
+                    posY = posY + self.config['cropImage'][1]
+                    posX = posX + self.config['cropImage'][0]
+
                 cv2.putText(self.curentFrameC, '%i %s %s' % (partic1.pid, extra1, extra2),
-                            (int(partic1.roi[0]+w+5), int(partic1.roi[1]+self.config['height_offset'])), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+                            (posX, posY), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
 
             if len(matchedDats) > 0:
                 matchedDats = xr.concat(matchedDats, dim="fpair_id")

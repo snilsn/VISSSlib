@@ -593,7 +593,7 @@ def createMetaCoefQuicklook(case, config, version=__version__, skipExisting=True
     
     eventDatL = xr.open_dataset(fnOld.listFiles("metaEvents")[0])
     for event in eventDatL.event:
-        if str(event.values).startswith("start"):
+        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
             for bx in [bx1,bx2,bx3,bx4]:
                 bx.axvline(event.file_starttime.values, color="r")
     lBlocked = (eventDatL.blocking.sel(blockingThreshold=50) > 0.1)
@@ -605,7 +605,7 @@ def createMetaCoefQuicklook(case, config, version=__version__, skipExisting=True
 
     eventDatF = xr.open_dataset(ffOld.listFiles("metaEvents")[0])
     for event in eventDatF.event:
-        if str(event.values).startswith("start"):
+        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
             for bx in [bx1,bx2,bx3,bx4]:
                 bx.axvline(event.file_starttime.values, color="blue")
     fBlocked = (eventDatF.blocking.sel(blockingThreshold=50) > 0.1)
@@ -799,7 +799,7 @@ def metaFramesQuicklook(
 
     firstEvent = True
     for event in events.event:
-        if str(event.values).startswith("start"):
+        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
             for bx in [ax1,ax2,ax3]:
                 if firstEvent:
                     label="restarted"
@@ -823,10 +823,10 @@ def metaFramesQuicklook(
 
 
 def createLevel1matchQuicklook(case, config, skipExisting = True, version=__version__, plotCompleteOnly=True):
-    leader = config["leader"]
 
     # find files
-    fl = files.FindFiles(case, leader, config, version)
+    fl = files.FindFiles(case, config["leader"], config, version)
+    ff = files.FindFiles(case, config["follower"], config, version)
     #get level 0 file names
     fOut = fl.quicklook.level1match
 
@@ -927,6 +927,35 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     cax[8].axis('off')
 
     
+
+    eventDatL = xr.open_dataset(fl.listFiles("metaEvents")[0])
+    for event in eventDatL.event:
+        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
+            for bx in ax:
+                bx.axvline(event.file_starttime.values, color="r")
+    lBlocked = (eventDatL.blocking.sel(blockingThreshold=50) > 0.1)
+    lBlocked = lBlocked.file_starttime.where(lBlocked).values
+    for bx in ax:
+        ylim = bx.get_ylim() 
+        bx.fill_between(lBlocked, [ylim[0]]*len(lBlocked), [ylim[1]]*len(lBlocked), color="red", alpha=0.25, label="Leader")
+        bx.set_ylim(ylim) 
+
+    eventDatF = xr.open_dataset(ff.listFiles("metaEvents")[0])
+    for event in eventDatF.event:
+        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
+            for bx in ax:
+                bx.axvline(event.file_starttime.values, color="blue")
+    fBlocked = (eventDatF.blocking.sel(blockingThreshold=50) > 0.1)
+    fBlocked = fBlocked.file_starttime.where(fBlocked).values
+    for bx in ax:
+        ylim = bx.get_ylim() 
+        bx.fill_between(fBlocked, [ylim[0]]*len(fBlocked), [ylim[1]]*len(fBlocked), color="blue", alpha=0.25, label="Follower")
+        bx.set_ylim(ylim) 
+
+    ax[1].legend() 
+
+
+
     for ii in range(8):
         ax[ii].get_shared_x_axes().join(ax[ii], ax[-1])
         ax[ii].set_xticklabels([])

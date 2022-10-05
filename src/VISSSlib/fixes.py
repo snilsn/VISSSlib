@@ -227,20 +227,29 @@ def makeCaptureTimeEven(datF, config, dim="capture_time"):
     that we trust) with even spacing.
     '''
     print("making follower times even")
-    assert np.all(datF.capture_id.diff(dim)>=0), "capture_id mus increase monotonically "
+
+    if len(datF[dim])<=1:
+        print("makeCaptureTimeEven: too short, nothing to do")
+        return datF
+
+    assert np.all(datF.capture_id.diff(dim)>=0), "capture_id must increase monotonically "
+    assert np.all(datF.capture_time.diff(dim).astype(int)>=0), "capture_time must increase monotonically "
+
 
     slopeF = ((datF["capture_time"].diff(dim) /
           datF["capture_id"].diff(dim))).astype(int)
     
+
     configSlope = int(round(1e9/config.fps, -3))
     deltaSlope = 1000 # =1us
 
     # make sure we do not have ghost frames in the data
-    if dim == "pid":
+    if dim == "pid" :
         # we can have slope 0 in level1detect
         slopeF = slopeF.isel(pid=(datF["capture_id"].diff(dim) !=0))
-    assert slopeF.min() >= (configSlope-deltaSlope)
-    assert slopeF.max() <= (configSlope+deltaSlope)
+
+    assert slopeF.min() >= (configSlope-deltaSlope), f"min slope {slopeF.min()} too small {(configSlope+deltaSlope)}"
+    assert slopeF.max() <= (configSlope+deltaSlope), f"max slope {slopeF.max()} too large {(configSlope+deltaSlope)}"
 
     offset = datF.capture_time.values[0]
     fixedTime = (((datF.capture_id-datF.capture_id[0]) * configSlope)+offset)

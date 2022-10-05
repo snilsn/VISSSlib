@@ -6,6 +6,7 @@ import itertools
 import subprocess
 
 # import matplotlib.pyplot as plt
+import IPython.display 
 import numpy as np
 import xarray as xr
 import scipy.stats
@@ -132,7 +133,6 @@ class detectedParticles(object):
                  history=500,
                  dist2Threshold=400,
                  detectShadows=False,
-                 showResult=True,
                  verbosity=10,
                  composite = True,
                  maxDarkestPoint = 20,
@@ -149,7 +149,6 @@ class detectedParticles(object):
         self.version = __version__.split(".")[0]
 
         self.verbosity = verbosity
-        self.showResult = showResult
         self.composite = composite
 
         self.minDmax = minDmax
@@ -186,7 +185,55 @@ class detectedParticles(object):
 
         return
 
-    def update(self, frame, pp, capture_id, record_id, capture_time, record_time, nThread, training=False):
+
+    def _applyCannyFilter(self, useSkimage=True):
+
+        """
+        CANNY
+        #apply Canny edge detection, close gaps
+        canny = cv2.Canny(self.frame, 80,100)
+        edged = cv2.dilate(canny, None, iterations=2)
+        edged = cv2.erode(edged, None, iterations=2)
+        #consider only moving parts
+        edged = self.fgMask//255 * edged
+        if "edges" in testing:
+            print("SHOWING", "edges")
+            tools.displayImage(edged )
+        """
+
+
+        """
+        CANNY2
+        """
+        # return self.fgMask
+        if useSkimage:
+            from skimage import feature
+            from skimage.util import img_as_ubyte
+
+            # Canny filter gets confused if the feature is directly at the edge, so make the moving
+            # mask a little larger
+            fgMask4Canny = (cv2.dilate(self.fgMask, None, iterations=5)//255).astype(bool)
+            fgMaskCanny = feature.canny(self.frame, sigma=2, mask = fgMask4Canny)#, mask = (self.fgMask//255).astype(bool)))
+            fgMaskCanny = img_as_ubyte(fgMaskCanny)
+
+            #close gaps
+            kernel = np.ones((5,5),np.uint8)
+            fgMaskCanny = cv2.morphologyEx(fgMaskCanny, cv2.MORPH_CLOSE, kernel)
+
+
+        else:
+            canny = cv2.Canny(self.frame, 80,100)
+            edged = cv2.dilate(canny, None, iterations=2)
+            edged = cv2.erode(edged, None, iterations=2)
+            #consider only moving parts
+            edged = self.fgMask//255 * edged
+
+        return fgMaskCanny
+
+
+
+
+    def update(self, frame, pp, capture_id, record_id, capture_time, record_time, nThread, training=False, testing=[]):
 
         self.capture_id = capture_id
         self.record_id = record_id
@@ -198,6 +245,11 @@ class detectedParticles(object):
             print("particles.update", "FRAME", pp,  'Start %s' % 'update')
 
         self.frame = frame[self.height_offset:]
+
+        # convert to gray scale if required
+        if len(self.frame.shape) == 3:
+            self.frame = cv2.cvtColor(self.frame,cv2.COLOR_RGB2GRAY)
+
         if self.maskCorners is not None:
             self.frame[:self.maskCorners, :self.maskCorners] = 0
             self.frame[-self.maskCorners:, :self.maskCorners] = 0
@@ -208,24 +260,44 @@ class detectedParticles(object):
             offsetX, offsetY = self.cropImage
             self.frame = self.frame[offsetY:-offsetY, offsetX:-offsetX]
 
+        if "input" in testing:
+            print("SHOWING", "input")
+            tools.displayImage(self.frame)
 
         self.fgMask = self.backSub.apply(self.frame)
+
 
         if training :
             return True
 
         if self.fgMask.max() == 0:
             print("particles.update", "FRAME", pp, 'nothing is moving')
+            if "nonMovingFgMask" in testing:
+                print("SHOWING", "nonMovingFgMask")
+                tools.displayImage(self.fgMask)
+
             return True
+
+        if "movingInput" in testing:
+            print("SHOWING", "movingInput")
+            tools.displayImage(self.frame)
+
+        if "fgMaskWithHoles" in testing:
+            print("SHOWING", "fgMaskWithHoles")
+            tools.displayImage(self.fgMask)
+
 
 
         self.frame4drawing = self.frame.copy()
 
-        self.nMovingPix = self.fgMask.sum()/255
+        self.nMovingPix = self.fgMask.sum()//255
 
         # thresh = cv2.dilate(self.fgMask, None, iterations=2)
+
+
         cnts = cv2.findContours(self.fgMask, cv2.RETR_EXTERNAL,
                                 cv2.CHAIN_APPROX_SIMPLE)
+
 
         self.cnts = list()
         for cnt in cnts[0]:
@@ -246,12 +318,16 @@ class detectedParticles(object):
 
             added, particle1 = self.add(self.frame, cnt, verbosity=self.verbosity, composite = self.composite)
             if added:
-                print("particles.update", "PID", pp, "Added with area =%i"%(particle1.area))
-                if self.showResult:
-                    particle1.drawContour(self.frame4drawing)
-                    particle1.annotate(self.frame4drawing, extra='added')
+                print("particles.update", "PID", pp, "Added with area =%i"%(particle1.area), f"Dmax/Dmin={particle1.Dmax*43.53 /1000.}/{particle1.Dmin*43.53 /1000.}")
+                if "result" in testing:
+                    self.frame4drawing = particle1.drawContour(self.frame4drawing)
+                    self.frame4drawing = particle1.annotate(self.frame4drawing, extra='added')
             else:
                 print("particles.update", "PID", pp, "Not added")
+        if "result" in testing:
+            print("SHOWING", "result")
+            tools.displayImage(self.frame4drawing)
+
         return True
 
 
@@ -400,7 +476,7 @@ class singleParticle(object):
         self.rect = cv2.minAreaRect(self.cnt)
         #todo: consider https://stackoverflow.com/questions/15956124/minarearect-angles-unsure-about-the-angle-returned
         center, dims, self.angle = self.rect
-        self.angle = self.angle
+        self.angle = self.angle # see https://theailearner.com/tag/cv2-minarearect/
         self.Dmax = max(dims)
         self.Dmin = min(dims)
         self.aspectRatio = self.Dmin / self.Dmax
@@ -470,8 +546,10 @@ class singleParticle(object):
         return frame
 
     def annotate(self, frame, color=(0, 255, 0), extra=''):
+        (x, y, w, h) = self.roi
         cv2.putText(frame, '%i %s' % (self.pid, extra),
-                    (self.x, self.y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+                    (x+w+5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+        return frame
 
 def checkMotion(subFrame, oldFrame, threshs):
     '''
@@ -520,10 +598,12 @@ def _getTrainingFrames(fnamesV, historySize, config):
 
 def detectParticles(fname,
                     settings,
-                    testing=False,
+                    testing=[],
                     writeImg=True,
                     historySize=20,
                     testMovieFile = True,
+                    dist2Threshold = 400,
+                    stopAfter = None,
                     ):
 
     logging.config.dictConfig(tools.get_logging_config('detection_run.log'))
@@ -716,6 +796,7 @@ def detectParticles(fname,
         minBlur=0,  # 2, #10,  # 30,
         function=cv2.createBackgroundSubtractorKNN,
         history=historySize,
+        dist2Threshold=dist2Threshold,
         cropImage=cropImage
     )
 
@@ -812,7 +893,9 @@ def detectParticles(fname,
                                    metaData1.capture_time.values,
                                    metaData1.record_time.values,
                                    nThread,
+                                   testing=testing,
                                    )
+
         if res:
             movingObjects[pp] = snowParticles.nParticle
             Dmax = []
@@ -827,14 +910,14 @@ def detectParticles(fname,
             ':', '-')[:-6]
 
         if not res:
-            if testing:
+            if "skipped" in testing:
                 plt.figure(figsize=(10, 10))
                 plt.imshow(snowParticles.frame4drawing,
                            cmap='gray', vmin=0, vmax=255)
                 plt.title('SKIPPED %s %i %s' %
                           (camera, pp, timestamp))
                 plt.show()
-                plt.savefig('skiped_%s_%i_%s.png' %
+                plt.savefig('testOutput/skipped_%s_%i_%s.png' %
                             (camera, pp, timestamp))
 
         for part in snowParticles.lastFrame.values():
@@ -852,11 +935,19 @@ def detectParticles(fname,
                     imName = '%s.png' % (pidStr)
                     log.info('writing %s/%s' % (imFolder, imName))
                     os.system('mkdir -p %s' % (imFolder))
+
+                    #use https://stackoverflow.com/questions/42314272/imwrite-merged-image-writing-image-after-adding-alpha-channel-to-it-opencv-pyt ??
+
                     cv2.imwrite('%s/%s' %
                                 (imFolder, imName),
                                 part.particleBox)
-
+            if "particle" in testing:#
+                tools.displayImage(np.hstack((part.particleBox, part.particleBoxCropped)))
             part.dropImages()
+
+        if (len(testing)>0) and (stopAfter is not None) and (pp > stopAfter):
+            break
+
 
     for nThread in inVid.keys():
         inVid[nThread].release()
@@ -877,7 +968,7 @@ def detectParticles(fname,
         var: comp for var in metaData.data_vars}
     metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
     metaData.close()
-    if hasData and not testing:
+    if hasData and (len(testing)==0):
         snowParticlesXR = snowParticles.collectResults()
 
         comp = dict(zlib=True, complevel=5)
@@ -890,3 +981,15 @@ def detectParticles(fname,
             f.write('no data')
 
     return 0
+
+
+def autoCanny(image, sigma=0.33):
+    # compute the median of the single channel pixel intensities
+    v = np.median(image)
+    # apply automatic Canny edge detection using the computed median
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    edged = cv2.Canny(image, lower, upper, L2gradient=True)
+    print("autoCanny", lower, upper)
+    # return the edged image
+    return edged

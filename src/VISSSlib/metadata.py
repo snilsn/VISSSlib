@@ -553,10 +553,11 @@ def getEvents(fnames0, config, fname0status=None):
         statusDat = xr.Dataset({"event":xr.DataArray(statusDat)})
         try:
             metaDats = xr.merge((metaDats, statusDat))
+
         except TypeError:
             metaDats = statusDat
             nEvents = len(statusDat["event"])
-            metaDats[''] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
+            metaDats['capture_starttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
             metaDats['capture_firsttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
             metaDats['capture_lasttime'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("datetime64[ns]"), dims=["file_starttime"], coords=[metaDats.file_starttime])
             metaDats['serialnumber'] = xr.DataArray((np.zeros(nEvents)*np.nan).astype("object"), dims=["file_starttime"], coords=[metaDats.file_starttime])
@@ -583,6 +584,12 @@ def getEvents(fnames0, config, fname0status=None):
             statusDat = xr.Dataset()
             statusDat["event"] = xr.DataArray(["start-user"] * len(restartDat), coords=[restartDat], dims=["file_starttime"] )
             metaDats = xr.merge((metaDats, statusDat))
+
+    #xarray bug: merge throws away dateime64 unit "ns" if len(metaDats) == 0 before merge, so make sure it is correct
+    metaDats = metaDats.assign_coords(file_starttime=metaDats.file_starttime.astype("datetime64[ns]"))
+    metaDats['capture_starttime'] = metaDats['capture_starttime'].astype("datetime64[ns]")
+    metaDats['capture_firsttime'] = metaDats['capture_firsttime'].astype("datetime64[ns]")
+    metaDats['capture_lasttime'] = metaDats['capture_lasttime'].astype("datetime64[ns]")
 
     return metaDats
 

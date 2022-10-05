@@ -516,12 +516,13 @@ def matchParticles(fnameLv1Detect, config,
         leader1D = tools.open_mflevel1detect(fnameLv1Detect, config) #with fixes
     except AssertionError as e:
         print("tools.open_mflevel1detect leader FAILED")
-        print(str(e))
+        error = str(e)
+        print(error)
 
         with open('%s.broken.txt' % fname1Match, 'w') as f:
             f.write("tools.open_mflevel1detect(fnameLv1Detect, config)")
-            f.write("\r")
-            f.write(str(e))
+            f.write("\n")
+            f.write(error)
         return fname1Match, np.nan, None, None
 
     if leader1D is None:
@@ -549,6 +550,12 @@ def matchParticles(fnameLv1Detect, config,
         rotate_err = pd.Series(rotate_err_default)
 
     fnames1F = ffl1.filenamesOtherCamera(graceInterval=-1, level="level1detect")
+    fnames1FRAW = ffl1.filenamesOtherCamera(graceInterval=-1, level="level0txt")
+    if len(fnames1FRAW) !=  len(fnames1F):
+        print(f"no follower data for {fnameLv1Detect} processed YET")
+        print(fnames1F)
+        print(fnames1FRAW)
+        return fname1Match, None, None, None
     if len(fnames1F) == 0:
         with open('%s.nodata' % fname1Match, 'w') as f:
             f.write(f"no follower data for {fnameLv1Detect}")
@@ -568,14 +575,15 @@ def matchParticles(fnameLv1Detect, config,
     print(f"opening {fnames1F}")
     try:
         follower1DAll = tools.open_mflevel1detect(fnames1F, config, start=start, end=end) #with foxes
-    except AssertionError as e:
+    except Exception as e:
         print("tools.open_mflevel1detect follower FAILED")
-        print(str(e))
+        error = str(e)
+        print(error)
 
         with open('%s.broken.txt' % fname1Match, 'w') as f:
             f.write("tools.open_mflevel1detect(fnames1F, config)")
-            f.write("\r")
-            f.write(str(e))
+            f.write("\n")
+            f.write(error)
         return fname1Match, np.nan, None, None
 
     leader1D = tools.removeBlockedData(leader1D, lEvents)
@@ -641,20 +649,32 @@ def matchParticles(fnameLv1Detect, config,
             maxDiffMs = 1000/config.fps/2
         try:
             captureIdOffset1, nMatched1 = tools.estimateCaptureIdDiffCore(leader1D, follower1D, "fpid", maxDiffMs=maxDiffMs, nPoints=nPoints, timeDim="capture_time")
-        except RuntimeError as e:
-            captureIdOffset1 = nMatched1 = 0
+        except Exception as e:
+            captureIdOffset1 = nMatched1 = -99
+            error1 = str(e)
         try:
             captureIdOffset2, nMatched2 = tools.estimateCaptureIdDiffCore(leader1D, follower1D, "fpid", maxDiffMs=maxDiffMs, nPoints=nPoints, timeDim="record_time")
-        except RuntimeError: 
-            captureIdOffset2 = nMatched2 = 0
+        except Exception as e: 
+            captureIdOffset2 = nMatched2 = -99
+            error2 = str(e)
 
-        if nMatched2 == nMatched1 == 0:
+        if (nMatched2 <= 1) and (nMatched1 <= 1):
+            with open(f"{fname1Match}.nodata", "w") as f:
+                f.write("NOT ENOUGH DATA")
+                print("NOT ENOUGH DATA", fname1Match)
+            return fname1Match, None, None, None
+
+        if nMatched2 == nMatched1 == -99:
             print("tools.estimateCaptureIdDiff FAILED")
+            print(error1)
+            print(error2)
             if not rotationOnly:
 
                 with open('%s.broken.txt' % fname1Match, 'w') as f:
                     f.write("tools.estimateCaptureIdDiff(ffl1, config, graceInterval=2)")
-                    f.write("\r")
+                    f.write("\n")
+                    f.write(error1)
+                    f.write(error2)
                 return fname1Match, np.nan, None, None
 
 
@@ -796,24 +816,23 @@ def matchParticles(fnameLv1Detect, config,
         print("NO DATA", fname1Match)
     elif len(matchedDats) == 1:
         # easy case
-        matchedDat.to_netcdf(fname1Match)
-        print("DONE", fname1Match, "with", len(matchedDat.pair_id), "particles")
+        matchedDats = matchedDat
     else:
         for ii in range(len(matchedDats)):
             del matchedDats[ii]["pair_id"]
         matchedDats = xr.concat(matchedDats, dim="pair_id")
         matchedDats["pair_id"] = range(len(matchedDats["pair_id"]))
 
-        for k in matchedDats.data_vars:
-            matchedDats[k].encoding = {}
-            matchedDats[k].encoding["zlib"] = True
-            matchedDats[k].encoding["complevel"] = 5
-            #need to overwrite units becuase keeping level1detect time offsets might lead to inconsistiencies
-            if k in ["capture_time", "record_time", "file_starttime"]:
-                matchedDats[k].encoding["units"] = 'microseconds since 2019-01-01 00:00:00'
+    for k in matchedDats.data_vars:
+        matchedDats[k].encoding = {}
+        matchedDats[k].encoding["zlib"] = True
+        matchedDats[k].encoding["complevel"] = 5
+        #need to overwrite units becuase keeping level1detect time offsets might lead to inconsistiencies
+        if k in ["capture_time", "record_time", "file_starttime"]:
+            matchedDats[k].encoding["units"] = 'microseconds since 2019-01-01 00:00:00'
 
-        matchedDats.to_netcdf(fname1Match)
-        print("DONE", fname1Match, "with", len(matchedDats.pair_id), "particles")
+    matchedDats.to_netcdf(fname1Match)
+    print("DONE", fname1Match, "with", len(matchedDats.pair_id), "particles")
 
     return fname1Match, matchedDats, rotate, rotate_err
 
