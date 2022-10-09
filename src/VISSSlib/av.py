@@ -289,6 +289,29 @@ class VideoReaderMeta(object):
             frame1 = frame1[:,:,0]
         return frame1[y+heightOffset:y+heightOffset+h, x:x+w], frame1
 
+def doubleDynamicRange(frame):
+    '''
+    dynamic range can be typically doubled which helps with feature detection
+    the factor of 2 makes sure all gradients scale with the same factor even for integers
+
+    the offset is chosen such that the brightest point is max. 255 after multiplication of 2
+    if this means the darkest point becomes negative, the offset is adjusted accordingly
+
+    '''
+
+    # offset so that brightest spot is 255 even if doubled
+    offset1 = frame.max()-127
+    # offset so that darkest point is zero.
+    offset2 = frame.min()
+    # take smaller one so that in doubt information is lost for brighter pixels
+    offset = min(offset1, offset2)
+    #make sure offset is >= 0
+    offset = max(0,offset)
+    
+    # apply to frame. cv2.multiply handles overflows properly
+    frame = cv2.multiply(frame-offset,2)
+
+    return frame
 
 def main():
     import matplotlib as mpl

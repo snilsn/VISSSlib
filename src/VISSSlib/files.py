@@ -301,7 +301,7 @@ class Filenames(object):
             fnames += nextFf.listFilesExt(level)
         
         # get timestamps of surrounding files
-        if (self.config.nThreads is None) or ( level == "level0") or (level == "level0txt"):
+        if (self.config.nThreads is not None) and (( level == "level0") or (level == "level0txt")):
             ts = np.array([f.split("_")[-2] for f in fnames])
         else:
             ts = np.array([f.split("_")[-1].split(".")[0] for f in fnames])

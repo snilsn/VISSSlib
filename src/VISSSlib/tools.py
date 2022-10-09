@@ -428,7 +428,7 @@ def prevCase(case):
     return str(np.datetime64(f"{case[:4]}-{case[4:6]}-{case[6:8]}") - np.timedelta64(1,"D")).replace("-","")
 
 def displayImage(frame, doDisplay=True):
-    _, frame = cv2.imencode('.jpeg', frame)
+    _, frame = cv2.imencode('.png', frame)
     if doDisplay:
         IPython.display.display(IPython.display.Image(data=frame.tobytes()))
     else:
