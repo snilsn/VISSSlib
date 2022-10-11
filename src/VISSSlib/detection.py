@@ -242,7 +242,7 @@ class detectedParticles(object):
             print("SHOWING", "fgMaskWithHoles")
             tools.displayImage(self.fgMask)
 
-        self.fgMaskCanny1 = _applyCannyFilter(self.frame, self.fgMask)
+        self.fgMask = _applyCannyFilter(self.frame, self.fgMask)
 
         if "fgMask" in testing:
             print("SHOWING", "fgMask")
@@ -283,7 +283,7 @@ class detectedParticles(object):
 
             added, particle1 = self.add(self.frame, cnt, verbosity=self.verbosity, composite = self.composite)
             if added:
-                print("particles.update", "PID", particle1.pid, "Added with area =%i"%(particle1.area), f"max contrast {self.lastParticle.particleContrast}", f"Dmax/Dmin={particle1.Dmax*43.53 /1000.}/{particle1.Dmin*43.53 /1000.}", f"blur: %.2f"%particle1.blur)
+                print("particles.update", "PID", particle1.pid, "Added with area =%i"%(particle1.area), f"max contrast {self.lastParticle.particleContrast}", f"Dmax/Dmin={particle1.Dmax}/{particle1.Dmin}", f"blur: %.2f"%particle1.blur)
                 if "result" in testing:
                     self.frame4drawing = particle1.drawContour(self.frame4drawing)
                     self.frame4drawing = particle1.annotate(self.frame4drawing, extra='added')
@@ -442,9 +442,14 @@ class singleParticle(object):
         self.particleContrast = parent.brightnessBackground - self.pixMin
 
         self.rect = cv2.minAreaRect(self.cnt)
-        #todo: consider https://stackoverflow.com/questions/15956124/minarearect-angles-unsure-about-the-angle-returned
+        box = cv2.boxPoints(self.rect)
+
         center, dims, self.angle = self.rect
-        self.angle = self.angle # see https://theailearner.com/tag/cv2-minarearect/
+        # angle definition depends on opencv version https://github.com/opencv/opencv/issues/19472
+        # for newer opencv versions where angle is postive, this makes sure it ranges form 0 to 180
+        if dims[1] > dims[0]:
+            angle = angle -90
+
         self.Dmax = max(dims)
         self.Dmin = min(dims)
         self.aspectRatio = self.Dmin / self.Dmax
@@ -458,8 +463,11 @@ class singleParticle(object):
             self.centroid = 0,0
         self.x, self.y = self.centroid
         self.perimeter = cv2.arcLength(self.cnt,True)
-        self.blur = cv2.Laplacian(self.particleBox, cv2.CV_8U).var()
+        # data type cv2.CV_16S requried to avoid overflow
+        self.blur = cv2.Laplacian(self.particleBox, cv2.CV_16S).var(ddof=1)
 
+        for e in range(20):
+            print(e, cv2.Laplacian(self.extractRoi(frame1, extra=e), cv2.CV_16S).var(ddof=1))
 
         return
 
@@ -493,11 +501,29 @@ class singleParticle(object):
         props += '\n'
         return props
 
-    def extractRoi(self, frame):
-        x, y, w, h = self.roi
+    def extractRoi(self, frame, extra=0):
+
         if len(frame.shape) == 3:
             frame = frame[:,:,0]
-        return frame[y:y+h, x:x+w]
+
+        if extra == 0:
+            x, y, w, h = self.roi
+            return frame[y:y+h, x:x+w]
+        else:
+            x, y, w, h = self.roi
+            x1 = x - extra
+            x2 = x + w + extra
+            y1 = y - extra
+            y2 = y + h + extra
+
+            if x1 < 0: x1 = 0
+            if y1 < 0: y1 = 0
+            ny, nx = frame.shape
+            if x2 > nx: x2 = nx
+            if y2 > ny: y2 = ny
+
+            return frame[y1:y2, x1:x2]
+
 
     def drawContour(self, frame, color=(0, 255, 0)):
         assert not self.lost
@@ -936,6 +962,7 @@ def detectParticles(fname,
     comp = dict(zlib=True, complevel=5)
     encoding = {
         var: comp for var in metaData.data_vars}
+
     metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
     metaData.close()
     if hasData and (len(testing)==0):
