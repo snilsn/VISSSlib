@@ -2,6 +2,7 @@
 
 import sys
 import os
+import gzip
 import itertools
 import subprocess
 
@@ -34,7 +35,10 @@ from . import __version__
 
 class movementDetection(object):
     def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
-        
+        '''
+        Depreciated!
+        '''
+
         assert window%2 == 1, 'not tested for even windiow sizes'
         
         self.video = VideoReader
@@ -242,7 +246,7 @@ class detectedParticles(object):
             print("SHOWING", "fgMaskWithHoles")
             tools.displayImage(self.fgMask)
 
-        self.fgMaskCanny1 = _applyCannyFilter(self.frame, self.fgMask)
+        self.fgMask = _applyCannyFilter(self.frame, self.fgMask)
 
         if "fgMask" in testing:
             print("SHOWING", "fgMask")
@@ -281,7 +285,7 @@ class detectedParticles(object):
         # loop over the contours
         for cnt in self.cnts:
 
-            added, particle1 = self.add(self.frame, cnt, verbosity=self.verbosity, composite = self.composite)
+            added, particle1 = self.add(self.frame, self.fgMask , cnt, verbosity=self.verbosity, composite = self.composite)
             if added:
                 print("particles.update", "PID", particle1.pid, "Added with area =%i"%(particle1.area), f"max contrast {self.lastParticle.particleContrast}", f"Dmax/Dmin={particle1.Dmax*43.53 /1000.}/{particle1.Dmin*43.53 /1000.}", f"blur: %.2f"%particle1.blur)
                 if "result" in testing:
@@ -383,10 +387,8 @@ class detectedParticles(object):
 
 
 class singleParticle(object):
-# TrackerKCF_create
-    def __init__(self, parent, capture_id, record_id, capture_time, record_time, nThread,  pp1, frame1, cnt, verbosity=0, composite = True):
+    def __init__(self, parent, capture_id, record_id, capture_time, record_time, nThread,  pp1, frame1, frameMask, cnt, verbosity=0, composite = True):
         self.verbosity = verbosity
-        #start with negative random id
         self.pid = pp1#np.random.randint(-999,-1) 
         self.record_id = record_id
         self.capture_id = capture_id
@@ -405,12 +407,14 @@ class singleParticle(object):
         if self.verbosity > 1:
             print("singleParticle.__init__", "PID", self.pid, 'found singleParticle at %i,%i, %i, %i' % self.roi)
 
-        self.frame = frame1
+        # self.frame = frame1
+        # self.frameMask = frameMask
+        self.frameHeight, self.frameWidth = frame1.shape[:2]
         self.particleBox = self.extractRoi(frame1)
-        self.frameHeight, self.frameWidth = self.frame.shape[:2]
+        self.particleBoxMask = self.extractRoi(frameMask)
+        self.particleBoxAlpha = np.stack((self.particleBox, self.particleBoxMask), -1)
 
-
-
+# , self.particleBoxMask//2
         self.touchesBorder = [
             self.roi[0] == 0, 
             (self.roi[0] + self.roi[2]) == self.frameWidth, 
@@ -419,18 +423,9 @@ class singleParticle(object):
             ]
 
         fill_color = 255   # any  color value to fill with
-        mask_value = 1     # 1 channel  (can be any non-zero uint8 value)
-
-        # our  - some `mask_value` contours on black (zeros) background, 
-        stencil  = np.zeros_like(frame1)
-        cv2.fillPoly(stencil, [self.cnt], mask_value)
-
-        sel      = stencil != mask_value # select everything that is not mask_value
-
-        self.particleBoxCropped = deepcopy(frame1)
-        self.particleBoxCropped[stencil != mask_value] = fill_color
-        self.particleBoxCropped = self.extractRoi(self.particleBoxCropped)
-        particleBoxData = frame1[stencil == mask_value]
+        self.particleBoxCropped = deepcopy(self.particleBox)
+        self.particleBoxCropped[self.particleBoxMask == 0] = fill_color
+        particleBoxData = self.particleBox[self.particleBoxMask == 255]
 
         self.pixMin = particleBoxData.min()
         self.pixMax = particleBoxData.max()
@@ -469,8 +464,10 @@ class singleParticle(object):
         '''
         self.particleBox = None
         self.particleBoxCropped = None
+        self.particleBoxMask = None
+        self.particleBoxAlpha = None
         self.frame = None
-
+        self.frameMask = None
 
     def __repr__(self):
         props = "#"*30
@@ -521,7 +518,7 @@ class singleParticle(object):
 
 def checkMotion(subFrame, oldFrame, threshs):
     '''
-    Check whether something is moving - identical to C code
+    Check whether something is moving - identical to VISSS C code
     '''
 
     if oldFrame is None:
@@ -800,10 +797,14 @@ def detectParticles(fname,
 
     frame = None
     moveCounter = 0
-    for pp in pps:
 
-        #     if pp > 200:
-        #         break
+    if writeImg:
+        tarfname = fn.fname.imagesL1detect.replace(".gz","")
+        imagesL1detect = tools.imageTarFile(tarfname, 'w')
+
+    tarRoot = fn.fname.imagesL1detect.split("/")[-1].replace(".tar.gz","")
+
+    for pp in pps:
 
         metaData1 = metaData.isel(capture_time=pp)
 
@@ -892,31 +893,34 @@ def detectParticles(fname,
             hasData = True
 
             if writeImg:
-
                 if not (
                     (part.Dmax < minDmax4Plotting) or
                     (part.blur < minBlur4Plotting) or
                     np.any(part.touchesBorder)
                 ):
                     pidStr = '%07i' % part.pid
-                    imFolder = fn.imagepath.imagesL1detect.format(ppid=pidStr[:4])
-                    imName = '%s.png' % (pidStr)
-                    log.info('writing %s/%s' % (imFolder, imName))
-                    os.system('mkdir -p %s' % (imFolder))
+                    imName = '%s/%s/%s.png' % (tarRoot, pidStr[:4], pidStr)
+                    log.info('writing %s %s' % (fn.fname.imagesL1detect, imName))
 
-                    #use https://stackoverflow.com/questions/42314272/imwrite-merged-image-writing-image-after-adding-alpha-channel-to-it-opencv-pyt ??
-
-                    cv2.imwrite('%s/%s' %
-                                (imFolder, imName),
-                                part.particleBox)
+                    imagesL1detect.addimage(imName, part.particleBoxAlpha)
             if "particle" in testing:#
                 img = np.hstack((part.particleBox, part.particleBoxCropped ) )
                 tools.displayImage(cv2.resize(img,np.array(img.shape[::-1])*4,cv2.INTER_NEAREST))
             part.dropImages()
 
         moveCounter += 1
-        if (len(testing)>0) and (stopAfter is not None) and (moveCounter > stopAfter):
+        if (stopAfter is not None) and (moveCounter > stopAfter):
             break
+
+    if writeImg:
+        nFiles = len(imagesL1detect.getnames())
+        imagesL1detect.close()
+
+        if nFiles > 0:
+            with open(tarfname, 'rb') as f_in, gzip.open(fn.fname.imagesL1detect, 'wb') as f_out:
+                f_out.writelines(f_in)
+
+        # os.remove(tarfname)
 
 
     for nThread in inVid.keys():
@@ -936,19 +940,24 @@ def detectParticles(fname,
     comp = dict(zlib=True, complevel=5)
     encoding = {
         var: comp for var in metaData.data_vars}
+    metaData.attrs.update(tools.ncAttrs)
     metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
     metaData.close()
+
     if hasData and (len(testing)==0):
+
         snowParticlesXR = snowParticles.collectResults()
 
         comp = dict(zlib=True, complevel=5)
         encoding = {var: comp for var in snowParticlesXR.data_vars}
 
+        snowParticlesXR.attrs.update(tools.ncAttrs)
         snowParticlesXR.to_netcdf(fn.fname.level1detect, encoding=encoding, engine="netcdf4")
         snowParticlesXR.close()
     else:
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data')
+
 
     return 0
 

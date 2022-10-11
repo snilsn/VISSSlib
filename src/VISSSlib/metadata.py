@@ -300,7 +300,7 @@ def _getMetaData1(metaFname, camera, config, stopAfter=-1, detectMotion4oldVersi
     #else:
     #    newIndex = [0]
     #metaDat['capture_id'] = newIndex
-    metaDat = xr.Dataset(metaDat)
+    metaDat = xr.Dataset(metaDat, attrs=tools.ncAttrs())
 
 
     # just to be sure

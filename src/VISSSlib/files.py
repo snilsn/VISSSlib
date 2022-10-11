@@ -21,7 +21,7 @@ from . import __version__
 
 
 dailyLevels = ["metaEvents", "metaMatchCoefficients"]
-fileLevels = ["level1detect", "level1match", "level1track", "metaFrames", "metaDetection"]#, "metaFixedCaptureId"]
+fileLevels = ["level1detect", "level1match", "level1track", "metaFrames", "metaDetection", "imagesL1detect"]#, "metaFixedCaptureId"]
 quicklookLevelsSep = ["metaFrames", "metaEvents", "level1detect", "level1match"]
 quicklookLevelsComb = [ "matchCoefficients"]
 imageLevels = ["imagesL1detect"]
@@ -72,8 +72,8 @@ class FindFiles(object):
             self.outpath[dL] = outpath.format(site=config.site, level=dL)
         self.outpath["level0"] = config["path"].format(site=config["site"], level='level0')+f'/{self.computer}_{config["visssGen"]}_{camera}/{self.year}/{self.month}/{self.day}'
 
-        for iL in imageLevels:
-            self.outpath[iL] = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
+        # for iL in imageLevels:
+        #     self.outpath[iL] = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
 
         self.fnamesPattern = Dict({})
         for dL in fileLevels:
@@ -236,16 +236,17 @@ class Filenames(object):
             self.fname[fL] = '%s/%s_V%s_%s_%s.nc' % (
             self.outpath.format(site=config["site"], level=fL), fL, version, config["site"], self.basenameShort)
 
-        self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
-        self.imagepath = Dict({})
-        for iL in imageLevels:
-            self.imagepath[iL] = "%s/%s/{ppid}"%(self.outpathImg.format(site=config["site"], level=iL),self.fname.level1detect.split("/")[-1])
+        self.fname["imagesL1detect"] = self.fname["imagesL1detect"].replace(".nc", ".tar.gz")
+
+        # self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
+        # self.imagepath = Dict({})
+        # for iL in imageLevels:
+        #     self.imagepath[iL] = "%s/%s/{ppid}"%(self.outpathImg.format(site=config["site"], level=iL),self.fname.level1detect.split("/")[-1])
         
         outpathQuicklooks = "%s/%s/%s/%s" % (config["pathQuicklooks"], self.year, self.month, self.day)
         self.quicklookPath = Dict({})
         for qL in quicklookLevelsSep + quicklookLevelsComb:
             self.quicklookPath[qL] =outpathQuicklooks.format(site=config['site'], level=qL)
-
 
         return
 

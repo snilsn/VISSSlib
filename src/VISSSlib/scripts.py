@@ -184,6 +184,7 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
             metaDats = metadata.getEvents(fnames0, config, fname0status=fname0status)
             try:
                 fn.createDirs()
+                metaDats.attrs.update(tools.ncAttrs)
                 metaDats.to_netcdf(eventFile)
             except ValueError:
                 print("NO DATA",case, eventFile )
@@ -240,6 +241,7 @@ def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"
                     comp = dict(zlib=True, complevel=5)
                     encoding = {
                         var: comp for var in metaDat.data_vars}
+                    metaDat.attrs.update(tools.ncAttrs)
                     metaDat.to_netcdf(fn.fname.metaFrames, encoding=encoding)
                     print("%s written"%fn.fname.metaFrames)
                 else:

@@ -3,6 +3,7 @@
 import yaml
 import warnings
 import datetime
+import socket
 
 from addict import Dict
 from copy import deepcopy
@@ -10,12 +11,16 @@ from copy import deepcopy
 import pandas as pd
 import numpy as np
 import xarray as xr
+import io
+import tarfile
 
 import IPython.display
 import cv2
+from PIL import Image
 
 from . import files
 from . import fixes
+from . import __version__
 
 LOGGING_CONFIG = { 
     'version': 1,
@@ -434,3 +439,48 @@ def displayImage(frame, doDisplay=True):
     else:
         return IPython.display.Image(data=frame.tobytes())
 
+
+class imageTarFile(tarfile.TarFile):
+    '''
+    standard tarfile.TarFile class extended with a special function to add and read a png file
+    
+    PIL instead of open cv is used because the latter does not support grayscale images with alpha channel 
+    '''
+    def addimage(self, fname, img):
+        
+        assert fname.endswith("png")
+
+        # encode
+        img = Image.fromarray(img)
+        buf1 = io.BytesIO()
+        img.save(buf1, format='PNG')
+        
+        # convert to uint8
+        buf2 = np.frombuffer(buf1.getbuffer(), dtype=np.uint8)
+        
+        #io buf
+        io_buf = io.BytesIO(buf2)
+        
+        #file info
+        info = tarfile.TarInfo(name=fname)
+        info.size = buf2.size
+
+        #add file
+        self.addfile(info, io_buf)        
+        
+    def extractimage(self, fname):
+        handle = self.extractfile(fname)
+        image = handle.read()
+        image = np.array(Image.open(io.BytesIO(image)))
+        return image
+
+
+def ncAttrs(extra={}):
+    attrs = {
+        "VISSSlib-version": __version__,
+        "OpenCV-version": cv2.__version__,
+        "host": socket.gethostname(),
+        "creation-time": str(datetime.datetime.utcnow()),
+        }
+    attrs.update(extra)
+    return attrs

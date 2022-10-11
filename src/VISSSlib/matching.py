@@ -831,6 +831,7 @@ def matchParticles(fnameLv1Detect, config,
         if k in ["capture_time", "record_time", "file_starttime"]:
             matchedDats[k].encoding["units"] = 'microseconds since 2019-01-01 00:00:00'
 
+    matchedDats.attrs.update(tools.ncAttrs)
     matchedDats.to_netcdf(fname1Match)
     print("DONE", fname1Match, "with", len(matchedDats.pair_id), "particles")
 
