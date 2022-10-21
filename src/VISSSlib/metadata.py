@@ -27,6 +27,7 @@ from . import __version__
 from . import fixes
 from . import files
 from . import detection
+from . import tools
 
 '''
 Mosaic problems with metadata:
@@ -134,6 +135,11 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
         # elif config.model == "M1280": # does not really work with all the data gaps...
         #     metaDat = fixes.fixIntOverflow(metaDat,idOffset=idOffset)
 
+        if "makeCaptureTimeEven" in config.fixes:
+            if camera == config.follower:
+                metaDat = makeCaptureTimeEven(metaDat, config)
+
+
     return metaDat, droppedFrames, beyondRepair
 
 
@@ -227,7 +233,7 @@ def readHeaderData(fname, returnLasttime=False):
     return record_starttime, asciiVersion, gitTag, gitBranch, capture_starttime, capture_firsttime, capture_lasttime, last_id, serialnumber, configuration, hostname
 
 
-def _getMetaData1(metaFname, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, goodFile=None, includeHeader=True):
+def _getMetaData1(metaFname, camera, config, stopAfter=-1, detectMotion4oldVersions=False, testMovieFile=True, goodFile=None, includeHeader=True, version=__version__):
 
     nThreads = config["nThreads"]
     threshs = np.array(config["threshs"])
@@ -300,7 +306,7 @@ def _getMetaData1(metaFname, camera, config, stopAfter=-1, detectMotion4oldVersi
     #else:
     #    newIndex = [0]
     #metaDat['capture_id'] = newIndex
-    metaDat = xr.Dataset(metaDat, attrs=tools.ncAttrs())
+    metaDat = xr.Dataset(metaDat)
 
 
     # just to be sure
@@ -378,7 +384,22 @@ def _getMetaData1(metaFname, camera, config, stopAfter=-1, detectMotion4oldVersi
 
 
     if asciiVersion in [0.1, 0.2]:
-        if detectMotion4oldVersions:
+        if not detectMotion4oldVersions:
+
+            #for MOSAiC we can use an exisiting estimate of the numbe rof moving pixels even though it is not in the ASCII data
+            fn = files.Filenames(metaFname, config, version=version)
+            helperDat = xr.open_dataset(f'{config["pathOut"].format(level="metaFrames_nMovingPixel")}/{config.site}_{camera}_{fn.year}{fn.month}{fn.day}.nc')
+            try:
+                helperDat = helperDat.sel(record_starttime=fn.datetime64, drop=True)
+                helperDat = helperDat.sel(record_id = metaDat.record_id.values, drop=True)
+                nMovingPixels = helperDat['nMovingPixel'].values
+            except KeyError:
+                print("DID not find nMovingPixels")
+                nMovingPixels = np.zeros((len(metaDat.capture_time), len(helperDat.nMovingPixelThresh))) -9999
+
+            metaDat['nMovingPixel'] = xr.DataArray(nMovingPixels, coords=[metaDat.capture_time, helperDat.nMovingPixelThresh])
+            helperDat.close()
+        else:
             log.info("%s: counting moving pixels" % (fname))
 
             inVid = cv2.VideoCapture(fname)
@@ -456,6 +477,48 @@ def _getMetaData1(metaFname, camera, config, stopAfter=-1, detectMotion4oldVersi
     return metaDat
 
 
+def createMetaFrames(case, camera, config, skipExisting=True):
+    # find files
+    ff = files.FindFiles(case, camera, config)
+    metaDat = None
+    for fname0 in ff.listFiles("level0txt"):
+
+        fn = files.Filenames(fname0, config)
+        if os.path.isfile(fn.fname.metaFrames)  and skipExisting:
+            print("%s exists"%fn.fname.metaFrames)
+            continue
+
+        if os.path.isfile(f"{fn.fname.metaFrames}.nodata") and skipExisting:
+            print("%s.nodata exists"%fn.fname.metaFrames)
+            continue
+        
+        if os.path.getsize(fname0.replace(config.movieExtension,"txt")) == 0:
+            print("%s has size 0!"%fname0)
+            with open(fn.fname.metaFrames+".nodata", "w") as f:
+                f.write("%s has size 0!"%fname0)
+            continue
+          
+        print(fname0)
+
+        fn.createDirs()
+        fname0all = list(fn.fnameTxtAllThreads.values())
+
+        metaDat, droppedFrames, beyondRepair = getMetaData(fname0all, camera, config, idOffset=0)
+
+        if beyondRepair:
+            print(f"{os.path.basename(fname0)}, broken beyond repair, {droppedFrames}, frames dropped, {idOffset}, offset\n")
+        
+        if metaDat is not None:
+
+            metaDat = tools.finishNc(metaDat)
+            metaDat.to_netcdf(fn.fname.metaFrames)
+            print("%s written"%fn.fname.metaFrames)
+        else:
+            with open(fn.fname.metaFrames+".nodata", "w") as f:
+                f.write("no data recorded")
+
+    return metaDat
+
 def getEvents(fnames0, config, fname0status=None):
 
     '''
@@ -465,9 +528,8 @@ def getEvents(fnames0, config, fname0status=None):
 
 
     metaDats = list()
-    bins = [0] + list(range(11,122,10)) + [130]
-    bins4xr = list(range(10,132,10))
-
+    bins = [0] + list(range(11,255,10)) 
+    bins4xr = list(range(10,260,10))
     for fname0Txt in fnames0:
 
         fname0Img = fname0Txt.replace("txt","jpg")
@@ -512,9 +574,9 @@ def getEvents(fnames0, config, fname0status=None):
             metaDat['filename'] = xr.DataArray([fname0.split('/')[-1]], dims=["file_starttime"], coords=[[record_starttime]])
 
         #estimate Blocking
+        # using results of background estiamtor would be nice, but we don't have that inforation yet!
         img = mpl.image.imread(fname0Img)[config.height_offset:]
         nPixel = np.prod(img.shape)
-
         hist, _ = np.histogram(img.ravel(), bins=bins)
         hist = hist.cumsum()/nPixel
         metaDat['blocking'] = xr.DataArray([hist], dims=["file_starttime", "blockingThreshold"], coords=[[record_starttime],bins4xr])
@@ -593,3 +655,44 @@ def getEvents(fnames0, config, fname0status=None):
 
     return metaDats
 
+
+def createEvent(case, camera, config, skipExisting=True, version=__version__):
+    fn = files.FindFiles(case, camera, config, version)
+    fnames0 = fn.listFiles("level0txt")
+
+    fname0status = fn.listFiles(level="level0status")
+    if len(fname0status) > 0:
+        fname0status = fname0status[0]  
+    else:
+        fname0status = None
+        
+    #ff = files.Filenames(fnames0[0], config, version)
+    eventFile = fn.fnamesDaily.metaEvents
+
+    if skipExisting and os.path.isfile(eventFile):
+        eventDat = xr.open_dataset(eventFile)
+        nFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
+        nFiles = int(nFiles.values)
+        if nFiles == len(fnames0):
+            print("Skipping", case, eventFile )
+            eventDat.close()
+            return None
+        else:
+            print("Missing files, redoing event file", nFiles, "of", len(fnames0) )
+            eventDat.close()
+
+        
+
+    print("Running",case, eventFile )
+    metaDats = getEvents(fnames0, config, fname0status=fname0status)
+    try:
+        assert len(metaDats.file_starttime) > 0
+        fn.createDirs()
+        metaDats = tools.finishNc(metaDats)
+        metaDats.to_netcdf(eventFile)
+
+
+    except (ValueError, AssertionError):
+        print("NO DATA",case, eventFile )
+
+    return metaDats

@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 import io
+import os
 import tarfile
 
 import IPython.display
@@ -20,7 +21,7 @@ from PIL import Image
 
 from . import files
 from . import fixes
-from . import __version__
+from . import __version__, __versionFull__
 
 LOGGING_CONFIG = { 
     'version': 1,
@@ -159,7 +160,7 @@ def getMode(a):
     mode = a[index]
     return a
 
-def open_mfmetaFrames(fnames, config, start=None, end=None, applyFixes=True):
+def open_mfmetaFrames(fnames, config, start=None, end=None, skipFixes=[]):
     '''
     helper function to open multiple metaFrame files at once
     '''
@@ -174,17 +175,23 @@ def open_mfmetaFrames(fnames, config, start=None, end=None, applyFixes=True):
 
     dat = xr.open_mfdataset(fnames, combine="nested", concat_dim="capture_time", preprocess=preprocess).load()
 
-    if applyFixes:
+    if (skipFixes != "all"):
         # fix potential integer overflows if necessary
-        if "captureIdOverflows" in config.dataFixes:
+        if( "captureIdOverflows" in config.dataFixes) and ( "captureIdOverflows" not in skipFixes):
+            print("apply fix", "captureIdOverflows")
             dat = fixes.captureIdOverflows(dat, config, dim="capture_time")
 
-        # fix potential integer overflows if necessary
-        if "makeCaptureTimeEven" in config.dataFixes:
-            #does not make sense for leader
-            if "follower" in dat.encoding["source"]:
-                dat = fixes.makeCaptureTimeEven(dat, config, dim="capture_time")
-
+        # # beware of unintended implications down the processing chain becuase capture_time is used 
+        # # in analysis module
+        # # fix potential integer overflows if necessary
+        # if ("makeCaptureTimeEven" in config.dataFixes) and ("makeCaptureTimeEven" not in skipFixes):
+        #     print("apply fix", "makeCaptureTimeEven")
+        #     #does not make sense for leader
+        #     if "follower" in dat.encoding["source"]:
+        #         dat = fixes.makeCaptureTimeEven(dat, config, dim="capture_time")
+        #     else:
+        #         #make sure follower and leader data are consistent
+        #         dat["capture_time_orig"] = dat["capture_time"]
     
     if start is not None:
         dat = dat.isel(capture_time=(dat.capture_time >= start))
@@ -203,7 +210,7 @@ def open_mfmetaFrames(fnames, config, start=None, end=None, applyFixes=True):
 
 
 
-def open_mflevel1detect(fnamesExt, config, removeTouchBorders=True, start=None, end=None, applyFixes=True, datVars="all"):
+def open_mflevel1detect(fnamesExt, config, removeTouchBorders=True, start=None, end=None, skipFixes=[], datVars="all"):
     '''
     helper function to open multiple level1detect files at once
     '''
@@ -252,17 +259,23 @@ def open_mflevel1detect(fnamesExt, config, removeTouchBorders=True, start=None, 
         if len(dat.pid) == 0:
             return None
 
-    if applyFixes:
+    if (skipFixes != "all"):
         # fix potential integer overflows if necessary
-        if "captureIdOverflows" in config.dataFixes:
+        if( "captureIdOverflows" in config.dataFixes) and ( "captureIdOverflows" not in skipFixes):
+
             dat = fixes.captureIdOverflows(dat, config)
 
-        # fix potential integer overflows if necessary
-        if "makeCaptureTimeEven" in config.dataFixes:
-            #does not make sense for leader
-            if "follower" in dat.encoding["source"]:
-                dat = fixes.makeCaptureTimeEven(dat, config, dim="pid")
+        # moved to meta data
+        # # fix potential integer overflows if necessary
+        # if( "makeCaptureTimeEven" in config.dataFixes) and ( "makeCaptureTimeEven" not in skipFixes):
 
+        #     #does not make sense for leader
+        #     if "follower" in dat.encoding["source"]:
+        #         dat = fixes.makeCaptureTimeEven(dat, config, dim="pid")
+        #     else:
+        #         #make sure follower and leader data are consistent
+        #         dat["capture_time_orig"] = dat["capture_time"]
+    
     # replace pid by empty dimesnion to allow concatenating files without jumps in dimension pid
     dat = dat.swap_dims({"pid": "fpid"})
         
@@ -352,10 +365,10 @@ def estimateCaptureIdDiff(leaderFile, followerFiles, config, dim, nPoints = 500,
         followerDat = fixes.captureIdOverflows(followerDat, config, storeOrig=True, idOffset=0, dim=dim)
         # fix potential integer overflows if necessary
 
-    if "makeCaptureTimeEven" in config.dataFixes:
-        #does not make sense for leader
-        # redo capture_time based on first time stamp...
-        followerDat = fixes.makeCaptureTimeEven(followerDat, config, dim)
+    # if "makeCaptureTimeEven" in config.dataFixes:
+    #     #does not make sense for leader
+    #     # redo capture_time based on first time stamp...
+    #     followerDat = fixes.makeCaptureTimeEven(followerDat, config, dim)
 
     idDiff =  estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = nPoints, maxDiffMs = maxDiffMs)
     leaderDat.close()
@@ -395,7 +408,7 @@ def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDif
         idDiff = vals[np.argmax(counts)]
         ratioSame = np.sum(idDiffs == idDiff)/nIdDiffs
         print("estimateCaptureIdDiff statistic:", dict(zip(vals[np.argsort(counts)[::-1]], counts[np.argsort(counts)[::-1]])), timeDim)
-        if ratioSame > 0.75:
+        if ratioSame > 0.7:
             print(f"capture_id determined {idDiff}, {ratioSame*100}% have the same value" )
             return idDiff, nIdDiffs
         else:
@@ -440,47 +453,66 @@ def displayImage(frame, doDisplay=True):
         return IPython.display.Image(data=frame.tobytes())
 
 
-class imageTarFile(tarfile.TarFile):
-    '''
-    standard tarfile.TarFile class extended with a special function to add and read a png file
-    
-    PIL instead of open cv is used because the latter does not support grayscale images with alpha channel 
-    '''
-    def addimage(self, fname, img):
-        
-        assert fname.endswith("png")
+'''
+monkey patch standard tarfile.TarFile class extended with a special function to add and read a png file
 
-        # encode
-        img = Image.fromarray(img)
-        buf1 = io.BytesIO()
-        img.save(buf1, format='PNG')
-        
-        # convert to uint8
-        buf2 = np.frombuffer(buf1.getbuffer(), dtype=np.uint8)
-        
-        #io buf
-        io_buf = io.BytesIO(buf2)
-        
-        #file info
-        info = tarfile.TarInfo(name=fname)
-        info.size = buf2.size
+PIL instead of open cv is used because the latter does not support grayscale images with alpha channel 
+'''
+def _addimage(self, fname, img):
 
-        #add file
-        self.addfile(info, io_buf)        
-        
-    def extractimage(self, fname):
-        handle = self.extractfile(fname)
-        image = handle.read()
-        image = np.array(Image.open(io.BytesIO(image)))
-        return image
+    assert fname.endswith("png")
+
+    # encode
+    img = Image.fromarray(img)
+    buf1 = io.BytesIO()
+    img.save(buf1, format='PNG')
+
+    # convert to uint8
+    buf2 = np.frombuffer(buf1.getbuffer(), dtype=np.uint8)
+
+    #io buf
+    io_buf = io.BytesIO(buf2)
+
+    #file info
+    info = tarfile.TarInfo(name=fname)
+    info.size = buf2.size
+
+    #add file
+    self.addfile(info, io_buf)        
+
+def _extractimage(self, fname):
+    handle = self.extractfile(fname)
+    image = handle.read()
+    image = np.array(Image.open(io.BytesIO(image)))
+    return image
+
+imageTarFile = tarfile.TarFile
+imageTarFile.addimage = _addimage
+imageTarFile.extractimage = _extractimage
 
 
 def ncAttrs(extra={}):
     attrs = {
-        "VISSSlib-version": __version__,
+        "VISSSlib-version": __versionFull__,
         "OpenCV-version": cv2.__version__,
-        "host": socket.gethostname(),
+        "host": socket.getfqdn(),
+        "user": os.environ.get('USER'),
         "creation-time": str(datetime.datetime.utcnow()),
         }
     attrs.update(extra)
     return attrs
+
+def finishNc(dat, extra={} ):
+
+    dat.attrs.update(ncAttrs(extra=extra))
+
+    for k in list(dat.data_vars) + list(dat.coords):
+        dat[k].encoding = {}
+        dat[k].encoding["zlib"] = True
+        dat[k].encoding["complevel"] = 5
+        #need to overwrite units becuase leting xarray handle that might lead to inconsistiencies
+        #due to mixing of milli and micro seconds
+        if k.endswith("time") or k.endswith("time_orig") or k.endswith("time_even"):
+            dat[k].encoding["units"] = 'microseconds since 1970-01-01 00:00:00'
+    return dat
+

@@ -140,6 +140,7 @@ def loopMetaCoefQuicklooks(settings, version=__version__, skipExisting=True):
 
 def loopCreateEvents(settings, skipExisting=True, nDays = 0):
 
+
     config = tools.readSettings(settings)
 
 
@@ -153,41 +154,7 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
         case = f"{year}{month}{day}"
 
         for camera in config.instruments:
-            
-            fn = files.FindFiles(case, camera, config, __version__)
-            fnames0 = fn.listFiles("level0txt")
-
-            fname0status = fn.listFiles(level="level0status")
-            if len(fname0status) > 0:
-                fname0status = fname0status[0]  
-            else:
-                fname0status = None
-                
-            #ff = files.Filenames(fnames0[0], config, __version__)
-            eventFile = fn.fnamesDaily.metaEvents
-
-            if skipExisting and os.path.isfile(eventFile):
-                eventDat = xr.open_dataset(eventFile)
-                nFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
-                nFiles = int(nFiles.values)
-                if nFiles == len(fnames0):
-                    print("Skipping", case, eventFile )
-                    eventDat.close()
-                    continue
-                else:
-                    print("Missing files, redoing event file", nFiles, "of", len(fnames0) )
-                    eventDat.close()
-
-                
-
-            print("Running",case, eventFile )
-            metaDats = metadata.getEvents(fnames0, config, fname0status=fname0status)
-            try:
-                fn.createDirs()
-                metaDats.attrs.update(tools.ncAttrs)
-                metaDats.to_netcdf(eventFile)
-            except ValueError:
-                print("NO DATA",case, eventFile )
+            metadata.createEvent(case, camera, config, skipExisting=True)
 
 
 def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"):
@@ -207,46 +174,8 @@ def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"
 
         for camera in cameras:
 
-            # find files
-            ff = files.FindFiles(case, camera, config)
+            metadata.createMetaFrames(case, camera, config, skipExisting=skipExisting)
 
-            for fname0 in ff.listFiles("level0txt"):
-
-                fn = files.Filenames(fname0, config)
-                if os.path.isfile(fn.fname.metaFrames)  and skipExisting:
-                    print("%s exists"%fn.fname.metaFrames)
-                    continue
-
-                if os.path.isfile(f"{fn.fname.metaFrames}.nodata") and skipExisting:
-                    print("%s.nodata exists"%fn.fname.metaFrames)
-                    continue
-                
-                if os.path.getsize(fname0.replace(config.movieExtension,"txt")) == 0:
-                    print("%s has size 0!"%fname0)
-                    with open(fn.fname.metaFrames+".nodata", "w") as f:
-                        f.write("%s has size 0!"%fname0)
-                    continue
-                  
-                print(fname0)
-
-                fn.createDirs()
-                fname0all = list(fn.fnameTxtAllThreads.values())
-
-                metaDat, droppedFrames, beyondRepair = metadata.getMetaData(fname0all, camera, config, idOffset=0)
-
-                if beyondRepair:
-                    print(f"{os.path.basename(fname0)}, broken beyond repair, {droppedFrames}, frames dropped, {idOffset}, offset\n")
-                
-                if metaDat is not None:
-                    comp = dict(zlib=True, complevel=5)
-                    encoding = {
-                        var: comp for var in metaDat.data_vars}
-                    metaDat.attrs.update(tools.ncAttrs)
-                    metaDat.to_netcdf(fn.fname.metaFrames, encoding=encoding)
-                    print("%s written"%fn.fname.metaFrames)
-                else:
-                    with open(fn.fname.metaFrames+".nodata", "w") as f:
-                        f.write("no data recorded")
 
     return
 
@@ -291,10 +220,10 @@ def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, stdout=subp
         pass
 
 
-
-    with open(os.path.basename('%s.processing.txt' % fn.fname.level1detect), 'w') as f:
+    tmpFile = os.path.basename('%s.processing.txt' % fn.fname.level1detect)
+    with open(tmpFile, 'w') as f:
         f.write('%i %s' % (os.getpid(), socket.gethostname()))
-
+        print("written", tmpFile, "in", os.getcwd())
         
     BIN = os.path.join(sys.exec_prefix, "bin", "python")
 
@@ -413,46 +342,7 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0, version=__vers
             day = "%02i" % dd.day
             case = f"{year}{month}{day}"
 
-            # find files
-            fl = files.FindFiles(case, leader, config, version)
-
-            fnames1L = fl.listFilesExt("level1detect")
-            if len(fnames1L) == 0:
-                print("No leader files", case, config.leader , fl.fnamesPatternExt.level1detect)
-                continue
-
-            for fname1L in fnames1L:
-
-                ffl1  = files.FilenamesFromLevel(fname1L, config)
-                fname1Match = ffl1.fname["level1match"]
-
-                if fname1L.endswith("broken.txt") or fname1L.endswith("nodata") or fname1L.endswith("notenoughframes"):
-                    ffl1.createDirs()
-                    with open(f"{fname1Match}.nodata", "w") as f:
-                        f.write("no leader data")
-                    print("NO leader DATA", fname1Match)
-                    continue
-
-                if os.path.isfile(fname1Match) and skipExisting:
-                    print("SKIPPING", fname1Match)
-                    continue
-                if os.path.isfile('%s.broken.txt' % fname1Match) and skipExisting:
-                    print("SKIPPING BROKEN", fname1Match)
-                    continue
-                if os.path.isfile('%s.nodata' % fname1Match) and skipExisting:
-                    print("SKIPPING nodata", fname1Match)
-                    continue
-
-                try:
-                    fout, matchedDat, rot, rot_err = matching.matchParticles(fname1L, config)
-                except Exception as e:
-                    print("matching.matchParticles FAILED", fname1Match)
-                    print(str(e))
-                    ffl1.createDirs()
-                    with open('%s.broken.txt' % fname1Match, 'w') as f:
-                        f.write("in scripts: matching.matchParticles FAILED")
-                        f.write("\r")
-                        f.write(str(e))
+            matching.createLevel1match(case, config, skipExisting=skipExisting, version=version, )
 
         return
 

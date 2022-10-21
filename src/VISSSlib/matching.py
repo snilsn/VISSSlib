@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import os
 import numpy as np
 import xarray as xr
@@ -90,7 +90,7 @@ def retrieveRotation(dat3, x_ap, x_cov_diag, y_cov_diag, verbose=False):
     y_vars = np.array(range(nPart))
 
     x_cov = np.identity(len(x_vars)) * np.array(x_cov_diag)
-    y_cov = np.identity(nPart) * np.array(y_cov_diag)
+    y_cov = np.identity(nPart) * np.array(y_cov_diag) 
 
     y_obs = Fz
 
@@ -134,7 +134,7 @@ def removeDoubleCounts(mPart, mProp, doubleCounts):
     return mPart, mProp
 
 
-def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-10, minNumber4Stats=10, maxMatches=100, indexOffset=0):
+def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-10, minNumber4Stats=10, maxMatches=100, indexOffset=0, testing=False):
     '''
     match magic function
     
@@ -147,6 +147,7 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
     print("doMatch", len(leader1D.fpid), len(follower1D.fpid))
     prop = {}
     
+
     # particle Z position difference in joint coordinate system
     if "Z" in sigma.keys():
         
@@ -169,7 +170,17 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
         Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
 
         diffZ = Fz-Fz_estimated
-        
+        if testing:
+
+            plt.figure()
+            plt.title("diffZ")
+            plt.imshow(diffZ[:20,:20], vmin=-20, vmax=20)
+            plt.colorbar()
+            plt.xticks(range(20))
+            plt.yticks(range(20))
+            plt.xlabel("follower")
+            plt.ylabel("leader")
+
         prop["Z"] = probability(
             diffZ,
             mu["Z"],
@@ -177,7 +188,7 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
             delta["Z"]
         )
     else:
-        prop["Z"] = 1
+        prop["Z"] = 1.
     
     # particle camera Y position difference
     if "Y" in sigma.keys():
@@ -195,7 +206,7 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
             delta["Y"]
         )
     else:
-        prop["Y"] = 1
+        prop["Y"] = 1.
 
     # particle height difference
     if "H" in sigma.keys():
@@ -241,6 +252,24 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
 
     # estimate joint probability
     propJoint = prop["Y"]*prop["T"]*prop["H"]*prop["I"]*prop["Z"]
+
+    if testing:
+        for k in prop.keys():
+            if type(prop[k]) is not float:
+                plt.figure()
+                plt.title(k)
+                plt.imshow(prop[k][:20,:20])
+                plt.xticks(range(20))
+                plt.yticks(range(20))
+                plt.xlabel("follower")
+                plt.ylabel("leader")
+        plt.figure()
+        plt.title(k)
+        plt.imshow(propJoint[:20,:20])
+        plt.xticks(range(20))
+        plt.yticks(range(20))
+        plt.xlabel("follower")
+        plt.ylabel("leader")
 
     matchedParticles = {}
     matchedProbabilities = {}
@@ -380,6 +409,7 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
         new_sigma["I"] = bn.nanstd(di)
         new_mu["I"] = bn.nanmedian(di)
 
+        print(f"{len(matchedDat.pair_id)} matches found. ")
         # print(" match coefficients, ",new_mu)
     else:
         print(f"{len(matchedDat.pair_id)} matches found. Setting match coefficients to NAN")
@@ -424,7 +454,7 @@ def addPosition(matchedDat, rotate, rotate_err, config):
 
 
 
-def doMatchSlicer(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-10, maxMatches=100, minNumber4Stats=10, chunckSize = 700):
+def doMatchSlicer(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-10, maxMatches=100, minNumber4Stats=10, chunckSize = 700, testing=False):
 
     '''
     doMatch with slicing  to make sure data fits into memory
@@ -436,7 +466,7 @@ def doMatchSlicer(leader1D, follower1D, sigma, mu, delta, config, rotate, minPro
 
     #short cut for small data sets
     if (len(leader1D.fpid) < chunckSize) & (len(follower1D.fpid) < chunckSize):
-        return doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=minProp, maxMatches=maxMatches, minNumber4Stats=minNumber4Stats)
+        return doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=minProp, maxMatches=maxMatches, minNumber4Stats=minNumber4Stats, testing=testing)
 
     # ok it is too long... 
     matchedDat = []
@@ -487,10 +517,10 @@ def matchParticles(fnameLv1Detect, config,
             "H" : 1.2, # estimated from OE results
             "I" : .01,
         },
-        minMatchScore4rot = 0.035,
         nSamples4rot = 300,
         minSamples4rot = 100,
-
+        testing=False,
+        minDMax4rot=0
     ):
 
     matchedDat = None
@@ -685,14 +715,6 @@ def matchParticles(fnameLv1Detect, config,
         else:
             captureIdOffset = captureIdOffset1
 
-        sigma = {
-            "Z" : 1.7, # estimated from OE results
-    #             "Z" : 20, # estimated from OE results
-        #                 "Y" : 12.0,
-            "H" : 1.2, # estimated from OE results
-    #             "T" : 1/config.fps/20. # 
-            "I" : .01,
-        }
         mu = {
             "Z" : 0,
         #                 "Y" : 34.3,
@@ -714,24 +736,37 @@ def matchParticles(fnameLv1Detect, config,
         dataTruncated4rot=False
         doRot = True
         # for estiamting rotation, we wo not need the full data set, use subset to speed up caluculation
-        if len(leader1D.fpid) > nSamples4rot*10: #assuming we have about 10 times more particles outside the obs volume
-            leader1D4rot = leader1D.isel(fpid=slice(nSamples4rot*20))
+
+        if (minDMax4rot > 0):
+            filt = (leader1D.Dmax>minDMax4rot).values
+            print("DMax filter leader:", minDMax4rot, np.sum(filt)/len(leader1D.fpid) * 100,"%")
+            leader1D4rot = leader1D.isel(fpid=filt)
+        else:
+            leader1D4rot = leader1D.copy()
+
+
+        if len(leader1D4rot.fpid) > nSamples4rot*10: #assuming we have about 10 times more particles outside the obs volume
+            leader1D4rot = leader1D4rot.isel(fpid=slice(nSamples4rot*20))
             dataTruncated4rot = True
-        elif len(leader1D.fpid) < minSamples4rot:
+        elif len(leader1D4rot.fpid) < minSamples4rot:
             print("not enough leader data to estimate rotation")
             doRot = False
+
+        if (minDMax4rot > 0):
+            filt = (follower1D.Dmax>minDMax4rot).values
+            print("DMax filter follower:", minDMax4rot, np.sum(filt)/len(follower1D.fpid) * 100,"%")
+            follower1D4rot = follower1D.isel(fpid=filt)
         else:
-            leader1D4rot = leader1D
+            follower1D4rot = follower1D.copy()
 
 
-        if len(follower1D.fpid) > nSamples4rot*10:
-            follower1D4rot = follower1D.isel(fpid=slice(nSamples4rot*20))
+        if len(follower1D4rot.fpid) > nSamples4rot*10:
+            follower1D4rot = follower1D4rot.isel(fpid=slice(nSamples4rot*20))
             dataTruncated4rot = True
-        elif len(follower1D.fpid) < minSamples4rot:
+        elif len(follower1D4rot.fpid) < minSamples4rot:
             print("not enough follower data to estimate rotation")
             doRot = False
-        else:
-            follower1D4rot = follower1D
+
 
         # iterate to rotation coeeficients in max. 20 steps
         if doRot:
@@ -739,8 +774,8 @@ def matchParticles(fnameLv1Detect, config,
                 print("rotation coefficients iteration", ii, "of 20")
                 # in here is all the magic
                 res = doMatchSlicer(
-                    leader1D4rot, follower1D4rot, sigma, mu, delta, config, rotate, chunckSize=chunckSize
-                )
+                    leader1D4rot, follower1D4rot, sigma, mu, delta, config, rotate, chunckSize=chunckSize,
+                testing=testing)
                 if res is None:
                     print("doMatchSlicer 4 rot failed")
                     continue 
@@ -757,7 +792,7 @@ def matchParticles(fnameLv1Detect, config,
                     rotate, rotate_err = retrieveRotation(matchedDat4Rot, x_ap, x_cov_diag, y_cov_diag)
 
                     print("MATCH",ii, matchedDat.matchScore.mean().values, )
-                    print("ROTATE",ii, rotate )
+                    print("ROTATE",ii,"\n", rotate ,"\n", "error","\n", rotate_err)
                     rotates.append(rotate)
 
                     if ii > 0:
@@ -782,8 +817,8 @@ def matchParticles(fnameLv1Detect, config,
         
             # do it again because we did not consider everything before
             res = doMatchSlicer(
-                leader1D, follower1D, sigma, mu, delta, config, rotate, chunckSize=chunckSize
-            )
+                leader1D, follower1D, sigma, mu, delta, config, rotate, chunckSize=chunckSize,
+            testing=testing)
 
             if res is None:
                 print("doMatchSlicer failed")
@@ -814,6 +849,8 @@ def matchParticles(fnameLv1Detect, config,
         with open(f"{fname1Match}.nodata", "w") as f:
             f.write("no data")
         print("NO DATA", fname1Match)
+        return fname1Match, matchedDats, rotate, rotate_err
+
     elif len(matchedDats) == 1:
         # easy case
         matchedDats = matchedDat
@@ -823,18 +860,75 @@ def matchParticles(fnameLv1Detect, config,
         matchedDats = xr.concat(matchedDats, dim="pair_id")
         matchedDats["pair_id"] = range(len(matchedDats["pair_id"]))
 
-    for k in matchedDats.data_vars:
-        matchedDats[k].encoding = {}
-        matchedDats[k].encoding["zlib"] = True
-        matchedDats[k].encoding["complevel"] = 5
-        #need to overwrite units becuase keeping level1detect time offsets might lead to inconsistiencies
-        if k in ["capture_time", "record_time", "file_starttime"]:
-            matchedDats[k].encoding["units"] = 'microseconds since 2019-01-01 00:00:00'
-
-    matchedDats.attrs.update(tools.ncAttrs)
+    matchedDats = tools.finishNc(matchedDats)
     matchedDats.to_netcdf(fname1Match)
     print("DONE", fname1Match, "with", len(matchedDats.pair_id), "particles")
 
     return fname1Match, matchedDats, rotate, rotate_err
 
 
+def createLevel1match(case, config, skipExisting=True, version=__version__ ,
+    y_cov_diag = 1.65**2,  chunckSize=1000, 
+    rotate="config", rotate_err="config", maxDiffMs = "config", 
+    rotationOnly=False, nPoints=500, sigma = {
+            "Z" : 1.7, # estimated from OE results
+            "H" : 1.2, # estimated from OE results
+            "I" : .01,
+        },
+        minDMax4rot = 0,
+        nSamples4rot = 300,
+        minSamples4rot = 100,
+        testing=False
+
+    ):
+
+    # find files
+    fl = files.FindFiles(case, config.leader, config, version)
+
+    fnames1L = fl.listFilesExt("level1detect")
+    if len(fnames1L) == 0:
+        print("No leader files", case, config.leader , fl.fnamesPatternExt.level1detect)
+        return None
+
+    for fname1L in fnames1L:
+
+        ffl1  = files.FilenamesFromLevel(fname1L, config)
+        fname1Match = ffl1.fname["level1match"]
+
+        if fname1L.endswith("broken.txt") or fname1L.endswith("nodata") or fname1L.endswith("notenoughframes"):
+            ffl1.createDirs()
+            with open(f"{fname1Match}.nodata", "w") as f:
+                f.write("no leader data")
+            print("NO leader DATA", fname1Match)
+            continue
+
+        if os.path.isfile(fname1Match) and skipExisting:
+            print("SKIPPING", fname1Match)
+            continue
+        if os.path.isfile('%s.broken.txt' % fname1Match) and skipExisting:
+            print("SKIPPING BROKEN", fname1Match)
+            continue
+        if os.path.isfile('%s.nodata' % fname1Match) and skipExisting:
+            print("SKIPPING nodata", fname1Match)
+            continue
+
+        try:
+            fout, matchedDat, rot, rot_err = matchParticles(fname1L, config,
+                    y_cov_diag = y_cov_diag,  chunckSize=chunckSize, 
+    rotate=rotate, rotate_err=rotate_err, maxDiffMs = maxDiffMs, 
+    rotationOnly=rotationOnly, nPoints=nPoints, sigma = sigma,
+        minDMax4rot=minDMax4rot,
+        nSamples4rot = nSamples4rot,
+        minSamples4rot = minSamples4rot,
+        testing=testing, 
+)
+            return fout, matchedDat, rot, rot_err 
+        except RuntimeError:
+            print("matchParticles FAILED", fname1Match)
+            print(str(e))
+            ffl1.createDirs()
+            with open('%s.broken.txt' % fname1Match, 'w') as f:
+                f.write("in scripts: matchParticles FAILED")
+                f.write("\r")
+                f.write(str(e))
+            return None, None, None, None 

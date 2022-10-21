@@ -31,12 +31,13 @@ def imshow(img):
 
 
 class _stereoViewMatch(object):
-    def __init__(self, case, config, version=__version__, markParticles=True):
+    def __init__(self, case, config, version=__version__, markParticles=True, increaseContrast=True):
         
         self.case = case
         self.config = config
         self.version = version
         self.markParticles = markParticles
+        self.increaseContrast = increaseContrast
         self.cameras = [config.leader, config.follower]
 
         self.open()
@@ -62,8 +63,8 @@ class _stereoViewMatch(object):
             fnames0F = fnames0F[:1]
         fnamesLv0[self.config.follower] = fnames0F[0]
 
-        self.meta[self.config.leader] = tools.open_mfmetaFrames(fL.listFiles("metaFrames"), self.config)
-        self.lv1detect[self.config.leader] = tools.open_mflevel1detect(fL.listFiles("level1detect"), self.config)
+        self.meta[self.config.leader] = tools.open_mfmetaFrames(fL.listFiles("metaFrames"), self.config, skipFixes=["makeCaptureTimeEven"])
+        self.lv1detect[self.config.leader] = tools.open_mflevel1detect(fL.listFiles("level1detect"), self.config, skipFixes=["makeCaptureTimeEven"])
         
         fnamesMF = fL1.filenamesOtherCamera(graceInterval=-1, level="metaFrames")
         if len(fnamesMF)>1:
@@ -74,19 +75,30 @@ class _stereoViewMatch(object):
             print("Cannot handle camera restarts yet, taking only first file, omitting", fnames1F[1:])
             fnames1F = fnames1F[:1]
 
-        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config)
-        self.lv1detect[self.config.follower] = tools.open_mflevel1detect(fnames1F, self.config)
+        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config, skipFixes=["makeCaptureTimeEven"])
+        self.lv1detect[self.config.follower] = tools.open_mflevel1detect(fnames1F, self.config, skipFixes=["makeCaptureTimeEven"])
         
         self.lv1match = tools.open_mflevel1match(fL.listFiles("level1match"), self.config)
         
 
-        #get capture ID diffs
-        self.idDiff, nMatched = tools.estimateCaptureIdDiffCore(*self.meta.values(), "capture_time", nPoints=500, timeDim="record_time")
-        idDiff2, nMatched = tools.estimateCaptureIdDiffCore(*self.lv1detect.values(), "fpid", nPoints=500, timeDim="record_time")
+        # #get capture ID diffs
+        # self.idDiff, nMatched = tools.estimateCaptureIdDiffCore(*self.meta.values(), "capture_time", nPoints=500, timeDim="record_time")
+        # idDiff2, nMatched = tools.estimateCaptureIdDiffCore(*self.lv1detect.values(), "fpid", nPoints=500, timeDim="record_time")
+        # self.idDiffs[self.config.follower] = self.idDiff
+        # assert  self.idDiff == idDiff2, "estimateCaptureIdDiff did not come to same result for metaFrames and lv1detect"
+        self.idDiffs[self.config.follower] = self.idDiff = int(self.lv1match.capture_id.diff("camera").values.flatten()[0])
         self.idDiffs[self.config.leader] = 0
-        self.idDiffs[self.config.follower] = self.idDiff
 
-        assert  self.idDiff == idDiff2, "estimateCaptureIdDiff did not come to same result for metaFrames and lv1detect"
+
+        #remove non moving data
+        minMovingPixels = np.array(self.config["minMovingPixels"])
+        for camera in self.cameras:
+            nChangedPixel = self.meta[camera].nMovingPixel.values
+            passesThreshold = nChangedPixel >= minMovingPixels
+            print(f"{passesThreshold.any(1).sum()/len(self.meta[camera].capture_time)*100}% frames are moving")
+            self.meta[camera] = self.meta[camera].isel(capture_time = passesThreshold.any(1))
+
+
         self.uniqueCaptureIds = xr.DataArray(
             np.sort(
                 np.unique(
@@ -102,6 +114,7 @@ class _stereoViewMatch(object):
             )
         self.captureTimes = {}
         for camera in self.cameras:
+
             self.videos[camera] = av.VideoReaderMeta(
                 fnamesLv0[camera], 
                 self.meta[camera], 
@@ -131,8 +144,9 @@ class _stereoViewMatch(object):
 #                 captureTime = 0
                 # print(f"found record {rr} in {camera} data at {captureTime}")
     
-    
-                res, self.frame1, meta1, meta2, meta3 = self.videos[camera].getFrameByCaptureTimeWithParticles(captureTime, markParticles=self.markParticles, highlightPid="meta")
+                # print(camera, captureTime)
+                res, self.frame1, meta1, meta2, meta3 = self.videos[camera].getFrameByCaptureTimeWithParticles(captureTime, markParticles=self.markParticles, highlightPid="meta", increaseContrast=self.increaseContrast
+)
                 if self.frame1 is not None:
                     frame.append(self.frame1)
                 else:
@@ -144,6 +158,7 @@ class _stereoViewMatch(object):
                         ), dtype=int) + 130
                     )
             else:
+                # print(camera, "not found",(thisID + self.idDiffs[camera]) )
                 # print(f"did not find record {rr} in {camera} data")
                 frame.append(
                     np.zeros((
@@ -164,6 +179,7 @@ class _stereoViewMatch(object):
             lv1matches = None
 
         frame = np.concatenate(frame, axis=1)
+
         return frame, metaFrames, lv1detects, lv1matches
     
     def next(self):
@@ -171,7 +187,7 @@ class _stereoViewMatch(object):
         if newrr >= len(self.uniqueCaptureIds):
             print("end of movie file")
             return None, None, None, None
-        return self.get(self.rr+1)
+        return self.get(newrr)
     
     def previous(self):
         newrr = self.rr-1
@@ -200,6 +216,31 @@ class _stereoViewMatch(object):
         return frame, metaFrames, lv1detects, lv1match
    
 
+    def nextMatch(self):
+        rr = self.rr
+        rrs = range(rr+1,len(self.uniqueCaptureIds))
+        if len(rrs) == 0:
+            print("end of movie file")
+            return None, None, None, None
+        for newrr in rrs:
+            thisID = self.uniqueCaptureIds[newrr].values
+            if thisID in self.lv1match.capture_id.sel(camera=self.config.leader).values:
+                break
+        return self.get(newrr)
+
+    def previousMatch(self):
+        rr = self.rr
+        rrs = range(rr-1,-1, -1)
+        if len(rrs) == 0:
+            print("start of movie file")
+            return None, None, None, None
+        for newrr in rrs:
+            thisID = self.uniqueCaptureIds[newrr].values
+            if thisID in self.lv1match.capture_id.sel(camera=self.config.leader).values:
+                break
+        return self.get(newrr)
+
+
     def close(self, ):
         for camera in self.cameras:
             self.meta[camera].close()
@@ -208,9 +249,9 @@ class _stereoViewMatch(object):
 
 
 class matchGUI():
-    def __init__(self, case, config, markParticles=True):
+    def __init__(self, case, config, markParticles=True, increaseContrast=True):
     
-        self.sv = _stereoViewMatch(case, config, markParticles=markParticles)
+        self.sv = _stereoViewMatch(case, config, markParticles=markParticles, increaseContrast=increaseContrast)
         return 
         
     def updateHandles(self, frame, metaFrames, lv1detects, lv1matches):
@@ -253,10 +294,18 @@ class matchGUI():
             
             print("leader:", c0,i0, "follower:", c1,i1)
             if lv1match is not None:
-                Zdiff = lv1match.position.isel(position_elements=[2,3]).diff("position_elements")
-                print("%.7f score"%(lv1match.matchScore.values),"%.i ms"%(lv1match.capture_time.diff("camera").values[0].astype(int)/1e6 ) ,"%.2f y"%(lv1match.roi.diff("camera").sel(ROI_elements="y").values[0]),"%.2f h"%(lv1match.roi.diff("camera").sel(ROI_elements="h").values[0]), "%.2f Z"%Zdiff)
+                Zdiff = lv1match.position.isel(position_elements=[2,3], drop=True).diff("position_elements").values.flatten()
+                print(
+                    lv1match.pair_id.values.flatten(),
+                    ["%.7f score"%(l) for l in lv1match.matchScore.values],
+                    ["%.i ms"%(l/1e6) for l in lv1match.capture_time.diff("camera").values.astype(int).flatten() ] ,
+                    ["%.2f y"%(l) for l in lv1match.roi.diff("camera").sel(ROI_elements="y", drop=True).values.flatten()],
+                    ["%.2f h"%(l) for l in lv1match.roi.diff("camera").sel(ROI_elements="h", drop=True).values.flatten()], 
+                    ["%.2f Z"%z for z in Zdiff]
+                    )
+                print(lv1match.blur.values)
                 print("#"*100)
-            if (lv1detects[0] is not None) and (lv1detects[1] is not None):
+            if (lv1detects[0] is not None) and (lv1detects[1] is not None) and (lv1detects[0]["pid"].shape == lv1detects[1]["pid"].shape):
                 print(f"{'pid'.ljust(20)}: D {'X'.ljust(23)}, L {str(lv1detects[0]['pid'].values).ljust(23)}, F {str(lv1detects[1]['pid'].values).ljust(23)}") 
                 for i in lv1detects[0].data_vars:
                     if i in ["touchesBorder", "pixPercentiles", "nThread", "record_id", ]: continue
@@ -276,6 +325,11 @@ class matchGUI():
 
         layout = widgets.Layout(width='auto', height='30px') #set width and height
 
+        buttonNextMatch = widgets.Button(description='>>>', layout=layout)
+        buttonPrevMatch = widgets.Button(description='<<<', layout=layout)
+        buttonNextMatch.on_click(lambda x: self.updateHandles(*self.sv.nextMatch()))
+        buttonPrevMatch.on_click(lambda x: self.updateHandles(*self.sv.previousMatch()))
+
         buttonNext = widgets.Button(description='>>', layout=layout)
         buttonPrev = widgets.Button(description='<<', layout=layout)
         buttonNext.on_click(lambda x: self.updateHandles(*self.sv.nextCommon()))
@@ -287,7 +341,7 @@ class matchGUI():
         buttonPrevFrame.on_click(lambda x: self.updateHandles(*self.sv.previous()))
 
         
-        buttons = [buttonPrev,buttonNext,buttonPrevFrame,buttonNextFrame]
+        buttons = [buttonPrevMatch,buttonNextMatch,buttonPrev,buttonNext,buttonPrevFrame,buttonNextFrame]
         self.texts = []
 
         self.texts.append(widgets.Text(
@@ -354,8 +408,8 @@ class _stereoViewDetect(object):
             fnames0F = fnames0F[:1]
         fnamesLv0[self.config.follower] = fnames0F[0]
 
-        self.meta[self.config.leader] = tools.open_mfmetaFrames(fL.listFiles("metaFrames"), self.config)
-        self.lv1detect[self.config.leader] = tools.open_mflevel1detect(fL.listFiles("level1detect"), self.config)
+        self.meta[self.config.leader] = tools.open_mfmetaFrames(fL.listFiles("metaFrames"), self.config, skipFixes=["makeCaptureTimeEven"])
+        self.lv1detect[self.config.leader] = tools.open_mflevel1detect(fL.listFiles("level1detect"), self.config, skipFixes=["makeCaptureTimeEven"])
         
         fnamesMF = fL1.filenamesOtherCamera(graceInterval=-1, level="metaFrames")
         if len(fnamesMF)>1:
@@ -366,8 +420,8 @@ class _stereoViewDetect(object):
             print("Cannot handle camera restarts yet, taking only first file, omitting", fnames[1:])
             fnames1F = fnames1F[:1]
 
-        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config)
-        self.lv1detect[self.config.follower] = tools.open_mflevel1detect(fnames1F, self.config)
+        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config, skipFixes=["makeCaptureTimeEven"])
+        self.lv1detect[self.config.follower] = tools.open_mflevel1detect(fnames1F, self.config, skipFixes=["makeCaptureTimeEven"])
         
 
         self.index = {}

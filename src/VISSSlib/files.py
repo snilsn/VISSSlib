@@ -134,6 +134,9 @@ class FindFiles(object):
             ff2 = FilenamesFromLevel(fnames[-1], self.config)
             fnames = [ff1.prevFile(level=level)] + fnames + [ff2.nextFile(level=level)]
 
+        #remove None
+        fnames = [f for f in fnames if f is not None]
+
         return fnames
 
     @property
@@ -232,9 +235,11 @@ class Filenames(object):
         for fL in fileLevels:
             self.fname[fL] = '%s/%s_V%s_%s_%s.nc' % (
             self.outpath.format(site=config["site"], level=fL), fL, version, config["site"], self.basename)
+            self.fname[fL] = self.fname[fL].replace("//", "/")
         for fL in dailyLevels:
             self.fname[fL] = '%s/%s_V%s_%s_%s.nc' % (
             self.outpath.format(site=config["site"], level=fL), fL, version, config["site"], self.basenameShort)
+            self.fname[fL] = self.fname[fL].replace("//", "/")
 
         self.fname["imagesL1detect"] = self.fname["imagesL1detect"].replace(".nc", ".tar.gz")
 

@@ -122,11 +122,11 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                        skipExisting=True,
                        ):
 
-    minBlur = config["minBlur4Plotting"]
-    minSize = config["minDmax4Plotting"]
 
     if type(config) is str:
-        config = readSettings(config)
+        config = tools.readSettings(config)
+    minBlur = config["minBlur4Plotting"]
+    minSize = config["minDmax4Plotting"]
 
     total_width = (container_width + extra) * nTiles // nRows
     max_height = (20 + container_height_max) * nRows + 60
@@ -254,6 +254,13 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
                 # select pids randomly, figure out how much we need, and sort them again
                 pids = deepcopy(thisDat.fpid.values)
+                fnames = thisDat.fpid.file.values
+                tars = {}
+                for fname in fnames:
+                    fn = files.FilenamesFromLevel(fname, config)
+                    tarRoot = fn.fname.imagesL1detect.split("/")[-1].replace(".tar.gz","")
+                    tars[fname] = (tools.imageTarFile.open(fn.fname.imagesL1detect, "r:gz"), tarRoot)
+
                 nPids = len(pids)
                 np.random.seed(tt)
                 np.random.shuffle(pids)
@@ -276,7 +283,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
                 for fname, pid in pids:
 
-                    basenameImg = fname.split('/')[-1]
+                    # basenameImg = fname.split('/')[-1]
 
                     if not readParticlesFromFiles:
 
@@ -308,17 +315,21 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                         im = frame1[y+height_offset:y+height_offset+h, x:x+w]
                     else:
 
-                        fn = files.FilenamesFromLevel(fname, config)
 
                         pidStr = '%07i' % pid
                         imName = '%s.png' % (pidStr)
-                        imfname = '%s/%s' % (
-                            fn.imagepath.imagesL1detect.format(ppid=pidStr[:4]), imName)
+                        imfname = '%s/%s/%s' % (tars[fname][1],pidStr[:4], imName)
                         try:
-                            im = np.array(Image.open(imfname))
-                        except FileNotFoundError:
+                            im = tars[fname][0].extractimage(imfname)
+                        except KeyError:
                             print("NOT FOUND ", imfname)
                             continue
+                        #apply alpha channel
+                        im[...,0][im[...,1] == 0] = 0
+                        #drop alpha channel
+                        im = im[...,0]
+
+                    im = av.doubleDynamicRange(im, offset=2)
 
                     im = np.pad(im, [(0, 1), (0, 1)])
                     fid = np.where(fname == np.array(ff.listFiles("metaFrames")))[0][0]
@@ -344,6 +355,10 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                         imT = im
                     ims.append(imT)
                     totalArea += np.prod(imT.shape)
+
+                for fname in fnames:
+                    tars[fname][0].close()
+
 
                 # make tile
                 images = [Image.fromarray(im) for im in ims]
@@ -872,8 +887,8 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     assert len(fnames1DF)>0
 
     datM = tools.open_mflevel1match(fnames1M, config)        
-    datDL = tools.open_mflevel1detect(fnames1DL, config, applyFixes=False, datVars=["Dmax", "capture_time", "touchesBorder"])        
-    datDF = tools.open_mflevel1detect(fnames1DF, config, applyFixes=False, datVars=["Dmax", "capture_time", "touchesBorder"])        
+    datDL = tools.open_mflevel1detect(fnames1DL, config, skipFixes="all", datVars=["Dmax", "capture_time", "touchesBorder"])        
+    datDF = tools.open_mflevel1detect(fnames1DF, config, skipFixes="all", datVars=["Dmax", "capture_time", "touchesBorder"])        
 
     fig, axcax = plt.subplots(nrows=9, ncols=2, figsize=(10,15),gridspec_kw={"width_ratios":[1, 0.01], "height_ratios":[2, 2, 2, 1, 1, 1, 1, 1, 1]})
     

@@ -29,7 +29,7 @@ class VideoReader(cv2.VideoCapture):
 #         '''
 #         assert self.position == ii
 #         res, frame = self.read()
-#         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+#         frame = cvtColor(frame, cv2.COLOR_BGR2GRAY)
 #         return res, frame
 
     @functools.lru_cache(maxsize=100, typed=False)
@@ -50,7 +50,7 @@ class VideoReader(cv2.VideoCapture):
                 self.set(cv2.CAP_PROP_POS_FRAMES, ii)
         res, frame = self.read()
         if frame is not None:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame = cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
 
         return res, frame
@@ -128,7 +128,7 @@ class VideoReaderMeta(object):
         else:
             return self.getFrameByIndex(ii)
          
-    def getFrameByIndex(self, ii):
+    def getFrameByIndex(self, ii, increaseContrast=False):
         '''
         like read, but with meta data and appropriate thread
         '''
@@ -140,10 +140,10 @@ class VideoReaderMeta(object):
         except IndexError:
             return False, None, None
 
-        return self.getFrameByCaptureTime(captureTime)
+        return self.getFrameByCaptureTime(captureTime, increaseContrast=increaseContrast)
 
     @functools.lru_cache(maxsize=100, typed=False)
-    def getFrameByCaptureTime(self, captureTime):
+    def getFrameByCaptureTime(self, captureTime, increaseContrast=False):
         '''
         like read, but with capturetime, meta data and appropriate thread
         '''
@@ -158,21 +158,23 @@ class VideoReaderMeta(object):
             self.currentThread = int(self.currentMetaFrames.nThread.values)
             rr = int(self.currentMetaFrames.record_id.values)
             self.res, self.curentFrame = self.video[self.currentThread].getFrameByIndex(rr, saveMode=self.saveMode)
+            if increaseContrast:
+                self.curentFrame = doubleDynamicRange(self.curentFrame)
             self.position = np.where(self.metaFrames.capture_time==captureTime)[0][0]
             self.positions[self.currentThread] = self.video[self.currentThread].position
 
         return self.res, self.curentFrame, self.currentMetaFrames
 
     @functools.lru_cache(maxsize=100, typed=False)
-    def getFrameByCaptureTimeWithParticles(self, captureTime, pad = 4, markParticles=False, highlightPid=None):
+    def getFrameByCaptureTimeWithParticles(self, captureTime, pad = 4, markParticles=False, highlightPid=None, increaseContrast=False):
 
         assert self.lv1detect is not None
         
-        res, _, _ = self.getFrameByCaptureTime(captureTime)
+        res, _, _ = self.getFrameByCaptureTime(captureTime, increaseContrast=increaseContrast)
         if (res is None) or (res == False):
             return None, None, None, None, None
     
-        self.curentFrameC = cv2.cvtColor(self.curentFrame, cv2.COLOR_GRAY2BGR)
+        self.curentFrameC = cvtColor(self.curentFrame, cv2.COLOR_GRAY2BGR)
 
         if self.config.cropImage is not None:
             color = (255,255,255)
@@ -198,20 +200,24 @@ class VideoReaderMeta(object):
                     partic1 = self.currentlv1detect.sel(pid=pid)
                 except KeyError:
                     partic1 = self.currentlv1detect.sel(fpid=(self.currentlv1detect.pid==pid)).squeeze()
+                
                 (x, y, w, h) = partic1.roi.values.astype(int)
                 y = y + self.config['height_offset']
 
                 if self.config.cropImage is not None:
                     y = y + self.config['cropImage'][1]
                     x = x + self.config['cropImage'][0]
-
                 if (self.lv1match is not None) and (highlightPid == "meta") and pid in self.lv1match.pid:
-                    matchedDats.append(self.lv1match.isel(fpair_id = self.lv1match.pid == pid))
-                    color = (255,255,255)
+                    thisMatch = self.lv1match.isel(fpair_id = self.lv1match.pid == pid)
+                    matchedDats.append(thisMatch)
+                    color = (0,0,0)
+                    extraInfo = "%.2g"%thisMatch.matchScore.values
                 elif highlightPid == pid:
-                    color = (255,255,255)
+                    color = (0,0,0)
+                    extraInfo = ""
                 else:
                     color = colors[jj]
+                    extraInfo = ""
 
                 x1, y1, x2, y2 = x - pad, y - pad, x + w + pad, y + h+ pad
 
@@ -226,15 +232,14 @@ class VideoReaderMeta(object):
 
                 cv2.rectangle(self.curentFrameC, (x1, y1), (x2, y2), color, 2)
                 extra1 = str(partic1.capture_time.values)[:-6].split('T')[-1]
-                extra2 = '%i'%partic1.Dmax.values
 
                 posY = int(partic1.roi[1]+self.config['height_offset'])
-                posX = int(partic1.roi[1]+self.config['height_offset'])
+                posX = int(partic1.roi[0]+self.config['height_offset'])
                 if self.config.cropImage is not None:
                     posY = posY + self.config['cropImage'][1]
                     posX = posX + self.config['cropImage'][0]
 
-                cv2.putText(self.curentFrameC, '%i %s %s' % (partic1.pid, extra1, extra2),
+                cv2.putText(self.curentFrameC, '%i %s %s' % (partic1.pid, extra1, extraInfo),
                             (posX, posY), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
 
             if len(matchedDats) > 0:
@@ -245,7 +250,7 @@ class VideoReaderMeta(object):
         return self.res, self.curentFrameC, self.currentMetaFrames, self.currentlv1detect, matchedDats
 
 
-    def getFrameByIndexWithParticles(self, ii, markParticles=False, highlightPid=None):
+    def getFrameByIndexWithParticles(self, ii, markParticles=False, highlightPid=None, increaseContrast=False):
         '''
         like read, but with even more meta data and appropriate thread
         '''
@@ -257,8 +262,8 @@ class VideoReaderMeta(object):
             captureTime = self.metaFrames.capture_time[ii].values
         except IndexError:
             return False, None, None, None, None
-    
-        return self.getFrameByCaptureTimeWithParticles(captureTime, markParticles=markParticles, highlightPid=highlightPid)
+
+        return self.getFrameByCaptureTimeWithParticles(captureTime, markParticles=markParticles, highlightPid=highlightPid, increaseContrast=increaseContrast)
 
     
     @property
@@ -289,7 +294,7 @@ class VideoReaderMeta(object):
             frame1 = frame1[:,:,0]
         return frame1[y+heightOffset:y+heightOffset+h, x:x+w], frame1
 
-def doubleDynamicRange(frame):
+def doubleDynamicRange(frame, offset="estimate", factor = 2):
     '''
     dynamic range can be typically doubled which helps with feature detection
     the factor of 2 makes sure all gradients scale with the same factor even for integers
@@ -299,17 +304,21 @@ def doubleDynamicRange(frame):
 
     '''
 
-    # offset so that brightest spot is 255 even if doubled
-    offset1 = frame.max()-127
-    # offset so that darkest point is zero.
-    offset2 = frame.min()
-    # take smaller one so that in doubt information is lost for brighter pixels
-    offset = min(offset1, offset2)
-    #make sure offset is >= 0
-    offset = max(0,offset)
     
-    # apply to frame. cv2.multiply handles overflows properly
-    frame = cv2.multiply(frame-offset,2)
+
+    if offset == "estimate":
+        # offset so that brightest spot is 255 even if doubled
+        offset1 = frame.max()-(254//factor)
+        # offset so that darkest point is zero.
+        offset2 = frame.min()
+        # take smaller one so that in doubt information is lost for brighter pixels
+        offset = min(offset1, offset2)
+        #make sure offset is >= 0
+        offset = max(0,offset)
+        # apply to frame. cv2.multiply handles overflows properly
+
+    frame = cv2.subtract(frame, int(offset))
+    frame = cv2.multiply(frame,factor)
 
     return frame
 
@@ -370,6 +379,10 @@ def main():
     except:
         print(outFile, "FAILED")
     return 0
+
+def cvtColor(frame):
+    #faster than cv2.cvtColor but works only for gray images 
+    return frame[:,:,0]
 
 if __name__ == '__main__':
     main()

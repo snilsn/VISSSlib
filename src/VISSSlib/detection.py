@@ -33,122 +33,182 @@ from . import av
 
 from . import __version__
 
+# class movementDetection(object):
+#     def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
+#         '''
+#         Depreciated!
+#         '''
+
+#         assert window%2 == 1, 'not tested for even windiow sizes'
+        
+#         self.video = VideoReader
+#         self.window = window
+#         self.threshold = threshold
+#         self.height_offset = height_offset
+
+        
+#         if indices is None:
+#             self.futureIndices = iter(range(self.video.total_frames))
+#             self.currentIndices = iter(range(self.video.total_frames))
+#         else:
+#             self.futureIndices = iter(indices)
+#             self.currentIndices = iter(indices)
+#         self.background = None
+        
+#         #we cache the require dimages in a big array
+#         self.frameCache = np.empty((self.window, self.video.height, self.video.width),dtype='float32') * np.nan
+#         self.diffCache = np.empty((self.window, self.video.height-self.height_offset, self.video.width),dtype='float32') * np.nan
+#         #the index cache is only for double checkign that we did not mess anything up
+#         self.indexCache = np.zeros(self.window ,dtype='int') - 99
+#         # the window is centered about the current frame, ie.e. extends into the future
+#         self.w1, self.w2 = int(np.floor(self.window/2)), int(np.ceil(self.window/2))
+#         # get future frames and add them to the cache
+#         for ii in range(self.w2):
+#             self._nextFutureFrame()
+#         #get mean backgournd for the first time
+#         self._aveBackground()
+        
+#     def _nextFutureFrame(self):
+
+#         '''
+#         update background by adding future frame to it
+#         roll cache backwards and put newest image at the end
+#         '''
+#         try:
+#             index = next(self.futureIndices)
+#         except StopIteration:
+#             logging.info(f'background estimate at end of video')
+#             index = -99
+#             frame = np.nan
+#         else:
+#             _, frame = self.video.get(index)
+
+
+#         #idea: roll index instad of array... itertools.cycle(range(window))
+#         self.frameCache = np.roll(self.frameCache, -1, axis=0)
+#         self.diffCache = np.roll(self.diffCache, -1, axis=0)
+#         self.indexCache = np.roll(self.indexCache, -1, axis=0)
+#         self.frameCache[-1] = frame
+#         self.diffCache[-1] = self.frameCache[-2, self.height_offset:] - self.frameCache[-1, self.height_offset:]
+#         self.indexCache[-1] = index
+#         return
+    
+#     def _getCurrentFrame(self):
+#         #just to check whether we are sane
+#         self.currentIndex = next(self.currentIndices)
+#         assert self.indexCache[self.w1] == self.currentIndex
+        
+#         return self.frameCache[self.w1]
+    
+#     def _aveBackground(self):
+#         ### avergae backgorund considering only non movign parts
+#         frameCache1 = deepcopy(self.frameCache)[:, self.height_offset:]
+#         frameCache1[np.abs(self.diffCache) > (2/3 * self.threshold)] = np.nan
+#         assert np.min(bn.nansum(np.isfinite(frameCache1), axis=0))> (1/4 * self.threshold)
+#         self.background = bn.nanmean(frameCache1, axis=0)    
+
+#     def _extractForeground(self):
+#         # decide what is moving based on precalculated differences
+#         frame = self._getCurrentFrame()
+#         print('next line not tested')
+#         diff = self.background - frame 
+#         return (diff > self.threshold).astype('uint8'), frame
+        
+        
+#     def updateBackground(self):
+#         ### user routine to do everything in the rigth order
+#         try:
+#             foreground, frame = self._extractForeground()
+#         except StopIteration:
+#             logging.warning(f'reached end of video')
+#             return None, None
+#         self._nextFutureFrame()
+#         self._aveBackground()  
+
+#         return foreground, frame.astype('uint8')
+
+
+# #                 """2. use difference to curent frame to detect foreground"""
+
+'''
+on single CPU:
+
+mog
+24.8 ms ± 61.4 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+mog2
+17.2 ms ± 113 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
+knn
+12.6 ms ± 99.7 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
+gmg
+64.7 ms ± 197 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+cnt
+4.85 ms ± 14.8 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
+gsoc
+158 ms ± 814 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+lsbp
+473 ms ± 8.09 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+VISSSlib
+1.07 ms ± 26.9 µs per loop (mean ± std. dev. of 7 runs, 1,000 loops each)
+
+'''
+
 class movementDetection(object):
-    def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
-        '''
-        Depreciated!
-        '''
-
-        assert window%2 == 1, 'not tested for even windiow sizes'
-        
-        self.video = VideoReader
-        self.window = window
+    def __init__(self, threshold=20, history = 100, trainingInterval=140):
+        self.backgrounds = None
+        self.history = history
+        self.trainingInterval = trainingInterval
         self.threshold = threshold
-        self.height_offset = height_offset
+        self.ii = 0
+        self.background = 0
 
-        
-        if indices is None:
-            self.futureIndices = iter(range(self.video.total_frames))
-            self.currentIndices = iter(range(self.video.total_frames))
+    def apply(self, frame):
+        if (self.ii%self.history==0):
+            try:
+                self.background = np.mean(self.backgrounds, axis=0,).astype(np.uint8)
+            except np.AxisError:
+                self.background = 0
+
+        diff = cv2.absdiff(frame, self.background)
+        mask = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)[1]
+        if (self.ii < self.history) or (self.ii%self.trainingInterval==0):
+            self.setBackground(frame)
+        self.ii += 1
+        return mask
+
+    def getBackgroundImage(self):
+            return self.background
+
+    def setBackground(self, frame):
+        if self.backgrounds is None:
+            y, x = frame.shape
+            self.backgrounds = np.zeros((self.history, y, x), dtype=np.uint8) + frame
         else:
-            self.futureIndices = iter(indices)
-            self.currentIndices = iter(indices)
-        self.background = None
-        
-        #we cache the require dimages in a big array
-        self.frameCache = np.empty((self.window, self.video.height, self.video.width),dtype='float32') * np.nan
-        self.diffCache = np.empty((self.window, self.video.height-self.height_offset, self.video.width),dtype='float32') * np.nan
-        #the index cache is only for double checkign that we did not mess anything up
-        self.indexCache = np.zeros(self.window ,dtype='int') - 99
-        # the window is centered about the current frame, ie.e. extends into the future
-        self.w1, self.w2 = int(np.floor(self.window/2)), int(np.ceil(self.window/2))
-        # get future frames and add them to the cache
-        for ii in range(self.w2):
-            self._nextFutureFrame()
-        #get mean backgournd for the first time
-        self._aveBackground()
-        
-    def _nextFutureFrame(self):
-
-        '''
-        update background by adding future frame to it
-        roll cache backwards and put newest image at the end
-        '''
-        try:
-            index = next(self.futureIndices)
-        except StopIteration:
-            logging.info(f'background estimate at end of video')
-            index = -99
-            frame = np.nan
-        else:
-            _, frame = self.video.get(index)
-
-
-        #idea: roll index instad of array... itertools.cycle(range(window))
-        self.frameCache = np.roll(self.frameCache, -1, axis=0)
-        self.diffCache = np.roll(self.diffCache, -1, axis=0)
-        self.indexCache = np.roll(self.indexCache, -1, axis=0)
-        self.frameCache[-1] = frame
-        self.diffCache[-1] = self.frameCache[-2, self.height_offset:] - self.frameCache[-1, self.height_offset:]
-        self.indexCache[-1] = index
-        return
-    
-    def _getCurrentFrame(self):
-        #just to check whether we are sane
-        self.currentIndex = next(self.currentIndices)
-        assert self.indexCache[self.w1] == self.currentIndex
-        
-        return self.frameCache[self.w1]
-    
-    def _aveBackground(self):
-        ### avergae backgorund considering only non movign parts
-        frameCache1 = deepcopy(self.frameCache)[:, self.height_offset:]
-        frameCache1[np.abs(self.diffCache) > (2/3 * self.threshold)] = np.nan
-        assert np.min(bn.nansum(np.isfinite(frameCache1), axis=0))> (1/4 * self.threshold)
-        self.background = bn.nanmean(frameCache1, axis=0)    
-
-    def _extractForeground(self):
-        # decide what is moving based on precalculated differences
-        frame = self._getCurrentFrame()
-        print('next line not tested')
-        diff = self.background - frame 
-        return (diff > self.threshold).astype('uint8'), frame
-        
-        
-    def updateBackground(self):
-        ### user routine to do everything in the rigth order
-        try:
-            foreground, frame = self._extractForeground()
-        except StopIteration:
-            logging.warning(f'reached end of video')
-            return None, None
-        self._nextFutureFrame()
-        self._aveBackground()  
-
-        return foreground, frame.astype('uint8')
-
-
-#                 """2. use difference to curent frame to detect foreground"""
+            self.backgrounds = np.roll(self.backgrounds, 1, axis=0)
+            self.backgrounds[0] = frame
 
 
 
 class detectedParticles(object):
     def __init__(self,
                  pidOffset=0,
-                 history=500,
-                 dist2Threshold=400,
-                 detectShadows=False,
-                 verbosity=10,
+                 trainingSize=500,
+                 backSubKW = {"dist2Threshold":400,"detectShadows":False, "history":500},
+                 verbosity=0,
                  composite = True,
-                 minContrast = 30,
+                 minContrast = 20, 
                  minDmax = 3,
                  maxNParticle = 60,
-                 minBlur=0.1,
+                 minBlur=10,
                  minArea=3,
+                 erosionTestThreshold = 0.06,
                  height_offset=64,
                  maskCorners=None,
                  cropImage = None, #(offsetX, offsetY)
-                 function=cv2.createBackgroundSubtractorKNN,
+                 backSub=cv2.createBackgroundSubtractorKNN,
+                 applyCanny2Frame = True,
+                 applyCanny2Particle = False,
+                 dilateIterations=1,
+                 blurSigma=1.5,
                  ):
 
         self.version = __version__.split(".")[0]
@@ -161,6 +221,7 @@ class detectedParticles(object):
         self.maxNParticle = maxNParticle
         self.minBlur = minBlur
         self.minArea = minArea
+        self.erosionTestThreshold = erosionTestThreshold
         self.height_offset = height_offset #height of sttaus bar
         self.maskCorners = maskCorners
         self.cropImage = cropImage
@@ -181,13 +242,12 @@ class detectedParticles(object):
         self.nParticle = 0
 
         #history 500, threshold=400
-        self.backSub = function(
-            history=history,
-            dist2Threshold=dist2Threshold,
-            detectShadows=detectShadows
-        )
+        self.backSub = backSub(**backSubKW)
 
-
+        self.applyCanny2Frame = applyCanny2Frame
+        self.applyCanny2Particle = applyCanny2Particle
+        self.dilateIterations = dilateIterations
+        self.blurSigma = blurSigma
 
         return
 
@@ -208,7 +268,7 @@ class detectedParticles(object):
 
         # convert to gray scale if required
         if len(self.frame.shape) == 3:
-            self.frame = cv2.cvtColor(self.frame,cv2.COLOR_RGB2GRAY)
+            self.frame = av.cvtColor(self.frame)
 
         if self.maskCorners is not None:
             self.frame[:self.maskCorners, :self.maskCorners] = 0
@@ -225,18 +285,34 @@ class detectedParticles(object):
             tools.displayImage(self.frame)
 
         self.fgMask = self.backSub.apply(self.frame)
-        self.brightnessBackground = int(np.percentile(self.backSub.getBackgroundImage(),95))
+        #use only every 10thdata point for speed
+        #using frame instead of background saves speed
+        self.brightnessBackground = int(np.median(self.frame[::10,::10])) 
+
+
+
 
         if training :
             return True
-        self.nMovingPix = self.fgMask.sum()//255
 
+        # tools.displayImage(self.backSub.getBackgroundImage())
+        # self.frame = av.doubleDynamicRange(cv2.bitwise_not(cv2.subtract(self.backSub.getBackgroundImage(), self.frame, )))
+# 
+
+        self.nMovingPix = self.fgMask.sum()//255
         if self.nMovingPix == 0:
-            print("particles.update", "FRAME", pp, 'nothing is moving')
+            print("particles.update", "FRAME", pp, 'capture_time',capture_time, 'nothing is moving')
             if "nonMovingFgMask" in testing:
                 print("SHOWING", "nonMovingFgMask")
                 tools.displayImage(self.fgMask)
             return True
+
+
+        #it can happen that the background subtraction has little gaps
+        # if self.fgMask is not None:
+        #     self.fgMask = cv2.dilate(self.fgMask, None, iterations=1)
+        #     self.fgMask = cv2.erode(self.fgMask, None, iterations=1)
+
 
         if "movingInput" in testing:
             print("SHOWING", "movingInput")
@@ -246,20 +322,20 @@ class detectedParticles(object):
             print("SHOWING", "fgMaskWithHoles")
             tools.displayImage(self.fgMask)
 
-        self.fgMask = _applyCannyFilter(self.frame, self.fgMask)
+        if self.applyCanny2Frame: 
+            self.fgMask = self.applyCannyFilter(self.frame, self.fgMask)
+
+            self.nMovingPix2 = self.fgMask.sum()//255
+            if self.nMovingPix2 == 0:
+                print("particles.update", "FRAME", pp, 'nothing is moving after Canny filter')
+                return True
 
         if "fgMask" in testing:
             print("SHOWING", "fgMask")
             tools.displayImage(self.fgMask)
 
-        self.nMovingPix2 = self.fgMask.sum()//255
-
-        if self.nMovingPix2 == 0:
-            print("particles.update", "FRAME", pp, 'nothing is moving after Canny filter')
-            return True
-
-
-        self.frame4drawing = self.frame.copy()
+        if "result" in testing:
+            self.frame4drawing = self.frame.copy()
 
         # thresh = cv2.dilate(self.fgMask, None, iterations=2)
 
@@ -275,7 +351,7 @@ class detectedParticles(object):
                 self.cnts.append(cnt)
 
         self.nParticle = len(self.cnts)
-        print("particles.update", "FRAME", pp, 'found', self.nParticle, 'particles')
+        print("particles.update", "FRAME", pp, 'capture_time',capture_time,'found', self.nParticle, 'particles')
 
         if self.nParticle > self.maxNParticle:
             print("particles.update", "FRAME", pp, 'SKIPPED. more than', self.maxNParticle, 'particles')
@@ -285,14 +361,8 @@ class detectedParticles(object):
         # loop over the contours
         for cnt in self.cnts:
 
-            added, particle1 = self.add(self.frame, self.fgMask , cnt, verbosity=self.verbosity, composite = self.composite)
-            if added:
-                print("particles.update", "PID", particle1.pid, "Added with area =%i"%(particle1.area), f"max contrast {self.lastParticle.particleContrast}", f"Dmax/Dmin={particle1.Dmax}/{particle1.Dmin}", f"blur: %.2f"%particle1.blur)
-                if "result" in testing:
-                    self.frame4drawing = particle1.drawContour(self.frame4drawing)
-                    self.frame4drawing = particle1.annotate(self.frame4drawing, extra='added')
-            else:
-                print("particles.update", "PID", particle1.pid, "Not added")
+            self.add(self.frame , self.fgMask, cnt, testing, verbosity=self.verbosity, composite = self.composite)
+
         if "result" in testing:
             print("SHOWING", "result")
             tools.displayImage(self.frame4drawing)
@@ -300,77 +370,179 @@ class detectedParticles(object):
         return True
 
 
-    def add(self, *args, **kwargs):
-        newParticle = True
+    def applyCannyFilter(self, frame, fgMask, useSkimage=False, threshold1=0, threshold2=25, doubleDynamicRange=True):
+
+        if doubleDynamicRange:
+            frame = av.doubleDynamicRange(frame)
+
+        if useSkimage:
+            from skimage import feature
+            from skimage.util import img_as_ubyte
+
+            # Canny filter gets confused if the feature is directly at the edge, so make the moving
+            # mask a little larger
+            fgMask4Canny = (cv2.dilate(fgMask, None, iterations=dilateIterations)//255).astype(bool)
+            fgMaskCanny = feature.canny(frame, sigma=2, mask = fgMask4Canny)#, mask = (self.fgMask//255).astype(bool)))
+            fgMaskCanny = img_as_ubyte(fgMaskCanny)
+
+        else:
+
+
+            #blur image, required to make algoprithm stable
+            if self.blurSigma != 0:
+                frame = cv2.GaussianBlur(frame, (0,0),self.blurSigma)
+            # frame = cv2.bilateralFilter(frame, 5,70,2)
+
+
+            #apply Canny filter, take low limits becuase we are reduced to moving parts
+            fgMaskCanny = cv2.Canny(frame, threshold1,threshold2, L2gradient=True, apertureSize=3)
+
+
+        if self.dilateIterations > 0:
+            #close gaps by finding contours, dillate, fill, and erode them 
+            fgMaskCanny = cv2.dilate(fgMaskCanny, None, iterations=self.dilateIterations)
+            cnts = cv2.findContours(fgMaskCanny, cv2.RETR_EXTERNAL,
+                                    cv2.CHAIN_APPROX_SIMPLE)[0]
+            fgMaskCanny = cv2.fillPoly(fgMaskCanny, pts =cnts, color=255)
+            fgMaskCanny = cv2.erode(fgMaskCanny, None, iterations=self.dilateIterations)
+
+        #and condition, i.e. make sure both filters detected something
+        if fgMask is not None:
+            fgMaskCanny = (fgMask//255) * fgMaskCanny
+
+        return fgMaskCanny
+
+
+    def add(self,frame1, fgMask, cnt, testing, **kwargs):
         added = False
 
-        # try:
-        self.lastParticle = singleParticle(self, self.capture_id, self.record_id, self.capture_time, self.record_time, self.nThread, self.pp, *args, **kwargs)
-        # except ZeroDivisionError:
-        #     self.lastParticle = None
-        #     return added, self.lastParticle
+        #check whether it touches border
+        roi = tuple(int(b) for b in cv2.boundingRect(cnt))
+        frameHeight, frameWidth = frame1.shape[:2]
+        touchesBorder = [
+        roi[0] == 0, 
+        (roi[0] + roi[2]) == frameWidth, 
+        roi[1] == 0, 
+        (roi[1] + roi[3]) == frameHeight
+        ]
+        if np.any(touchesBorder):
+            print("particles.add", "PID", "n/a", "touches border", touchesBorder)
+            print("particles.update", "PID", "n/a", "Not added")
+            return
+
+        #canny filter is expensive. so apply it of part of image taht is moving (plus a little extra otherwise edge detection does not work)
+        # in case more than one particle is in one moving area, iterate over all of them
+        if self.applyCanny2Particle:
+            extra = 10
+            particleBoxMaskPlus, xOffset, yOffset= extractRoi(roi, fgMask, extra=extra)
+            particleBoxPlus, xOffset, yOffset = extractRoi(roi, frame1, extra=extra)
+            particleBoxMaskPlus = self.applyCannyFilter(particleBoxPlus, particleBoxMaskPlus)
+            cntsTmp = cv2.findContours(particleBoxMaskPlus, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+
+            cnts = list()
+            for cnt in cntsTmp[0]:
+                if cnt.shape[0] >2:
+                    #skip very small particles
+                    cnts.append(cnt)
+            frame4sp = particleBoxPlus
+
+            print(f"found {len(cnts)} instead of 1 particle after canny filter")
+        else:
+            cnts = [cnt]
+            frame4sp = frame1
+            xOffset = yOffset = 0
 
 
-        if self.lastParticle.Dmax < self.minDmax:
-            print("particles.add", "PID", self.lastParticle.pid, "too small", self.lastParticle.Dmax)
-            return added, self.lastParticle
+        # loop in case more than one particle is in single moving area
+        for cnt in cnts:
+            newParticle = True
+            
+            # try:
+            self.lastParticle = singleParticle(self, self.capture_id, self.record_id, self.capture_time, self.record_time, self.nThread, self.pp, frame4sp, cnt, xOffset, yOffset, **kwargs)
+            # except ZeroDivisionError:
+            #     self.lastParticle = None
+            #     return added, self.lastParticle
 
-        if  self.lastParticle.particleContrast < self.minContrast:
-            print("particles.add", "PID", self.lastParticle.pid, "too small minContrast", self.lastParticle.particleContrast)
-            return added, self.lastParticle
+            ratio = self.lastParticle.perimeterEroded/self.lastParticle.perimeter
+            if self.lastParticle.Dmax < self.minDmax:
+                print("particles.add", "PID", self.lastParticle.pid, "too small", self.lastParticle.Dmax)
 
-        if self.lastParticle.blur < self.minBlur:
-            print("particles.add", "PID", self.lastParticle.pid, "too small minBlur", self.lastParticle.blur)
-            return added, self.lastParticle
+            elif  self.lastParticle.particleContrast < self.minContrast:
+                print("particles.add", "PID", self.lastParticle.pid, "too small minContrast", self.lastParticle.particleContrast)
 
-        if self.lastParticle.area < self.minArea:
-            print("particles.add", "PID", self.lastParticle.pid, "too small area", self.lastParticle.area)
-            return added, self.lastParticle
+            elif self.lastParticle.blur < self.minBlur:
+                print("particles.add", "PID", self.lastParticle.pid, "too small minBlur", self.lastParticle.blur)
+
+            elif self.lastParticle.area < self.minArea:
+                print("particles.add", "PID", self.lastParticle.pid, "too small area", self.lastParticle.area)
+
+            elif ratio < self.erosionTestThreshold:
+                print("particles.add", "PID", self.lastParticle.pid, "particle not properly detected", ratio, self.erosionTestThreshold)
+
+            else:
+
+                particleFrame = self.lastParticle.particleBox
+                if np.prod(particleFrame.shape) == 0:
+                    print("particles.add", "PID", self.lastParticle.pid, "flat", particleFrame.shape)
+                    return added, self.lastParticle
+
+                print("FILTER", particleFrame.mean(), particleFrame.max()   , particleFrame.std(ddof=1)   )
+
+                self.all[self.pp] = self.lastParticle
+                self.lastFrame[self.pp] = self.lastParticle
+                print("particles.add", "PID", self.lastParticle.pid, "Added")
+                self.pp += 1
+                added = True
 
 
-        particleFrame = self.lastParticle.particleBox
-        if np.prod(particleFrame.shape) == 0:
-            print("particles.add", "PID", self.lastParticle.pid, "flat", particleFrame.shape)
-            return added, self.lastParticle
+            if added:
+                print("particles.update", "PID", self.lastParticle.pid, "Added with area =%i"%(self.lastParticle.area), f"max contrast {self.lastParticle.particleContrast}", f"Dmax/Dmin={self.lastParticle.Dmax:.2f}/{self.lastParticle.Dmin:.2f}", f"blur: %.2f"%self.lastParticle.blur)
+                print(f"Dmax/Dmin={self.lastParticle.Dmax*44.18/1000}/{self.lastParticle.Dmin*44.18/1000}, Dmax/Dmin={self.lastParticle.Dmax*43.125/1000}/{self.lastParticle.Dmin*43.125/1000},Pixmin {self.lastParticle.pixMin}, Pixmax {self.lastParticle.pixMax}")
+                # print("TEST4Canny", self.lastParticle.perimeter, self.lastParticle.perimeterEroded, self.lastParticle.perimeterEroded/self.lastParticle.perimeter)
 
-        print("FILTER", particleFrame.mean(), particleFrame.max()   , particleFrame.std(ddof=1)   )
+                if "result" in testing:
+                    self.frame4drawing = self.lastParticle.drawContour(self.frame4drawing)
+                    self.frame4drawing = self.lastParticle.annotate(self.frame4drawing, extra='added')
+            else:
+                print("particles.update", "PID", self.lastParticle.pid, "Not added")
 
-        # plt.figure()
-        # plt.title(self.lastParticle.pid)
-        # plt.imshow(particleFrame)
-        # plt.show()
-        self.all[self.pp] = self.lastParticle
-        self.lastFrame[self.pp] = self.lastParticle
-        print("particles.add", "PID", self.lastParticle.pid, "Added")
-        self.pp += 1
-        added = True
-
-        return added, self.lastParticle
+        return 
 
     def collectResults(self):
         self.particleProps = xr.Dataset(coords = {'pid':list(self.all.keys()), 'percentiles': range(10,100,10)}) 
         for key in [
-            'Dmax', 'Dmin', 'area', 'aspectRatio', 'angle', 'roi', 'x', 'y', 'perimeter', 'pixMin', 'pixMax', 
+            'Dmax', 'Dmin', 'area', 'aspectRatio', 'angle', 'roi', 'x', 'y', 'perimeter','perimeterEroded', 'pixMin', 'pixMax', 
             'pixMean', 'pixStd', 'pixSkew', 'pixKurtosis', 'blur', 'capture_id', 'record_id', 'capture_time', 
-            'record_time', 'touchesBorder', 'nThread',
+            'record_time', 'nThread'
             ]:
             arr = []
             for i in self.all.values():
                 arr.append(getattr(i, key))
             if key == 'roi':
                 self.particleProps[key] = xr.DataArray(arr,coords=[self.particleProps.pid, ['x','y','w','h']], dims=('pid','ROI_elements'))
-            elif key == 'touchesBorder':
-                self.particleProps[key] = xr.DataArray(arr, coords=[self.particleProps.pid, ['left', 'right','top','bottom']], dims=('pid','side'))
+            # elif key == 'touchesBorder':
+            #     self.particleProps[key] = xr.DataArray(arr, coords=[self.particleProps.pid, ['left', 'right','top','bottom']], dims=('pid','side'))
+            
             else:
                 self.particleProps[key] = xr.DataArray(arr,coords=[self.particleProps.pid], dims=('pid'))
 
             # We do not need 64 bit accuracy here and can save storage space
             if self.particleProps[key].dtype == np.float64:
                 self.particleProps[key] = self.particleProps[key].astype(np.float32)
-            elif key in [ 'roi','x', 'y','pixMin', 'pixMax']:
+            elif key in [ 'roi','x', 'y','pixMin', 'pixMax', 'nThread']:
                 self.particleProps[key] = self.particleProps[key].astype(np.int16)
-        percentiles = []
+
+        key = "cnt"
+        arrTmp = []
         for i in self.all.values():
+            arrTmp.append(getattr(i, key).squeeze())
+        arr = np.zeros([len(arrTmp),len(max(arrTmp,key = lambda x: len(x))),2], dtype=np.int16) - 99
+        for i,j in enumerate(arrTmp):
+            arr[i,0:len(j)] = j
+        self.particleProps[key] = xr.DataArray(arr, coords=[self.particleProps.pid, np.arange(arr.shape[-2], dtype=np.int16), ['x', 'y']], dims=('pid', 'cnt_element','position'))
+
+        percentiles = []
+        for i in self.all.values(): 
             percentiles.append(getattr(i, 'pixPercentiles'))
         self.particleProps['pixPercentiles'] = xr.DataArray(np.array(percentiles).astype(np.float32),coords=[self.particleProps.pid, self.particleProps.percentiles])
         return self.particleProps
@@ -387,7 +559,7 @@ class detectedParticles(object):
 
 
 class singleParticle(object):
-    def __init__(self, parent, capture_id, record_id, capture_time, record_time, nThread,  pp1, frame1, frameMask, cnt, verbosity=0, composite = True):
+    def __init__(self, parent, capture_id, record_id, capture_time, record_time, nThread,  pp1, frame1, cnt, xOffset, yOffset, verbosity=0, composite = True):
         self.verbosity = verbosity
         self.pid = pp1#np.random.randint(-999,-1) 
         self.record_id = record_id
@@ -399,30 +571,21 @@ class singleParticle(object):
         self.composite = composite
         self.version = __version__.split(".")[0]
 
-        self.first = True
-        self.lost = False
+        self.xOffset = xOffset
+        self.yOffset = yOffset
 
-        self.roi = tuple(int(b) for b in cv2.boundingRect(self.cnt))
-        self.Cx, self.Cy, self.Dx, self.Dy = self.roi
-        if self.verbosity > 1:
-            print("singleParticle.__init__", "PID", self.pid, 'found singleParticle at %i,%i, %i, %i' % self.roi)
+
+        self.roi = np.array([int(b) for b in cv2.boundingRect(self.cnt)])
+        # self.Cx, self.Cy, self.Dx, self.Dy = self.roi
+
 
         # self.frame = frame1
         # self.frameMask = frameMask
-        self.frameHeight, self.frameWidth = frame1.shape[:2]
-        self.particleBox = self.extractRoi(frame1)
-        self.particleBoxMask = self.extractRoi(frameMask)
+        self.particleBoxMask, xOffset, yOffset = extractRoi(self.roi, cv2.fillPoly(np.zeros_like(frame1), pts =[cnt], color=255))
+        self.particleBox, xOffset, yOffset = extractRoi(self.roi, frame1)
         self.particleBoxAlpha = np.stack((self.particleBox, self.particleBoxMask), -1)
 
-# , self.particleBoxMask//2
-        self.touchesBorder = [
-            self.roi[0] == 0, 
-            (self.roi[0] + self.roi[2]) == self.frameWidth, 
-            self.roi[1] == 0, 
-            (self.roi[1] + self.roi[3]) == self.frameHeight
-            ]
-
-        fill_color = 255   # any  color value to fill with
+        fill_color = 0   # any  color value to fill with
         self.particleBoxCropped = deepcopy(self.particleBox)
         self.particleBoxCropped[self.particleBoxMask == 0] = fill_color
         particleBoxData = self.particleBox[self.particleBoxMask == 255]
@@ -436,14 +599,34 @@ class singleParticle(object):
         self.pixKurtosis  = scipy.stats.kurtosis(particleBoxData)
         self.particleContrast = parent.brightnessBackground - self.pixMin
 
-        self.rect = cv2.minAreaRect(self.cnt)
-        box = cv2.boxPoints(self.rect)
+        #figure out whether particle was properly detected
+        # if not, contour describes only a line whoch can be detected by 
+        # looking into how perimeter changes during erosion
+        erodeMask = cv2.erode(self.particleBoxMask,None,1)
+        cntsAfter = cv2.findContours(erodeMask, cv2.RETR_EXTERNAL,
+                                cv2.CHAIN_APPROX_SIMPLE)[0]
+        if len(cntsAfter)>0:
+            self.perimeterEroded = np.max([cv2.arcLength(c,True) for c in cntsAfter])
+        else:
+            self.perimeterEroded = 0
 
+
+        #apply Offsets
+        self.roi[0] += self.xOffset
+        self.roi[1] += self.yOffset
+        if self.verbosity > 1:
+            print("singleParticle.__init__", "PID", self.pid, 'found singleParticle at %i,%i, %i, %i' % self.roi)
+
+        self.cnt[...,0] += self.xOffset
+        self.cnt[...,1] += self.yOffset
+
+        #estimate properties that need shifted position
+        self.rect = cv2.minAreaRect(self.cnt)
         center, dims, self.angle = self.rect
         # angle definition depends on opencv version https://github.com/opencv/opencv/issues/19472
         # for newer opencv versions where angle is postive, this makes sure it ranges form 0 to 180
         if dims[1] > dims[0]:
-            angle = angle -90
+            self.angle = self.angle  - 90
 
         self.Dmax = max(dims)
         self.Dmin = min(dims)
@@ -460,9 +643,6 @@ class singleParticle(object):
         self.perimeter = cv2.arcLength(self.cnt,True)
         # data type cv2.CV_16S requried to avoid overflow
         self.blur = cv2.Laplacian(self.particleBox, cv2.CV_16S).var(ddof=1)
-
-        for e in range(20):
-            print(e, cv2.Laplacian(self.extractRoi(frame1, extra=e), cv2.CV_16S).var(ddof=1))
 
         return
 
@@ -489,41 +669,19 @@ class singleParticle(object):
         props += 'Area: %i\n'%self.area
         props += 'Centroid: %i, %i\n'%self.centroid
         props += 'Perimeter: %i\n'%self.perimeter
+        props += 'PerimeterEroded: %i\n'%self.perimeterEroded
         props += 'pixMin/pixMax: %i %i %f\n'%(self.pixMin, self.pixMax, self.pixMin/self.pixMax)
         props += 'pixPercentiles: ' + str(self.pixPercentiles.tolist()) + '\n'
         props += 'pixMean, pixStd, pixSkew, pixKurtosis: %.1f %.1f %.1f %.1f \n'%(self.pixMean, self.pixStd, self.pixSkew, self.pixKurtosis)
         props += 'Blur: %f\n'%self.blur
-        props += f'touches border: {self.touchesBorder} \n'
+        # props += f'touches border: {self.touchesBorder} \n'
         props += "#"*30
         props += '\n'
         return props
 
-    def extractRoi(self, frame, extra=0):
-
-        if len(frame.shape) == 3:
-            frame = frame[:,:,0]
-
-        if extra == 0:
-            x, y, w, h = self.roi
-            return frame[y:y+h, x:x+w]
-        else:
-            x, y, w, h = self.roi
-            x1 = x - extra
-            x2 = x + w + extra
-            y1 = y - extra
-            y2 = y + h + extra
-
-            if x1 < 0: x1 = 0
-            if y1 < 0: y1 = 0
-            ny, nx = frame.shape
-            if x2 > nx: x2 = nx
-            if y2 > ny: y2 = ny
-
-            return frame[y1:y2, x1:x2]
 
 
     def drawContour(self, frame, color=(0, 255, 0)):
-        assert not self.lost
         (x, y, w, h) = self.roi
         cv2.rectangle(frame, (x, y),
                       (x + w, y + h), color, 1)
@@ -541,6 +699,28 @@ class singleParticle(object):
         cv2.putText(frame, '%i %s' % (self.pid, extra),
                     (x+w+5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
         return frame
+
+
+def extractRoi(roi, frame, extra=0):
+
+    if extra == 0:
+        x, y, w, h = roi
+        return frame[y:y+h, x:x+w], x, y
+    else:
+        x, y, w, h = roi
+        x1 = x - extra
+        x2 = x + w + extra
+        y1 = y - extra
+        y2 = y + h + extra
+
+        if x1 < 0: x1 = 0
+        if y1 < 0: y1 = 0
+        ny, nx = frame.shape
+        if x2 > nx: x2 = nx
+        if y2 > ny: y2 = ny
+
+        return frame[y1:y2, x1:x2], x1, y1
+
 
 def checkMotion(subFrame, oldFrame, threshs):
     '''
@@ -562,7 +742,7 @@ def checkMotion(subFrame, oldFrame, threshs):
 
 
 # get trainign data
-def _getTrainingFrames(fnamesV, historySize, config):
+def _getTrainingFrames(fnamesV, trainingSize, config):
 
     inVidTraining = {}
     for nThread, fnameV in fnamesV.items():
@@ -577,7 +757,7 @@ def _getTrainingFrames(fnamesV, historySize, config):
         return trainingFrames
 
     inVidTrainingIter = itertools.cycle(list(inVidTraining.values()))
-    for tt in range(historySize):
+    for tt in range(trainingSize):
         ret, frame = next(inVidTrainingIter).read()
         if frame is not None:
             trainingFrames.append(frame)
@@ -588,12 +768,22 @@ def _getTrainingFrames(fnamesV, historySize, config):
 
 
 def detectParticles(fname,
-                    settings,
+                    config,
                     testing=[],
                     writeImg=True,
-                    historySize=20,
+                    writeNc=True,
+                    trainingSize=100,
                     testMovieFile = True,
-                    dist2Threshold = 400,
+                    backSubKW = {"dist2Threshold":400,"detectShadows":False, "history":100},
+                    backSub=cv2.createBackgroundSubtractorKNN,
+                    applyCanny2Frame = True,
+                    applyCanny2Particle = False,
+                    dilateIterations=1,
+                    blurSigma=1.5,
+                    minBlur=10,
+                    erosionTestThreshold = 0.06,
+                    minArea = 3,
+                    minDmax = 3,
                     stopAfter = None,
                     version=__version__
                     ):
@@ -603,7 +793,8 @@ def detectParticles(fname,
 
     assert os.path.isfile(fname)
 
-    config = tools.readSettings(settings)
+    if type(config) is str:
+        config = tools.readSettings(config)
 
     path = config["path"]
     pathTmp = config["pathTmp"]
@@ -736,15 +927,14 @@ def detectParticles(fname,
     particleProperties = []
 
     nFrames = len(metaData.capture_time)
-    pps = range(nFrames)
 
-    trainingFrames = _getTrainingFrames(fnamesV, historySize, config)
+    trainingFrames = _getTrainingFrames(fnamesV, trainingSize, config)
     log.info(f"found {len(trainingFrames)} for training.")
 
     # to few data in trainign data, look into previous files
     fname1 = deepcopy(fname)
     ii = 0
-    while len(trainingFrames) < historySize:
+    while len(trainingFrames) < trainingSize:
         fname11 = files.Filenames(fname1, config, version=version).prevFile()
 
         if (ii > 20) or (fname11 is None):
@@ -756,14 +946,14 @@ def detectParticles(fname,
             sys.exit(0)
 
         fnamesV1 = files.Filenames(fname11, config, version=version).fnameMovAllThreads
-        trainingFrames1 = _getTrainingFrames(fnamesV1, historySize, config)
+        trainingFrames1 = _getTrainingFrames(fnamesV1, trainingSize, config)
         log.warning(f"added {len(trainingFrames1)} from {ii} previous file {fname11}.")
         trainingFrames = trainingFrames1 + trainingFrames
 
         fname1 = fname11
         ii+=1
     #just in case we have now too many frames by adding older files
-    trainingFrames = trainingFrames[-historySize:]
+    trainingFrames = trainingFrames[-trainingSize:]
 
     # lets assume that dropped rames are all at the end now and we figured all the other issues out
     # if ((site == 'mosaic') and nFrames+nDroppedFrames-1 == nFramesVid): 
@@ -783,11 +973,19 @@ def detectParticles(fname,
 
     snowParticles = detectedParticles(
 
-        function=cv2.createBackgroundSubtractorKNN,
-        history=historySize,
-        dist2Threshold=dist2Threshold,
-        cropImage=cropImage
-    )
+        trainingSize=trainingSize,
+        backSubKW=backSubKW,
+        cropImage=cropImage,
+        applyCanny2Frame = applyCanny2Frame,
+        applyCanny2Particle = applyCanny2Particle,
+        dilateIterations=dilateIterations,
+        blurSigma=blurSigma,
+        minBlur = minBlur,
+        backSub=backSub,
+        erosionTestThreshold = erosionTestThreshold,
+        minArea = minArea,
+        minDmax= minDmax,
+                        )
 
 
     # do training
@@ -812,6 +1010,30 @@ def detectParticles(fname,
         )
 
 
+    # test motion 
+    # nMovingPixel missing in some mosaic data
+    if np.all(metaData.nMovingPixel.values == -9999):
+        print(f"nMovingPixel not found")
+        motionChecked = False
+    else:
+        nChangedPixel = metaData.nMovingPixel.values
+        passesThreshold = nChangedPixel >= minMovingPixels
+        print(f"{passesThreshold.any(1).sum()/len(metaData.capture_time)*100}% frames are moving")
+        metaData = metaData.isel(capture_time = passesThreshold.any(1))
+        motionChecked = True
+
+
+    if (stopAfter is not None):
+        try:
+            startAt, stopAfter = stopAfter
+        except TypeError:
+            startAt = 0
+        metaData = metaData.isel(capture_time=slice(startAt, stopAfter))
+
+    
+    nFrames = len(metaData.capture_time)
+    pps = range(nFrames)
+
     foundParticles = np.zeros((nFrames, len(Dbins)))
     movingObjects = np.zeros((nFrames))
 
@@ -821,8 +1043,11 @@ def detectParticles(fname,
         assert fnameV.endswith(config.movieExtension)
         inVid[nThread] = cv2.VideoCapture(fnameV)
 
+
+
+
+
     frame = None
-    moveCounter = 0
 
     if writeImg:
         tarfname = fn.fname.imagesL1detect.replace(".gz","")
@@ -837,9 +1062,10 @@ def detectParticles(fname,
         nThread = int(metaData1.nThread.values)
 
         rr = int(metaData1.record_id.values)
-        log.info('Image %i from thread %i, frame %i ' % (pp, nThread, rr))
+        log.info('Image %i from thread %i, frame %i, %s' % (pp, nThread, rr, str(metaData1.capture_time.values)))
 
-        oldFrame = deepcopy(frame)
+        if not motionChecked:
+            oldFrame = deepcopy(frame)
 
         # sometime we have to skip frames due to missing meta data
         # we dont want to take the risk to jump to an index and get the wrong frame
@@ -868,18 +1094,15 @@ def detectParticles(fname,
             else:
                 raise ValueError('TOO FEW FRAMES???? %i of %i, %s thread %i'%(pp,nFrames,fname,nThread))
 
-        try:
-            nChangedPixel = metaData1.nMovingPixel.values
-        except AttributeError:
-            # mosaic meta data does not inlcude # of moving pixels
-            nChangedPixel = checkMotion(frame, oldFrame, config.threshs)
 
-        passesThreshold = nChangedPixel >= minMovingPixels
-        if not passesThreshold.any():
-            print('NOT moving %i' % pp)
-            continue
-        else:
-            print('IS moving %i' % pp)
+        if not motionChecked:
+            nChangedPixel = checkMotion(frame, oldFrame, config.threshs)
+            passesThreshold = nChangedPixel >= minMovingPixels
+            if not passesThreshold.any():
+                print(metaData1.capture_time.values, 'NOT moving %i' % pp)
+                continue
+            else:
+                print(metaData1.capture_time.values, 'IS moving %i' % pp)
 
         res = snowParticles.update(frame,
                                    pp,
@@ -921,9 +1144,8 @@ def detectParticles(fname,
             if writeImg:
                 if not (
                     (part.Dmax < minDmax4Plotting) or
-                    (part.blur < minBlur4Plotting) or
-                    np.any(part.touchesBorder)
-                ):
+                    (part.blur < minBlur4Plotting)
+                    ):
                     pidStr = '%07i' % part.pid
                     imName = '%s/%s/%s.png' % (tarRoot, pidStr[:4], pidStr)
                     log.info('writing %s %s' % (fn.fname.imagesL1detect, imName))
@@ -931,12 +1153,17 @@ def detectParticles(fname,
                     imagesL1detect.addimage(imName, part.particleBoxAlpha)
             if "particle" in testing:#
                 img = np.hstack((part.particleBox, part.particleBoxCropped ) )
-                tools.displayImage(cv2.resize(img,np.array(img.shape[::-1])*4,cv2.INTER_NEAREST))
+                import skimage
+                tools.displayImage(skimage.transform.resize(img,
+                               np.array(img.shape)*4,
+                               mode='edge',
+                               anti_aliasing=False,
+                               anti_aliasing_sigma=None,
+                               preserve_range=True,
+                               order=0))
             part.dropImages()
 
-        moveCounter += 1
-        if (stopAfter is not None) and (moveCounter > stopAfter):
-            break
+
 
     if writeImg:
         nFiles = len(imagesL1detect.getnames())
@@ -945,105 +1172,48 @@ def detectParticles(fname,
         if nFiles > 0:
             with open(tarfname, 'rb') as f_in, gzip.open(fn.fname.imagesL1detect, 'wb') as f_out:
                 f_out.writelines(f_in)
-
-        # os.remove(tarfname)
+        os.remove(tarfname)
 
 
     for nThread in inVid.keys():
         inVid[nThread].release()
-    foundParticles = xr.DataArray(foundParticles,
-                                  coords=[metaData.capture_time,
-                                          xr.DataArray(Dbins, dims=['Dmax'])])
-    movingObjects = xr.DataArray(movingObjects,
-                                 coords=[metaData.capture_time])
 
-    metaData['foundParticles'] = foundParticles
-    metaData['movingObjects'] = movingObjects
+    if writeNc:
 
-    metaData["foundParticles"] = metaData["foundParticles"].astype(np.uint32)
-    metaData["movingObjects"] = metaData["movingObjects"].astype(np.uint32)
+        foundParticles = xr.DataArray(foundParticles,
+                                      coords=[metaData.capture_time,
+                                              xr.DataArray(Dbins, dims=['Dmax'])])
+        movingObjects = xr.DataArray(movingObjects,
+                                     coords=[metaData.capture_time])
 
-    comp = dict(zlib=True, complevel=5)
-    encoding = {
-        var: comp for var in metaData.data_vars}
+        metaData['foundParticles'] = foundParticles
+        metaData['movingObjects'] = movingObjects
 
-    metaData.attrs.update(tools.ncAttrs)
-    metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
-    metaData.close()
+        metaData["foundParticles"] = metaData["foundParticles"].astype(np.uint32)
+        metaData["movingObjects"] = metaData["movingObjects"].astype(np.uint32)
 
-    if hasData and (len(testing)==0):
 
-        snowParticlesXR = snowParticles.collectResults()
+        metaData = tools.finishNc(metaData)
 
-        comp = dict(zlib=True, complevel=5)
-        encoding = {var: comp for var in snowParticlesXR.data_vars}
+        metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
+        metaData.close()
 
-        snowParticlesXR.attrs.update(tools.ncAttrs)
-        snowParticlesXR.to_netcdf(fn.fname.level1detect, encoding=encoding, engine="netcdf4")
-        snowParticlesXR.close()
+        if hasData:
+
+            snowParticlesXR = snowParticles.collectResults()
+            snowParticlesXR = tools.finishNc(snowParticlesXR)
+
+            snowParticlesXR.to_netcdf(fn.fname.level1detect, engine="netcdf4")
+            print("written", fn.fname.level1detect)
+            snowParticlesXR.close()
+            return snowParticlesXR
+        else:
+            with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+                f.write('no data')
+            print("no data", fn.fname.level1detect)
+            return None
     else:
-        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
-            f.write('no data')
-
-
-    return 0
-
-def _applyCannyFilter(frame, fgMask, dilateIterations=1, blurSigma=1.5, useSkimage=False):
-
-    """
-    CANNY
-    #apply Canny edge detection, close gaps
-    canny = cv2.Canny(.frame, 80,100)
-    edged = cv2.dilate(canny, None, iterations=2)
-    edged = cv2.erode(edged, None, iterations=2)
-    #consider only moving parts
-    edged = .fgMask//255 * edged
-    if "edges" in testing:
-        print("SHOWING", "edges")
-        tools.displayImage(edged )
-    """
-
-
-    """
-    CANNY2
-    """
-    # return .fgMask
-    print("CANNY", dilateIterations, blurSigma)
-
-    if useSkimage:
-        from skimage import feature
-        from skimage.util import img_as_ubyte
-
-        # Canny filter gets confused if the feature is directly at the edge, so make the moving
-        # mask a little larger
-        fgMask4Canny = (cv2.dilate(fgMask, None, iterations=dilateIterations)//255).astype(bool)
-        fgMaskCanny = feature.canny(frame, sigma=2, mask = fgMask4Canny)#, mask = (self.fgMask//255).astype(bool)))
-        fgMaskCanny = img_as_ubyte(fgMaskCanny)
-
-    else:
-
-        frame = av.doubleDynamicRange(frame)
-        #blur image, required to make algoprithm stable
-        frame_blur = cv2.GaussianBlur(frame, (0,0),blurSigma)
-        # frame_blur = cv2.bilateralFilter(frame, 5,70,2)
-
-
-        #apply Canny filter, limits taken from skimage defaults
-        fgMaskCanny = cv2.Canny(frame_blur, int(0.1*255),int(0.2*255), L2gradient=True, apertureSize=3)
-
-        if fgMask is not None:
-            fgMaskCanny = (fgMask//255) * fgMaskCanny
-
-    #close gaps by finding contours, dillate, fill, and erode them 
-    fgMaskCanny = cv2.dilate(fgMaskCanny, None, iterations=dilateIterations)
-    cnts = cv2.findContours(fgMaskCanny, cv2.RETR_EXTERNAL,
-                            cv2.CHAIN_APPROX_SIMPLE)[0]
-    fgMaskCanny = cv2.fillPoly(fgMaskCanny, pts =cnts, color=255)
-    fgMaskCanny = cv2.erode(fgMaskCanny, None, iterations=dilateIterations)
-
-
-
-    return fgMaskCanny
+        return None
 
 
 # def autoCanny(image, sigma=0.33):
