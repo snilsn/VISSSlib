@@ -50,9 +50,7 @@ class VideoReader(cv2.VideoCapture):
                 self.set(cv2.CAP_PROP_POS_FRAMES, ii)
         res, frame = self.read()
         if frame is not None:
-            frame = cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-
+            frame = cvtColor(frame)
         return res, frame
 
     @property
@@ -174,7 +172,7 @@ class VideoReaderMeta(object):
         if (res is None) or (res == False):
             return None, None, None, None, None
     
-        self.curentFrameC = cvtColor(self.curentFrame, cv2.COLOR_GRAY2BGR)
+        self.curentFrameC = cv2.cvtColor(self.curentFrame, cv2.COLOR_GRAY2BGR)
 
         if self.config.cropImage is not None:
             color = (255,255,255)
@@ -231,10 +229,14 @@ class VideoReaderMeta(object):
                     y2= self.curentFrameC.shape[0]-1
 
                 cv2.rectangle(self.curentFrameC, (x1, y1), (x2, y2), color, 2)
+
+                # cnt = partic1.cnt.values[partic1.cnt.values[...,0]>=0]
+                # cv2.drawContours(self.curentFrameC, np.array([cnt], dtype=np.int32),0,color,1)
+
                 extra1 = str(partic1.capture_time.values)[:-6].split('T')[-1]
 
-                posY = int(partic1.roi[1]+self.config['height_offset'])
-                posX = int(partic1.roi[0]+self.config['height_offset'])
+                posY = int(partic1.roi[1]+self.config['height_offset'] -10)
+                posX = int(partic1.roi[0])
                 if self.config.cropImage is not None:
                     posY = posY + self.config['cropImage'][1]
                     posX = posX + self.config['cropImage'][0]

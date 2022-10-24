@@ -16,6 +16,7 @@ import os
 import tarfile
 
 import IPython.display
+import ipywidgets
 import cv2
 from PIL import Image
 
@@ -210,7 +211,7 @@ def open_mfmetaFrames(fnames, config, start=None, end=None, skipFixes=[]):
 
 
 
-def open_mflevel1detect(fnamesExt, config, removeTouchBorders=True, start=None, end=None, skipFixes=[], datVars="all"):
+def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], datVars="all"):
     '''
     helper function to open multiple level1detect files at once
     '''
@@ -228,7 +229,6 @@ def open_mflevel1detect(fnamesExt, config, removeTouchBorders=True, start=None, 
 
         if datVars != "all":
             dat = dat[datVars]
-
         return dat
 
     if type(fnamesExt) is not list:
@@ -282,12 +282,9 @@ def open_mflevel1detect(fnamesExt, config, removeTouchBorders=True, start=None, 
     if len(dat.fpid) == 0:
         return None
         
-    if removeTouchBorders:
-        dat = dat.isel(fpid=(~dat.touchesBorder.any('side')))
-
     if len(dat.fpid) == 0:
         return None
-
+        
     dat.load()
     return dat
 
@@ -451,7 +448,6 @@ def displayImage(frame, doDisplay=True):
         IPython.display.display(IPython.display.Image(data=frame.tobytes()))
     else:
         return IPython.display.Image(data=frame.tobytes())
-
 
 '''
 monkey patch standard tarfile.TarFile class extended with a special function to add and read a png file

@@ -18,16 +18,17 @@ try:
     import cv2
 except ImportError:
     warnings.warn("opencv not available!")
+import skimage
 
 from . import __version__
 from . import *
 
-def imshow(img):
-    import cv2
-    import IPython
-    _,ret = cv2.imencode('.jpg', img) 
-    i = IPython.display.Image(data=ret)
-    IPython.display.display(i)
+# def imshow(img):
+#     import cv2
+#     import IPython
+#     _,ret = cv2.imencode('.jpg', img) 
+#     i = IPython.display.Image(data=ret)
+#     IPython.display.display(i)
 
 
 class _stereoViewMatch(object):
@@ -137,18 +138,55 @@ class _stereoViewMatch(object):
         metaFrames = []
         lv1detects = []
         lv1matches = []
-        
+        particles = {}
         for camera in self.cameras:
+            particles[camera] = []
             if (thisID + self.idDiffs[camera]) in self.meta[camera].capture_id:
                 captureTime = self.captureTimes[camera].sel(capture_id=thisID+ self.idDiffs[camera]).values
 #                 captureTime = 0
                 # print(f"found record {rr} in {camera} data at {captureTime}")
     
                 # print(camera, captureTime)
-                res, self.frame1, meta1, meta2, meta3 = self.videos[camera].getFrameByCaptureTimeWithParticles(captureTime, markParticles=self.markParticles, highlightPid="meta", increaseContrast=self.increaseContrast
-)
+                res, self.frame1, meta1, meta2, meta3 = self.videos[camera].getFrameByCaptureTimeWithParticles(captureTime, markParticles=self.markParticles, highlightPid="meta", increaseContrast=self.increaseContrast)
                 if self.frame1 is not None:
                     frame.append(self.frame1)
+                    if meta2 is not None:
+                        
+                        for fpid in meta2.fpid.values:
+                            thisMeta2 = meta2.sel(fpid=fpid)
+                            cnt = thisMeta2.cnt.values[thisMeta2.cnt.values[...,0]>=0]
+                            thisFrame = self.frame1[self.config.height_offset:,:,0]
+                            particleBoxMask, xOffset, yOffset = detection.extractRoi(thisMeta2.roi.values, cv2.fillPoly(np.zeros_like(thisFrame), pts =np.array([cnt], dtype=np.int32), color=255))
+                            particleBox, xOffset, yOffset = detection.extractRoi(thisMeta2.roi.values, thisFrame)
+                            particleBoxCropped = deepcopy(particleBox)
+                            particleBoxCropped[particleBoxMask == 0] = 255
+
+                            # particleBox = np.concatenate((particleBox, particleBoxMask),-1)
+                            particleBox = np.hstack((particleBox, particleBoxCropped ) )
+
+                            if np.prod(particleBoxCropped.shape) > 100:
+                                factor = 2
+                            else:
+                                factor = 4
+                            particleBox = skimage.transform.resize(particleBox,
+                               np.array(particleBox.shape[:2])*factor,
+                               mode='edge',
+                               anti_aliasing=False,
+                               anti_aliasing_sigma=None,
+                               preserve_range=True,
+                               order=0) 
+
+                            if meta3 is None:
+                                color = (255,0,0)
+                            elif thisMeta2.pid.values in meta3.pid.values:
+                                color = (0,0,0)
+                            else:
+                                color = (255,0,0)
+
+                            
+                            cv2.putText(particleBox, str(thisMeta2.pid.values), (0,20), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+                            particles[camera].append(particleBox)
+
                 else:
                     frame.append(
                         np.zeros((
@@ -168,7 +206,10 @@ class _stereoViewMatch(object):
                     ), dtype=int) 
                 )
                 meta1 =  meta2 = meta3 = None
-            frame.append(np.zeros((self.config.frame_height+self.config.height_offset, 10, 3), dtype=int))
+
+            frameBorder = np.zeros((self.config.frame_height+self.config.height_offset, 10, 3), dtype=int)
+
+            frame.append(frameBorder)
             metaFrames.append(meta1)
             lv1detects.append(meta2)
             lv1matches.append(meta3)
@@ -180,7 +221,7 @@ class _stereoViewMatch(object):
 
         frame = np.concatenate(frame, axis=1)
 
-        return frame, metaFrames, lv1detects, lv1matches
+        return frame, metaFrames, lv1detects, lv1matches, particles
     
     def next(self):
         newrr = self.rr+1
@@ -198,22 +239,22 @@ class _stereoViewMatch(object):
 
     def nextCommon(self):
         while True:
-            frame, metaFrames, lv1detects, lv1match = self.next()
+            frame, metaFrames, lv1detects, lv1match, particles = self.next()
             if np.sum([m is None for m in metaFrames])==1:
                 continue
             else:
                 break
 
-        return frame, metaFrames, lv1detects, lv1match
+        return frame, metaFrames, lv1detects, lv1match, particles
 
     def previousCommon(self):
         while True:
-            frame, metaFrames, lv1detects, lv1match = self.previous()
+            frame, metaFrames, lv1detects, lv1match, particles = self.previous()
             if np.sum([m is None for m in metaFrames])==1:
                 continue
             else:
                 break
-        return frame, metaFrames, lv1detects, lv1match
+        return frame, metaFrames, lv1detects, lv1match, particles
    
 
     def nextMatch(self):
@@ -221,7 +262,7 @@ class _stereoViewMatch(object):
         rrs = range(rr+1,len(self.uniqueCaptureIds))
         if len(rrs) == 0:
             print("end of movie file")
-            return None, None, None, None
+            return None, None, None, None, None
         for newrr in rrs:
             thisID = self.uniqueCaptureIds[newrr].values
             if thisID in self.lv1match.capture_id.sel(camera=self.config.leader).values:
@@ -233,7 +274,7 @@ class _stereoViewMatch(object):
         rrs = range(rr-1,-1, -1)
         if len(rrs) == 0:
             print("start of movie file")
-            return None, None, None, None
+            return None, None, None, None, None
         for newrr in rrs:
             thisID = self.uniqueCaptureIds[newrr].values
             if thisID in self.lv1match.capture_id.sel(camera=self.config.leader).values:
@@ -254,7 +295,7 @@ class matchGUI():
         self.sv = _stereoViewMatch(case, config, markParticles=markParticles, increaseContrast=increaseContrast)
         return 
         
-    def updateHandles(self, frame, metaFrames, lv1detects, lv1matches):
+    def updateHandles(self, frame, metaFrames, lv1detects, lv1matches, particles):
 
         self.metaFrames = metaFrames
         self.lv1detects = lv1detects
@@ -274,7 +315,7 @@ class matchGUI():
             lv1match = None
 
 
-        _, frame = cv2.imencode('.jpeg', frame)
+        _, frame = cv2.imencode('.png', frame)
         try:
             self.display_handle.update(Image(data=frame.tobytes())) 
         except AttributeError:
@@ -283,6 +324,12 @@ class matchGUI():
         self.setNN(self.sv.rr)
         with self.out:
             self.out.clear_output()
+
+            if particles is not None:
+                for k in particles:
+                    for part in particles[k]:
+                        tools.displayImage(part)
+
             if metaFrames[0] is None:
                 c0, i0 = "n/a", "n/a"
             else:
@@ -294,7 +341,7 @@ class matchGUI():
             
             print("leader:", c0,i0, "follower:", c1,i1)
             if lv1match is not None:
-                Zdiff = lv1match.position.isel(position_elements=[2,3], drop=True).diff("position_elements").values.flatten()
+                Zdiff = lv1match.position3D.isel(position3D_elements=[2,3], drop=True).diff("position3D_elements").values.flatten()
                 print(
                     lv1match.pair_id.values.flatten(),
                     ["%.7f score"%(l) for l in lv1match.matchScore.values],
@@ -303,13 +350,16 @@ class matchGUI():
                     ["%.2f h"%(l) for l in lv1match.roi.diff("camera").sel(ROI_elements="h", drop=True).values.flatten()], 
                     ["%.2f Z"%z for z in Zdiff]
                     )
-                print(lv1match.blur.values)
+                print("blur", lv1match.blur.values)
+                print("Dmax", lv1match.Dmax.values)
                 print("#"*100)
             if (lv1detects[0] is not None) and (lv1detects[1] is not None) and (lv1detects[0]["pid"].shape == lv1detects[1]["pid"].shape):
                 print(f"{'pid'.ljust(20)}: D {'X'.ljust(23)}, L {str(lv1detects[0]['pid'].values).ljust(23)}, F {str(lv1detects[1]['pid'].values).ljust(23)}") 
                 for i in lv1detects[0].data_vars:
-                    if i in ["touchesBorder", "pixPercentiles", "nThread", "record_id", ]: continue
+                    if i in ["touchesBorder", "pixPercentiles", "nThread", "record_id", "cnt"]: continue
                     print(f"{i.ljust(20)}: D {str(lv1detects[0][i].values - lv1detects[1][i].values).ljust(23)}, L {str(lv1detects[0][i].values).ljust(23)}, F {str(lv1detects[1][i].values).ljust(23)}") 
+
+
 
 
     def getNN(self):

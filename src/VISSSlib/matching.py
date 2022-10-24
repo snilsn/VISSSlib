@@ -441,8 +441,8 @@ def addPosition(matchedDat, rotate, rotate_err, config):
 
     Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
 
-    matchedDat["position_elements"] = ["x", "y", "z", "z_rotated"]
-    matchedDat["position"] = xr.DataArray([Lx, Fy, Fz, Fz_estimated], coords=[matchedDat.position_elements, matchedDat.pair_id] )
+    matchedDat["position3D_elements"] = ["x", "y", "z", "z_rotated"]
+    matchedDat["position3D"] = xr.DataArray([Lx, Fy, Fz, Fz_estimated], coords=[matchedDat.position3D_elements, matchedDat.pair_id] )
 
     nid = len(matchedDat.pair_id)
     matchedDat["rotation"] = np.array(["mean", "err"])
@@ -465,7 +465,7 @@ def doMatchSlicer(leader1D, follower1D, sigma, mu, delta, config, rotate, minPro
 
 
     #short cut for small data sets
-    if (len(leader1D.fpid) < chunckSize) & (len(follower1D.fpid) < chunckSize):
+    if (len(leader1D.fpid) < chunckSize) or (len(follower1D.fpid) < chunckSize):
         return doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=minProp, maxMatches=maxMatches, minNumber4Stats=minNumber4Stats, testing=testing)
 
     # ok it is too long... 

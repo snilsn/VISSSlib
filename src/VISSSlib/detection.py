@@ -18,6 +18,7 @@ try:
     import cv2
 except ImportError:
     warnings.warn("opencv not available!")
+import skimage
 
 import logging
 import logging.config
@@ -147,11 +148,14 @@ gsoc
 158 ms ± 814 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
 lsbp
 473 ms ± 8.09 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
-VISSSlib
+VISSSlib wo training
 1.07 ms ± 26.9 µs per loop (mean ± std. dev. of 7 runs, 1,000 loops each)
 
 '''
 
+
+# decided not to use own class due to 1) perfoamnce reasons and doubts hwethe rthe
+# simple background model can handle different light situations properly
 class movementDetection(object):
     def __init__(self, threshold=20, history = 100, trainingInterval=140):
         self.backgrounds = None
@@ -192,21 +196,21 @@ class detectedParticles(object):
     def __init__(self,
                  pidOffset=0,
                  trainingSize=500,
-                 backSubKW = {"dist2Threshold":400,"detectShadows":False, "history":500},
                  verbosity=0,
                  composite = True,
                  minContrast = 20, 
-                 minDmax = 3,
+                 minDmax = 2,
                  maxNParticle = 60,
                  minBlur=10,
-                 minArea=3,
+                 minArea=2,
                  erosionTestThreshold = 0.06,
                  height_offset=64,
                  maskCorners=None,
                  cropImage = None, #(offsetX, offsetY)
-                 backSub=cv2.createBackgroundSubtractorKNN,
-                 applyCanny2Frame = True,
-                 applyCanny2Particle = False,
+                 backSub=cv2.bgsegm.createBackgroundSubtractorCNT,
+                 backSubKW = {"minPixelStability": 10, "maxPixelStability": 100},
+                 applyCanny2Frame = False,
+                 applyCanny2Particle = True, #much faster than 2 whole Frame!
                  dilateIterations=1,
                  blurSigma=1.5,
                  ):
@@ -288,8 +292,6 @@ class detectedParticles(object):
         #use only every 10thdata point for speed
         #using frame instead of background saves speed
         self.brightnessBackground = int(np.median(self.frame[::10,::10])) 
-
-
 
 
         if training :
@@ -414,7 +416,6 @@ class detectedParticles(object):
 
 
     def add(self,frame1, fgMask, cnt, testing, **kwargs):
-        added = False
 
         #check whether it touches border
         roi = tuple(int(b) for b in cv2.boundingRect(cnt))
@@ -455,6 +456,7 @@ class detectedParticles(object):
 
         # loop in case more than one particle is in single moving area
         for cnt in cnts:
+            added = False
             newParticle = True
             
             # try:
@@ -476,8 +478,9 @@ class detectedParticles(object):
             elif self.lastParticle.area < self.minArea:
                 print("particles.add", "PID", self.lastParticle.pid, "too small area", self.lastParticle.area)
 
-            elif ratio < self.erosionTestThreshold:
-                print("particles.add", "PID", self.lastParticle.pid, "particle not properly detected", ratio, self.erosionTestThreshold)
+            #do not apply to needles or similalrly shaped particles, also does not work to very small particles
+            elif (self.lastParticle.aspectRatio > 0.4) and (self.lastParticle.Dmax > 5) and(ratio < self.erosionTestThreshold):
+                print("particles.add", "PID", self.lastParticle.pid, "particle not properly detected", ratio, self.erosionTestThreshold, self.lastParticle.aspectRatio )
 
             else:
 
@@ -644,6 +647,7 @@ class singleParticle(object):
         # data type cv2.CV_16S requried to avoid overflow
         self.blur = cv2.Laplacian(self.particleBox, cv2.CV_16S).var(ddof=1)
 
+
         return
 
     def dropImages(self):
@@ -685,7 +689,6 @@ class singleParticle(object):
         (x, y, w, h) = self.roi
         cv2.rectangle(frame, (x, y),
                       (x + w, y + h), color, 1)
-
 
         cv2.drawContours(frame, [self.cnt],0,np.array(color) * 2/3,1)
         box = cv2.boxPoints(self.rect)
@@ -776,14 +779,14 @@ def detectParticles(fname,
                     testMovieFile = True,
                     backSubKW = {"dist2Threshold":400,"detectShadows":False, "history":100},
                     backSub=cv2.createBackgroundSubtractorKNN,
-                    applyCanny2Frame = True,
-                    applyCanny2Particle = False,
+                    applyCanny2Frame = False,
+                    applyCanny2Particle = True,
                     dilateIterations=1,
                     blurSigma=1.5,
                     minBlur=10,
                     erosionTestThreshold = 0.06,
-                    minArea = 3,
-                    minDmax = 3,
+                    minArea = 1,
+                    minDmax = 2,
                     stopAfter = None,
                     version=__version__
                     ):
@@ -1153,7 +1156,6 @@ def detectParticles(fname,
                     imagesL1detect.addimage(imName, part.particleBoxAlpha)
             if "particle" in testing:#
                 img = np.hstack((part.particleBox, part.particleBoxCropped ) )
-                import skimage
                 tools.displayImage(skimage.transform.resize(img,
                                np.array(img.shape)*4,
                                mode='edge',
