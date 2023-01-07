@@ -2,7 +2,6 @@
 
 import sys
 import os
-import gzip
 import itertools
 import subprocess
 
@@ -19,6 +18,7 @@ try:
 except ImportError:
     warnings.warn("opencv not available!")
 import skimage
+import zipfile
 
 import logging
 import logging.config
@@ -194,13 +194,13 @@ class movementDetection(object):
 
 class detectedParticles(object):
     def __init__(self,
+                 config,
                  pidOffset=0,
                  trainingSize=500,
                  verbosity=0,
                  composite = True,
                  minContrast = 20, 
                  minDmax = 2,
-                 maxNParticle = 60,
                  minBlur=10,
                  minArea=2,
                  erosionTestThreshold = 0.06,
@@ -222,7 +222,7 @@ class detectedParticles(object):
 
         self.minDmax = minDmax
         self.minContrast = minContrast
-        self.maxNParticle = maxNParticle
+        self.maxNParticle = config.maxMovingObjects
         self.minBlur = minBlur
         self.minArea = minArea
         self.erosionTestThreshold = erosionTestThreshold
@@ -259,6 +259,7 @@ class detectedParticles(object):
 
     def update(self, frame, pp, capture_id, record_id, capture_time, record_time, nThread, training=False, testing=[]):
 
+        self.testing = testing
         self.capture_id = capture_id
         self.record_id = record_id
         self.capture_time = capture_time
@@ -342,12 +343,11 @@ class detectedParticles(object):
         # thresh = cv2.dilate(self.fgMask, None, iterations=2)
 
 
-        cnts = cv2.findContours(self.fgMask, cv2.RETR_EXTERNAL,
+        cnts, _ = cv2.findContours(self.fgMask, cv2.RETR_EXTERNAL,
                                 cv2.CHAIN_APPROX_SIMPLE)
 
-
         self.cnts = list()
-        for cnt in cnts[0]:
+        for cc, cnt in enumerate(cnts):
             if cnt.shape[0] >2:
                 #skip very small particles
                 self.cnts.append(cnt)
@@ -415,7 +415,7 @@ class detectedParticles(object):
         return fgMaskCanny
 
 
-    def add(self,frame1, fgMask, cnt, testing, **kwargs):
+    def add(self, frame1, fgMask, cnt, testing, **kwargs):
 
         #check whether it touches border
         roi = tuple(int(b) for b in cv2.boundingRect(cnt))
@@ -438,64 +438,81 @@ class detectedParticles(object):
             particleBoxMaskPlus, xOffset, yOffset= extractRoi(roi, fgMask, extra=extra)
             particleBoxPlus, xOffset, yOffset = extractRoi(roi, frame1, extra=extra)
             particleBoxMaskPlus = self.applyCannyFilter(particleBoxPlus, particleBoxMaskPlus)
-            cntsTmp = cv2.findContours(particleBoxMaskPlus, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+            cntsTmp, hierarchy = cv2.findContours(particleBoxMaskPlus, cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
 
             cnts = list()
-            for cnt in cntsTmp[0]:
-                if cnt.shape[0] >2:
-                    #skip very small particles
-                    cnts.append(cnt)
+            cntChildren = list()
+            for cc, cnt in enumerate(cntsTmp):
+                if cnt.shape[0] >2:#skip very small particles
+                    if hierarchy[0][cc][3] == -1: #i.e. no parents!
+                        cnts.append(cnt)
+
+                        iiChildren = np.where(hierarchy[0][: , 3] == cc)[0]
+                        print(f"found children {iiChildren} of {cc}" )
+                        if len(iiChildren) == 0:
+                            cntChildren.append(None)
+                        else:
+                            cntChildren.append(list())
+                        for ii in iiChildren:
+                            thisChild = cntsTmp[ii]
+                            if thisChild.shape[0] >2:
+                                cntChildren[-1].append(thisChild)
             frame4sp = particleBoxPlus
+            mask4sp = particleBoxMaskPlus
 
             print(f"found {len(cnts)} instead of 1 particle after canny filter")
         else:
             cnts = [cnt]
             frame4sp = frame1
+            mask4sp = fgMask
             xOffset = yOffset = 0
-
+            cntChildren = [None]
 
         # loop in case more than one particle is in single moving area
-        for cnt in cnts:
+        for cnt, cntChild in zip(cnts, cntChildren):
             added = False
             newParticle = True
             
             # try:
-            self.lastParticle = singleParticle(self, self.capture_id, self.record_id, self.capture_time, self.record_time, self.nThread, self.pp, frame4sp, cnt, xOffset, yOffset, **kwargs)
+            self.lastParticle = singleParticle(self, self.capture_id, self.record_id, self.capture_time, self.record_time, self.nThread, self.pp, frame4sp, mask4sp, cnt, cntChild, xOffset, yOffset, **kwargs)
             # except ZeroDivisionError:
             #     self.lastParticle = None
             #     return added, self.lastParticle
-
-            ratio = self.lastParticle.perimeterEroded/self.lastParticle.perimeter
-            if self.lastParticle.Dmax < self.minDmax:
-                print("particles.add", "PID", self.lastParticle.pid, "too small", self.lastParticle.Dmax)
-
-            elif  self.lastParticle.particleContrast < self.minContrast:
-                print("particles.add", "PID", self.lastParticle.pid, "too small minContrast", self.lastParticle.particleContrast)
-
-            elif self.lastParticle.blur < self.minBlur:
-                print("particles.add", "PID", self.lastParticle.pid, "too small minBlur", self.lastParticle.blur)
-
-            elif self.lastParticle.area < self.minArea:
-                print("particles.add", "PID", self.lastParticle.pid, "too small area", self.lastParticle.area)
-
-            #do not apply to needles or similalrly shaped particles, also does not work to very small particles
-            elif (self.lastParticle.aspectRatio > 0.4) and (self.lastParticle.Dmax > 5) and(ratio < self.erosionTestThreshold):
-                print("particles.add", "PID", self.lastParticle.pid, "particle not properly detected", ratio, self.erosionTestThreshold, self.lastParticle.aspectRatio )
-
+            if not self.lastParticle.success:
+                print("particles.add", "PID", self.lastParticle.pid, "empty")
             else:
 
-                particleFrame = self.lastParticle.particleBox
-                if np.prod(particleFrame.shape) == 0:
-                    print("particles.add", "PID", self.lastParticle.pid, "flat", particleFrame.shape)
-                    return added, self.lastParticle
+                ratio = self.lastParticle.perimeterEroded/self.lastParticle.perimeter
+                if self.lastParticle.Dmax < self.minDmax:
+                    print("particles.add", "PID", self.lastParticle.pid, "too small", self.lastParticle.Dmax)
 
-                print("FILTER", particleFrame.mean(), particleFrame.max()   , particleFrame.std(ddof=1)   )
+                elif  self.lastParticle.particleContrast < self.minContrast:
+                    print("particles.add", "PID", self.lastParticle.pid, "too small minContrast", self.lastParticle.particleContrast)
 
-                self.all[self.pp] = self.lastParticle
-                self.lastFrame[self.pp] = self.lastParticle
-                print("particles.add", "PID", self.lastParticle.pid, "Added")
-                self.pp += 1
-                added = True
+                elif self.lastParticle.blur < self.minBlur:
+                    print("particles.add", "PID", self.lastParticle.pid, "too small minBlur", self.lastParticle.blur)
+
+                elif self.lastParticle.area < self.minArea:
+                    print("particles.add", "PID", self.lastParticle.pid, "too small area", self.lastParticle.area)
+
+                #do not apply to needles or similalrly shaped particles, also does not work to very small particles
+                elif (self.lastParticle.aspectRatio > 0.4) and (self.lastParticle.Dmax > 5) and(ratio < self.erosionTestThreshold):
+                    print("particles.add", "PID", self.lastParticle.pid, "particle not properly detected", ratio, self.erosionTestThreshold, self.lastParticle.aspectRatio )
+
+                else:
+
+                    particleFrame = self.lastParticle.particleBox
+                    if np.prod(particleFrame.shape) == 0:
+                        print("particles.add", "PID", self.lastParticle.pid, "flat", particleFrame.shape)
+                        return added, self.lastParticle
+
+                    print("FILTER", particleFrame.mean(), particleFrame.max()   , particleFrame.std(ddof=1)   )
+
+                    self.all[self.pp] = self.lastParticle
+                    self.lastFrame[self.pp] = self.lastParticle
+                    print("particles.add", "PID", self.lastParticle.pid, "Added")
+                    self.pp += 1
+                    added = True
 
 
             if added:
@@ -535,14 +552,34 @@ class detectedParticles(object):
             elif key in [ 'roi','x', 'y','pixMin', 'pixMax', 'nThread']:
                 self.particleProps[key] = self.particleProps[key].astype(np.int16)
 
-        key = "cnt"
         arrTmp = []
+        arrTmp2 = []
         for i in self.all.values():
-            arrTmp.append(getattr(i, key).squeeze())
-        arr = np.zeros([len(arrTmp),len(max(arrTmp,key = lambda x: len(x))),2], dtype=np.int16) - 99
+            arrTmp.append(getattr(i, "cnt").squeeze())
+            cntChild = getattr(i, "cntChild")
+            allChildren = []
+            if cntChild is not None:
+                for cntChild1 in cntChild:
+                    allChildren.append(cntChild1.squeeze())
+                    allChildren.append(np.full((1, 2), -99))
+                allChildren = np.concatenate(allChildren, axis=0)
+            else:
+                allChildren = np.full((1, 2), -99)
+            arrTmp2.append(allChildren)
+
+        arrayLengths = [a.shape[0] for a in arrTmp]
+        arrayLengths2 = [a.shape[0] for a in arrTmp2]
+
+        maxLen = max(arrayLengths)
+        maxLen2 = max(arrayLengths2)
+        arr = np.zeros([len(arrTmp),maxLen,2], dtype=np.int16) - 99
+        arr2 = np.zeros([len(arrTmp2),maxLen2,2], dtype=np.int16) - 99
         for i,j in enumerate(arrTmp):
             arr[i,0:len(j)] = j
-        self.particleProps[key] = xr.DataArray(arr, coords=[self.particleProps.pid, np.arange(arr.shape[-2], dtype=np.int16), ['x', 'y']], dims=('pid', 'cnt_element','position'))
+        for i,j in enumerate(arrTmp2):
+            arr2[i,0:len(j)] = j
+        self.particleProps["cnt"] = xr.DataArray(arr, coords=[self.particleProps.pid, np.arange(arr.shape[-2], dtype=np.int16), ['x', 'y']], dims=('pid', 'cnt_element','position'))
+        self.particleProps["cntChildren"] = xr.DataArray(arr2, coords=[self.particleProps.pid, np.arange(arr2.shape[-2], dtype=np.int16), ['x', 'y']], dims=('pid', 'cntChildren_element','position'))
 
         percentiles = []
         for i in self.all.values(): 
@@ -562,7 +599,7 @@ class detectedParticles(object):
 
 
 class singleParticle(object):
-    def __init__(self, parent, capture_id, record_id, capture_time, record_time, nThread,  pp1, frame1, cnt, xOffset, yOffset, verbosity=0, composite = True):
+    def __init__(self, parent, capture_id, record_id, capture_time, record_time, nThread,  pp1, frame1, mask1, cnt, cntChild, xOffset, yOffset, verbosity=0, composite = True):
         self.verbosity = verbosity
         self.pid = pp1#np.random.randint(-999,-1) 
         self.record_id = record_id
@@ -571,6 +608,7 @@ class singleParticle(object):
         self.record_time = record_time
         self.nThread = nThread
         self.cnt = cnt
+        self.cntChild = cntChild
         self.composite = composite
         self.version = __version__.split(".")[0]
 
@@ -582,16 +620,51 @@ class singleParticle(object):
         # self.Cx, self.Cy, self.Dx, self.Dy = self.roi
 
 
-        # self.frame = frame1
-        # self.frameMask = frameMask
-        self.particleBoxMask, xOffset, yOffset = extractRoi(self.roi, cv2.fillPoly(np.zeros_like(frame1), pts =[cnt], color=255))
-        self.particleBox, xOffset, yOffset = extractRoi(self.roi, frame1)
+
+        # mask1 has neighbouring particles removed, but internal holes closed
+        particleBoxMask1, xo, yo = extractRoi(self.roi, cv2.fillPoly(np.zeros_like(frame1), pts =[cnt], color=255))
+        # mask 2 is the opposite, internal holes (from movement detection) are open, but neighbor pixels are present
+        # particleBoxMask2, xo, yo = extractRoi(self.roi, mask1)
+        # combine both masks
+        # self.particleBoxMask = ((particleBoxMask1/255)*particleBoxMask2).astype(np.uint8)
+        self.particleBox, xo, yo = extractRoi(self.roi, frame1)
+
+        # tools.displayImage(particleBoxMask2, rescale=4)
+
+        # mask shows only internal holes from cnt children if present 
+        if cntChild is not None:
+            particleBoxHoles, xo, yo = extractRoi(self.roi, cv2.fillPoly(np.zeros_like(frame1)+255, pts =cntChild, color=0))
+
+            # remove single pixel holes 
+            # kernel = cv2.getStructuringElement(   cv2.MORPH_CROSS, (3,3) )
+            particleBoxHoles = cv2.dilate(particleBoxHoles, None, iterations=1)
+            particleBoxHoles = cv2.erode(particleBoxHoles, None, iterations=1)
+
+            #combine masks
+            self.particleBoxMask = ((particleBoxMask1/255)*particleBoxHoles).astype(np.uint8)
+
+
+        else: # no holes detected
+            self.particleBoxMask = particleBoxMask1
+            particleBoxHoles = None
+
+        if "particleMask" in parent.testing:
+            tools.displayImage(particleBoxMask1, rescale=4)
+            if particleBoxHoles is not None:
+                tools.displayImage(particleBoxHoles, rescale=4)
+            tools.displayImage(self.particleBoxMask, rescale=4)
+
         self.particleBoxAlpha = np.stack((self.particleBox, self.particleBoxMask), -1)
 
-        fill_color = 0   # any  color value to fill with
+        fill_color = 255   # any  color value to fill with
         self.particleBoxCropped = deepcopy(self.particleBox)
         self.particleBoxCropped[self.particleBoxMask == 0] = fill_color
         particleBoxData = self.particleBox[self.particleBoxMask == 255]
+
+        #empty particle
+        if len(particleBoxData) == 0:
+            self.success = False
+            return 
 
         self.pixMin = particleBoxData.min()
         self.pixMax = particleBoxData.max()
@@ -623,6 +696,11 @@ class singleParticle(object):
         self.cnt[...,0] += self.xOffset
         self.cnt[...,1] += self.yOffset
 
+        if self.cntChild is not None:
+            for cc in range(len(self.cntChild)):
+                self.cntChild[cc][...,0] += self.xOffset
+                self.cntChild[cc][...,1] += self.yOffset
+
         #estimate properties that need shifted position
         self.rect = cv2.minAreaRect(self.cnt)
         center, dims, self.angle = self.rect
@@ -645,10 +723,12 @@ class singleParticle(object):
         self.x, self.y = self.centroid
         self.perimeter = cv2.arcLength(self.cnt,True)
         # data type cv2.CV_16S requried to avoid overflow
+        # https://pyimagesearch.com/2015/09/07/blur-detection-with-opencv/
         self.blur = cv2.Laplacian(self.particleBox, cv2.CV_16S).var(ddof=1)
+        self.success = True
 
 
-        return
+        return 
 
     def dropImages(self):
         '''
@@ -815,8 +895,8 @@ def detectParticles(fname,
     cropImage = config["cropImage"]
     site = config["site"]
     goodFiles = config["goodFiles"]
-    minBlur4Plotting = config["minBlur4Plotting"]
-    minDmax4Plotting = config["minDmax4Plotting"]
+    minBlur4Plotting = config["level1detectQuicklook"]["minBlur"]
+    minDmax4Plotting = config["level1detectQuicklook"]["minSize"]
 
     fn = files.Filenames(fname, config, version=version)
     print("running", fn.fname.level1detect)
@@ -839,12 +919,14 @@ def detectParticles(fname,
 
 
     fnamesV = fn.fnameMovAllThreads
+
     if len(fnamesV) == 0:
         with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
             f.write('no data in %s'%fn.fname.metaFrames)
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data in %s'%fn.fname.metaFrames)
         log.warning('no movie files: ' + fname)
+
 
     # fnameM = [f.replace(config["movieExtension"], "txt") for f in fnamesV.values()]
 
@@ -873,6 +955,12 @@ def detectParticles(fname,
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data')
         return 0
+
+
+    for t, fna in fnamesV.items():
+        if not os.path.isfile(fna):
+            log.info('movie file not found (yet?) ' + fna)
+            return 0
 
     if testMovieFile and (goodFile is not None) and (goodFile != "None"):
         for fnameV in fnamesV.values():
@@ -975,7 +1063,7 @@ def detectParticles(fname,
 
 
     snowParticles = detectedParticles(
-
+        config,
         trainingSize=trainingSize,
         backSubKW=backSubKW,
         cropImage=cropImage,
@@ -1006,10 +1094,14 @@ def detectParticles(fname,
 
         log.info('training %i' % ff)
 
+    #trainign files not needed any more 
+    del trainingFrames
+
     # write background to PNG file
     cv2.imwrite(
         fn.fname.metaDetection.replace(".nc",".png"),
         snowParticles.backSub.getBackgroundImage(),
+        [cv2.IMWRITE_PNG_COMPRESSION, 9]
         )
 
 
@@ -1047,16 +1139,12 @@ def detectParticles(fname,
         inVid[nThread] = cv2.VideoCapture(fnameV)
 
 
-
-
-
     frame = None
 
     if writeImg:
-        tarfname = fn.fname.imagesL1detect.replace(".gz","")
-        imagesL1detect = tools.imageTarFile(tarfname, 'w')
+        imagesL1detect = tools.imageZipFile(fn.fname.imagesL1detect, 'w', compresslevel=9)
 
-    tarRoot = fn.fname.imagesL1detect.split("/")[-1].replace(".tar.gz","")
+    tarRoot = fn.fname.imagesL1detect.split("/")[-1].replace(".tar.bz2","")
 
     for pp in pps:
 
@@ -1145,36 +1233,29 @@ def detectParticles(fname,
             hasData = True
 
             if writeImg:
-                if not (
-                    (part.Dmax < minDmax4Plotting) or
-                    (part.blur < minBlur4Plotting)
+                if (
+                    (part.Dmax >= minDmax4Plotting) and
+                    (part.blur >= minBlur4Plotting)
                     ):
                     pidStr = '%07i' % part.pid
-                    imName = '%s/%s/%s.png' % (tarRoot, pidStr[:4], pidStr)
-                    log.info('writing %s %s' % (fn.fname.imagesL1detect, imName))
+                    # imName = '%s/%s/%s.npy' % (tarRoot, pidStr[:4], pidStr)
+                    log.info('writing %s %s' % (fn.fname.imagesL1detect, pidStr))
 
-                    imagesL1detect.addimage(imName, part.particleBoxAlpha)
+                    # imagesL1detect.addimage(imName, part.particleBoxAlpha)
+                    imagesL1detect.addnpy(pidStr, part.particleBoxAlpha)
             if "particle" in testing:#
                 img = np.hstack((part.particleBox, part.particleBoxCropped ) )
-                tools.displayImage(skimage.transform.resize(img,
-                               np.array(img.shape)*4,
-                               mode='edge',
-                               anti_aliasing=False,
-                               anti_aliasing_sigma=None,
-                               preserve_range=True,
-                               order=0))
+                tools.displayImage(img, rescale=4)
             part.dropImages()
 
 
 
     if writeImg:
-        nFiles = len(imagesL1detect.getnames())
+        nFiles = len(imagesL1detect.namelist())
         imagesL1detect.close()
-
-        if nFiles > 0:
-            with open(tarfname, 'rb') as f_in, gzip.open(fn.fname.imagesL1detect, 'wb') as f_out:
-                f_out.writelines(f_in)
-        os.remove(tarfname)
+        print("closing",fn.fname.imagesL1detect)
+        if nFiles == 0:
+            os.remove(fn.fname.imagesL1detect)
 
 
     for nThread in inVid.keys():

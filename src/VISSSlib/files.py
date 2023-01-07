@@ -20,7 +20,7 @@ from .tools import nicerNames, otherCamera
 from . import __version__
 
 
-dailyLevels = ["metaEvents", "metaMatchCoefficients"]
+dailyLevels = ["metaEvents", "metaMatchCoefficients", "level2match"]
 fileLevels = ["level1detect", "level1match", "level1track", "metaFrames", "metaDetection", "imagesL1detect"]#, "metaFixedCaptureId"]
 quicklookLevelsSep = ["metaFrames", "metaEvents", "level1detect", "level1match"]
 quicklookLevelsComb = [ "matchCoefficients"]
@@ -77,7 +77,7 @@ class FindFiles(object):
 
         self.fnamesPattern = Dict({})
         for dL in fileLevels:
-            self.fnamesPattern[dL] = "%s/%s_V%s*%s*%s*nc"%(self.outpath[dL], dL, version, camera, self.case)
+            self.fnamesPattern[dL] = "%s/%s_V%s*%s*%s*.nc"%(self.outpath[dL], dL, version, camera, self.case)
         #overwrite for level0
         if config["nThreads"] is None:
             self.fnamesPattern.level0 = '%s/*%s*.%s' % (
@@ -92,6 +92,8 @@ class FindFiles(object):
         self.fnamesPattern.level0status = f"{self.outpath['level0']}/*_{config['visssGen']}_{camera}_{self.case}_status.txt"
         for dL in dailyLevels:
             self.fnamesPattern[dL] = "%s/%s_V%s_*%s*%s%s%s.nc"%(self.outpath[dL], dL, version, camera, self.year, self.month, self.day)
+        self.fnamesPattern["imagesL1detect"] = self.fnamesPattern["imagesL1detect"].replace(".nc", ".zip")
+
 
         self.fnamesPatternExt = Dict({})
         for dL in fileLevels + dailyLevels:
@@ -105,28 +107,31 @@ class FindFiles(object):
 
                 
         self.quicklook = Dict({})
+        self.quicklookCurrent = Dict({})
         self.quicklookPath = Dict({})
         for qL in quicklookLevelsSep + quicklookLevelsComb:
             self.quicklookPath[qL] =f'{config["pathQuicklooks"].format(site=config["site"], level=qL)}/{self.year}'
 
         for qL in quicklookLevelsSep:
             self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
+            self.quicklookCurrent[qL] = f"{config['pathQuicklooks'].format(site=config['site'], level=qL)}/{qL}_{config['site']}_{nicerNames(camera)}_current.png"
         for qL in quicklookLevelsComb:
             self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
+            self.quicklookCurrent[qL] = f"{config['pathQuicklooks'].format(site=config['site'], level=qL)}/{qL}_{config['site']}_current.png"
 
         
-    @functools.lru_cache
+    @functools.cache
     def listFiles(self, level):
         if level not in self.fnamesPattern.keys():
             raise ValueError(f"Level not found, level must be in {self.fnamesPattern.keys()}")
         return sorted(filter( os.path.isfile,
                                 glob.glob(self.fnamesPattern[level]) ))
-    @functools.lru_cache
+    @functools.cache
     def listFilesExt(self, level):
         return sorted(filter( os.path.isfile,
                                 glob.glob(self.fnamesPatternExt[level])+glob.glob(self.fnamesPattern[level]) ))
     
-    @functools.lru_cache
+    @functools.cache
     def listFilesWithNeighbors(self, level):
         fnames = self.listFiles(level)
         if len(fnames) > 0:
@@ -140,6 +145,9 @@ class FindFiles(object):
         return fnames
 
     @property
+    def isCompleteL0(self):
+        return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level0")))
+    @property
     def isCompleteL1detect(self):
         return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level1detect")))
     @property
@@ -148,6 +156,9 @@ class FindFiles(object):
     @property
     def isCompleteL1match(self):
         return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level1match")))
+    # @property
+    # def isCompleteL2match(self):
+    #     return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level2match")))
 
 # [f.split("/")[-1].split("-")[-1].split(".")[0] for f in self.listFilesExt("level1detect")]
     # @property
@@ -241,7 +252,7 @@ class Filenames(object):
             self.outpath.format(site=config["site"], level=fL), fL, version, config["site"], self.basenameShort)
             self.fname[fL] = self.fname[fL].replace("//", "/")
 
-        self.fname["imagesL1detect"] = self.fname["imagesL1detect"].replace(".nc", ".tar.gz")
+        self.fname["imagesL1detect"] = self.fname["imagesL1detect"].replace(".nc", ".zip")
 
         # self.outpathImg = "%s/%s/%s/%s" % (config["pathTmp"], self.year, self.month, self.day)
         # self.imagepath = Dict({})
@@ -391,10 +402,10 @@ class Filenames(object):
         return fname0AllMov
 
 
-    @functools.lru_cache
+    @functools.cache
     def nextFile(self, level="level0", debug=False):
         return self.findNeighborFile(+1, level=level, debug=debug)
-    @functools.lru_cache
+    @functools.cache
     def prevFile(self, level="level0", debug=False):
         return self.findNeighborFile(-1, level=level, debug=debug)
     
@@ -448,6 +459,60 @@ class Filenames(object):
             neighborFile = allFiles[neighborFileI]
         return neighborFile
 
+    @functools.cache
+    def _getOffsets(self, level, maxOffset, direction):
+        # helper function nextFile2 and prevFile2
+
+        assert maxOffset < np.timedelta64(1,"D"), "not supported yet"
+        case = self.case.split("-")[0]
+        caseClose = "".join(str(self.datetime64 + (maxOffset*direction)).split("T")[0].split("-"))
+
+        maxOffsetNs = maxOffset/np.timedelta64(1,"ns")
+
+
+        cases = sorted(set([case, caseClose]))
+        allFiles = []
+        for case1 in cases:
+            ff1 = FindFiles(case, self.camera, self.config)
+            allFiles += ff1.listFiles(level)
+        allTimes = np.array([np.datetime64(datetime.datetime.strptime(a.split("_")[-1].split(".")[0], "%Y%m%d-%H%M%S")) for a in allFiles])
+        if len(allTimes) > 0:
+            allOffsets = allTimes-(self.datetime64) 
+        else:
+            allOffsets = np.array([])
+        return allOffsets
+        
+    @functools.cache
+    def nextFile2(self, level="level0", maxOffset=np.timedelta64(2,"h")):
+        # alternative implementation based on timestamp. works also when reference file does not exist yet
+        allOffsets = _getOffsets(self, level, maxOffset, +1)
+        if len(allOffsets) == 0:
+            return None
+        else:
+            #apply boundary conditions
+            allOffsets = allOffsets[(allOffsets > np.timedelta64(0,"ns")) & (allOffsets <=maxOffset)]
+            if len(allOffsets) == 0:
+                return None
+
+            neighborOffset = np.min(allOffsets)
+            neighborTimestamp = self.datetime64 + neighborOffset
+            return FindFiles(neighborTimestamp, self.camera, self.config).listFiles(level)[0]
+
+    @functools.cache
+    def prevFile2(self, level="level0", maxOffset=np.timedelta64(2,"h")):
+        # alternative implementation based on timestamp. works also when reference file does not exist yet
+        allOffsets = self._getOffsets(level, maxOffset, -1)
+        if len(allOffsets) == 0:
+            return None
+        else:
+            #apply boundary conditions
+            allOffsets = allOffsets[(allOffsets < np.timedelta64(0,"ns")) & (allOffsets >= -maxOffset)]
+            if len(allOffsets) == 0:
+                return None
+
+            neighborOffset = np.min(np.abs(allOffsets))
+            neighborTimestamp = self.datetime64 - neighborOffset
+            return FindFiles(neighborTimestamp, self.camera, self.config).listFiles(level)[0]
 
 
 class FilenamesFromLevel(Filenames):

@@ -671,15 +671,19 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
 
     if skipExisting and os.path.isfile(eventFile):
         eventDat = xr.open_dataset(eventFile)
-        nFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
-        nFiles = int(nFiles.values)
-        if nFiles == len(fnames0):
-            print("Skipping", case, eventFile )
+        if len(eventDat.data_vars) == 0:
+            print("eventDat empty, redoing event file" )
             eventDat.close()
-            return None
         else:
-            print("Missing files, redoing event file", nFiles, "of", len(fnames0) )
-            eventDat.close()
+            nFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
+            nFiles = int(nFiles.values)
+            if nFiles == len(fnames0):
+                print("Skipping", case, eventFile )
+                eventDat.close()
+                return None
+            else:
+                print("Missing files, redoing event file", nFiles, "of", len(fnames0) )
+                eventDat.close()
 
         
 

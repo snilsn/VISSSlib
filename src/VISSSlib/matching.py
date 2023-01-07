@@ -25,15 +25,18 @@ deltaY = deltaH = deltaI = 1.
 
 
 def calc_Fz(phi, theta, Ofz, Lx, Lz, Fy):
+
+    raise NotImplementedError("Do not use any more!")
+
     '''
     Parameters
     ----------
     phi : 
-        Follower roll
+        Follower roll in deg
     theta :
-        Follower pitch
+        Follower pitch in deg
     Ofz :
-        Offset Follower z
+        Offset Follower z in deg
     Lx :
         Leader x coordinate (in common xyz)
     Lz :
@@ -63,47 +66,326 @@ def calc_Fz(phi, theta, Ofz, Lx, Lz, Fy):
     Fz = Fzp - Ofz
     return Fz
 
-def forward(x, Lx=None, Lz=None, Fy=None):
+
+def rotate_L2F(L_x, L_y, L_z, phi, theta, psi):
+
+    ''' rotate from leader to follower coordinate system
+    
+    Parameters
+    ----------
+    L_x : float
+        Leader x coordinate (in common xyz)
+    L_y : float
+        Leader y coordinate (in common xyz)
+    L_z : float
+        Leader z coordinate (in common xyz)
+    phi : float
+        Follower roll in deg
+    theta : float
+        Follower pitch in deg
+    psi : float
+        Follower yaw in deg
+    
+    Returns
+    -------
+    array
+        Follower x, y, z coordinates
     '''
-    forward model for pyOptimalEstimation
+
+    #
+    phi = np.deg2rad(phi)
+    theta = np.deg2rad(theta)
+    psi = np.deg2rad(psi)
+    
+    F_xp =  np.cos(theta) * np.cos(psi) * L_x \
+         +  np.cos(theta) * np.sin(psi) * L_y \
+         -  np.sin(theta) * L_z
+    F_yp = (np.sin(phi) * np.sin(theta) * np.cos(psi) - np.cos(phi) * np.sin(psi)) * L_x \
+         + (np.sin(phi) * np.sin(theta) * np.sin(psi) + np.cos(phi) * np.cos(psi)) * L_y \
+         +  np.sin(phi) * np.cos(theta) * L_z 
+    F_zp = (np.cos(phi) * np.sin(theta) * np.cos(psi) + np.sin(phi) * np.sin(psi)) * L_x \
+         + (np.cos(phi) * np.sin(theta) * np.sin(psi) - np.sin(phi) * np.cos(psi)) * L_y \
+         +  np.cos(phi) * np.cos(theta) * L_z
+
+    return F_xp, F_yp, F_zp
+
+def shiftRotate_L2F(L_x, L_y, L_z, phi, theta, psi, Olx, Ofy, Ofz):
+
+    ''' shift and rotate from leader to follower coordinate system
+    
+    Parameters
+    ----------
+    L_x : float
+        Leader x coordinate (in common xyz)
+    L_y : float
+        Leader y coordinate (in common xyz)
+    L_z : float
+        Leader z coordinate (in common xyz)
+    phi : float
+        Follower roll in deg
+    theta : float
+        Follower pitch in deg
+    psi : float
+        Follower yaw in deg
+    Olx : float
+        leader shift in x direction
+    Ofy : float
+        follower shift in y direction
+    Ofz : float
+        follower shift in z direction
+
+    Returns
+    -------
+    array
+        Follower x, y, z coordinates
     '''
-    y = calc_Fz(x.phi, x.theta, x.Ofz, Lx, Lz, Fy)
+
+
+    L_xp = L_x + Olx
+
+    F_x, F_yp, F_zp = rotate_L2F(L_xp, L_y, L_z, phi, theta, psi)
+
+    F_y = F_yp - Ofy
+    F_z = F_zp - Ofz
+
+    return F_x, F_y, F_z
+
+
+
+def rotate_F2L(F_xp, F_yp, F_zp, phi, theta, psi):
+
+    ''' rotate from follower to leader coordinate system
+    
+    Parameters
+    ----------
+    L_x : float
+        Follower x coordinate (in common xyz)
+    L_y : float
+        Follower y coordinate (in common xyz)
+    L_z : float
+        Follower z coordinate (in common xyz)
+    phi : float
+        Follower roll in deg
+    theta : float
+        Follower pitch in deg
+    psi : float
+        Follower yaw in deg
+
+    Returns
+    -------
+    array
+        Leader x, y, z coordinates
+    '''    
+    phi = np.deg2rad(phi)
+    theta = np.deg2rad(theta)
+    psi = np.deg2rad(psi)
+
+    L_x =  np.cos(theta) * np.cos(psi) * F_xp \
+        + (np.sin(phi) * np.sin(theta) * np.cos(psi) - np.cos(phi) * np.sin(psi)) * F_yp \
+        + (np.cos(phi) * np.sin(theta) * np.cos(psi) + np.sin(phi) * np.sin(psi)) * F_zp
+    L_y =  np.cos(theta) * np.sin(psi) * F_xp \
+        + (np.sin(phi) * np.sin(theta) * np.sin(psi) + np.cos(phi) * np.cos(psi)) * F_yp \
+        + (np.cos(phi) * np.sin(theta) * np.sin(psi) - np.sin(phi) * np.cos(psi)) * F_zp
+    L_z = -np.sin(theta) * F_xp \
+        +  np.sin(phi) * np.cos(theta) * F_yp \
+        +  np.cos(phi) * np.cos(theta) * F_zp
+
+    return L_x, L_y, L_z
+
+def shiftRotate_F2L(F_x, F_y, F_z, phi, theta, psi, Olx, Ofy, Ofz):
+
+    ''' shift and rotate from follower to leader coordinate system
+    
+    Parameters
+    ----------
+    L_x : float
+        Follower x coordinate (in common xyz)
+    L_y : float
+        Follower y coordinate (in common xyz)
+    L_z : float
+        Follower z coordinate (in common xyz)
+    phi : float
+        Follower roll in deg
+    theta : float
+        Follower pitch in deg
+    psi : float
+        Follower yaw in deg
+    Olx : float
+        Leader shift in x direction
+    Ofy : float
+        Follower shift in y direction
+    Ofz : float
+        Follower shift in z direction
+
+    Returns
+    -------
+    array
+        Leader x, y, z coordinates
+    '''
+    F_yp = F_y + Ofy
+    F_zp = F_z + Ofz
+
+    L_xp, L_y, L_z = rotate_F2L(F_x, F_yp, F_zp, phi, theta, psi)
+
+    L_x = L_xp - Olx
+
+    return L_x, L_y, L_z
+
+
+def calc_L_z(L_x, F_yp, F_zp, phi, theta, psi):
+
+    '''estimate z coordinate for the leader based on combined leade rand follower 
+    measurements
+    
+    [description]
+    
+    Parameters
+    ----------
+    L_x : float
+        x measurement of leader
+    F_yp : float
+        y measurement of follower without shift
+    F_zp : float
+        z measurement of follower without shift
+    phi : float
+        Follower roll in deg in deg
+    theta : float
+        Follower pitch in de in degg
+    psi : float
+        Follower yaw in deg in deg
+    
+    Returns
+    -------
+    float
+        z coordinate as seen by leader ignoring offsets
+    '''
+
+    # with  wolfram simplification
+
+    phi = np.deg2rad(phi)
+    theta = np.deg2rad(theta)
+    psi = np.deg2rad(psi)
+
+    L_z = - (np.sin(theta))/(np.cos(theta) * np.cos(psi)) * L_x \
+          - (np.sin(theta) * np.sin(psi) * np.cos(phi) - np.cos(psi) * np.sin(phi))/(np.cos(theta) * np.cos(psi)) * F_yp\
+          + (np.sin(theta) * np.sin(psi) * np.sin(phi) + np.cos(psi) * np.cos(phi))/(np.cos(theta) * np.cos(psi)) * F_zp
+    return L_z
+
+
+def calc_L_z_withOffsets(L_x, F_y, F_z, phi=0, theta=0, psi=0, Ofy=0, Ofz=0, Olx=0):
+    
+    '''estimate z coordinate for the leader based on combined leade rand follower 
+    measurements
+    
+    [description]
+    
+    Parameters
+    ----------
+    L_x : float
+        x measurement of leader
+    F_yp : float
+        y measurement of follower
+    F_zp : float
+        z measurement of follower
+    phi : float
+        Follower roll in deg in deg
+    theta : float
+        Follower pitch in de in degg
+    psi : float
+        Follower yaw in deg in deg
+    Olx : float
+        Leader shift in x direction
+    Ofy : float
+        Follower shift in y direction
+    Ofz : float
+        Follower shift in z direction
+
+    Returns
+    -------
+    float
+        z coordinate as seen by leader
+    '''
+
+    for k in phi, theta, psi, Ofy, Ofz, Olx:
+        assert not np.any(np.isnan(k)), k
+
+    F_yp = F_y + Ofy
+    F_zp = F_z  + Ofz
+    L_xp = L_x  + Olx
+
+    return calc_L_z(L_xp, F_yp, F_zp, phi, theta, psi)
+
+
+# def forward(x, Lx=None, Lz=None, Fy=None):
+#     '''
+#     forward model for pyOptimalEstimation
+#     '''
+#     y = calc_Fz(x.phi, x.theta, x.Ofz, Lx, Lz, Fy)
+#     y = pd.Series(y, index=np.array(range(len(y))))
+#     return y
+
+def forward(x, L_x=None, F_y=None, F_z=None):
+    '''forward model for pyOptimalEstimation
+    
+    Parameters
+    ----------
+    x : pandas Series
+       state vector "phi", "theta", "psi", "Ofy", "Ofz", "Olx"
+    L_x : array, optional
+        x coordinate as seen by the leader (the default is None)
+    F_y : array, optional
+        y coordinate as seen by the follower (the default is None)
+    F_z : array, optional
+        z coordinate as seen by the follower (the default is None)
+    
+    Returns
+    -------
+    pandas Series
+        z coordinate as seen by leader
+    '''
+
+    
+    y = calc_L_z_withOffsets(L_x, F_y, F_z, **x.to_dict())
     y = pd.Series(y, index=np.array(range(len(y))))
     return y
 
-def retrieveRotation(dat3, x_ap, x_cov_diag, y_cov_diag, verbose=False):
+def retrieveRotation(dat3, x_ap, x_cov_diag, y_cov_diag, config, verbose=False):
+
     '''
     apply Optimal Estimation to retrieve rotation of cameras
     '''
     
     nPart = len(dat3.pair_id)
+    allVars = ["phi", "theta", "psi", "Ofy", "Ofz", "Olx"]
+    assert dat3.camera[0].values == config.leader
 
-    # Leader & Follower z coordinate
-    Lz, Fz = (dat3.roi.sel(ROI_elements="y") +
-                        (dat3.roi.sel(ROI_elements="h")/2)).values
-    
-    # LEader x and Follower y coordinate
-    Lx, Fy = (dat3.roi.sel(ROI_elements="x") +
-                        (dat3.roi.sel(ROI_elements="w")/2)).values
+    L_x, L_z, F_y, F_z = get3DPosition(dat3.sel(camera=config.leader), dat3.sel(camera=config.follower), config)
 
-    x_vars = ["phi", "theta", "Ofz"]
+    x_vars = list(x_ap.keys())
+    b_vars = [k for k in allVars if k not in x_vars]
+
+    b_p = pd.Series([0] * len(allVars), index=allVars)[b_vars]
+    S_b = np.identity(len(b_vars)) * 0.1
     y_vars = np.array(range(nPart))
 
     x_cov = np.identity(len(x_vars)) * np.array(x_cov_diag)
     y_cov = np.identity(nPart) * np.array(y_cov_diag) 
 
-    y_obs = Fz
+    y_obs = L_z
 
-    forwardKwArgs = {"Lz": Lz, "Lx": Lx, "Fy": Fy}
+    forwardKwArgs = {"L_x": L_x, "F_y": F_y, "F_z": F_z}
 
     # create optimal estimation object
     oe = pyOE.optimalEstimation(
-        x_vars, x_ap, x_cov, y_vars, y_obs, y_cov, forward,
+        x_vars, x_ap, x_cov, y_vars, y_obs, y_cov, forward, b_vars=b_vars, b_p=b_p, S_b=S_b,
         forwardKwArgs=forwardKwArgs, verbose=verbose
         )
 
     oe.doRetrieval()
-    return oe.x_op, oe.x_op_err
+
+    assert not np.any(np.isnan(oe.x_op))
+
+    return oe.x_op, oe.x_op_err, oe.dgf_x
 
 def probability(x, mu, sigma, delta):
 
@@ -151,25 +433,19 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
     # particle Z position difference in joint coordinate system
     if "Z" in sigma.keys():
         
+        L_x, L_z, F_y, F_z = get3DPosition(leader1D, follower1D, config)
+        F_z = F_z.T
+        F_y = F_y.T
 
-        Fz = (follower1D.roi.sel(ROI_elements="y") +
-                    (follower1D.roi.sel(ROI_elements="h")/2)).values.T
-        Lz = (leader1D.roi.sel(ROI_elements="y") +
-                    (leader1D.roi.sel(ROI_elements="h")/2)).values
-        Fy = (follower1D.roi.sel(ROI_elements="x") +
-                    (follower1D.roi.sel(ROI_elements="w")/2)).values.T
-        Lx = (leader1D.roi.sel(ROI_elements="x") +
-                    (leader1D.roi.sel(ROI_elements="w")/2)).values
-
-
-        Fz = Fz.reshape((1, len(Fz)))
-        Lz = Lz.reshape((len(Lz), 1))
-        Fy = Fy.reshape((1, len(Fy)))
-        Lx = Lx.reshape((len(Lx), 1))
+        F_z = F_z.reshape((1, len(F_z)))
+        L_z = L_z.reshape((len(L_z), 1))
+        F_y = F_y.reshape((1, len(F_y)))
+        L_x = L_x.reshape((len(L_x), 1))
         
-        Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
+        L_z_estimated = calc_L_z_withOffsets(L_x, F_y, F_z, **rotate)
+        # Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
 
-        diffZ = Fz-Fz_estimated
+        diffZ = L_z-L_z_estimated
         if testing:
 
             plt.figure()
@@ -422,7 +698,20 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
     return matchedDat, disputedPairs, new_sigma, new_mu
 
 
+def get3DPosition(leaderDat, followerDat, config):
+    F_z = (followerDat.roi.sel(ROI_elements="y") +
+                (followerDat.roi.sel(ROI_elements="h")/2)).values
+    F_y = (followerDat.roi.sel(ROI_elements="x") +
+                (followerDat.roi.sel(ROI_elements="w")/2)).values
+    L_x = (leaderDat.roi.sel(ROI_elements="x") +
+                (leaderDat.roi.sel(ROI_elements="w")/2)).values
+    L_z = (leaderDat.roi.sel(ROI_elements="y") +
+                (leaderDat.roi.sel(ROI_elements="h")/2)).values
 
+    #watch out, right hand coordinate system! 
+    F_y = config.frame_width - F_y
+
+    return L_x, L_z, F_y, F_z
 
 
 def addPosition(matchedDat, rotate, rotate_err, config):
@@ -430,25 +719,19 @@ def addPosition(matchedDat, rotate, rotate_err, config):
     add postion variable to match dataset based on retrieved rotation parameters
     '''
 
-    Fz = (matchedDat.sel(camera=config.follower).roi.sel(ROI_elements="y") +
-                (matchedDat.sel(camera=config.follower).roi.sel(ROI_elements="h")/2)).values
-    Fy = (matchedDat.sel(camera=config.follower).roi.sel(ROI_elements="x") +
-                (matchedDat.sel(camera=config.follower).roi.sel(ROI_elements="w")/2)).values
-    Lx = (matchedDat.sel(camera=config.leader).roi.sel(ROI_elements="x") +
-                (matchedDat.sel(camera=config.leader).roi.sel(ROI_elements="w")/2)).values
-    Lz = (matchedDat.sel(camera=config.leader).roi.sel(ROI_elements="y") +
-                (matchedDat.sel(camera=config.leader).roi.sel(ROI_elements="h")/2)).values
+    L_x, L_z, F_y, F_z = get3DPosition(matchedDat.sel(camera=config.leader), matchedDat.sel(camera=config.follower), config)
 
-    Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
+    # Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
+
+    L_z_estimated = calc_L_z_withOffsets(L_x, F_y, F_z, **rotate)
 
     matchedDat["position3D_elements"] = ["x", "y", "z", "z_rotated"]
-    matchedDat["position3D"] = xr.DataArray([Lx, Fy, Fz, Fz_estimated], coords=[matchedDat.position3D_elements, matchedDat.pair_id] )
+    matchedDat["position3D"] = xr.DataArray([L_x, F_y, L_z, L_z_estimated], coords=[matchedDat.position3D_elements, matchedDat.pair_id] )
 
     nid = len(matchedDat.pair_id)
     matchedDat["rotation"] = np.array(["mean", "err"])
-    matchedDat["phi"] = xr.DataArray(np.ones((nid,2))*np.array([rotate["phi"], rotate_err["phi"]]), coords=[matchedDat.pair_id, matchedDat["rotation"] ] )
-    matchedDat["theta"] = xr.DataArray(np.ones((nid,2))*np.array([rotate["theta"], rotate_err["theta"]]), coords=[matchedDat.pair_id, matchedDat["rotation"] ] )
-    matchedDat["Ofz"] = xr.DataArray(np.ones((nid,2))*np.array([rotate["Ofz"], rotate_err["Ofz"]]), coords=[matchedDat.pair_id, matchedDat["rotation"] ] )
+    for k in rotate.keys():
+        matchedDat[k] = xr.DataArray(np.ones((nid,2))*np.array([rotate[k], rotate_err[k]]), coords=[matchedDat.pair_id, matchedDat["rotation"] ] )
 
     return matchedDat
 
@@ -520,26 +803,27 @@ def matchParticles(fnameLv1Detect, config,
         nSamples4rot = 300,
         minSamples4rot = 100,
         testing=False,
-        minDMax4rot=0
+        minDMax4rot=0,
+        singleParticleFramesOnly=False
     ):
+
+    ffl1 = files.FilenamesFromLevel(fnameLv1Detect, config)
+    fname1Match = ffl1.fname["level1match"]
+    ffl1.createDirs()
 
     matchedDat = None
     matchedDat4Rot = None
 
     if np.any(rotate == "config"):
-        rotate_default = config["rotate"]
+        rotate_default = tools.getPrevRotationEstimate(ffl1.datetime64, "transformation", config)
         assert len(rotate_default) != 0
     else:
         rotate_default = rotate
     if np.any(rotate_err == "config"):
-        rotate_err_default = config["rotate_err"]
+        rotate_err_default = tools.getPrevRotationEstimate(ffl1.datetime64, "transformation_err", config)
         assert len(rotate_err_default) != 0
     else:
         rotate_err_default = rotate_err
-
-    ffl1 = files.FilenamesFromLevel(fnameLv1Detect, config)
-    fname1Match = ffl1.fname["level1match"]
-    ffl1.createDirs()
 
     print(f"opening {fnameLv1Detect}")
     try:
@@ -563,19 +847,21 @@ def matchParticles(fnameLv1Detect, config,
 
     file_starttime = leader1D.file_starttime[0].values
     
-    prevFile = ffl1.prevFile("level1detect")
-    if prevFile is not None:
-        prevFile = prevFile.replace("level1detect","level1match")
+    prevFile = ffl1.prevFile2("level1match")
+    #if prevFile is not None:
+        #prevFile = prevFile.replace("level1detect","level1match")
 
 
     if np.any( rotate =="config") and (prevFile is not None) and os.path.isfile(prevFile):
         print(f"opening prevFile for previous rotation {prevFile}")
         prevDat3 = xr.open_dataset(prevFile)
+
         rotate = prevDat3.isel(pair_id=0, rotation=0)[["phi", "theta", "Ofz"]].to_pandas()
         rotate_err = prevDat3.isel(pair_id=0, rotation=1)[["phi", "theta", "Ofz"]].to_pandas()
         prevDat3.close()
     else:
-        print("take default values for previous rotation", rotate_default)
+        print("take default values for previous rotation:")
+        print(rotate_default)
         rotate = pd.Series(rotate_default)
         rotate_err = pd.Series(rotate_err_default)
 
@@ -621,14 +907,20 @@ def matchParticles(fnameLv1Detect, config,
 
     if follower1DAll is None:
         with open('%s.nodata' % fname1Match, 'w') as f:
-            f.write(f"no follower data after reomval of blocked data {fname1Match}")
-        print(f"no follower data after reomval of blocked data {fname1Match}")
+            f.write(f"no follower data after removal of blocked data {fname1Match}")
+        print(f"no follower data after removal of blocked data {fname1Match}")
+        with open(f"{fname1Match}.nodata", "w") as f:
+                f.write("NOT ENOUGH DATA FOLLOWER BLOCKED")
+                print("NOT ENOUGH DATA FOLLOWER BLOCKED", fname1Match)
         return fname1Match, None, None, None
 
     if leader1D is None:
         with open('%s.nodata' % fname1Match, 'w') as f:
-            f.write(f"no leader data after reomval of blocked data {fname1Match}")
-        print(f"no leader data after reomval of blocked data {fname1Match}")
+            f.write(f"no leader data after removal of blocked data {fname1Match}")
+        print(f"no leader data after removal of blocked data {fname1Match}")
+        with open(f"{fname1Match}.nodata", "w") as f:
+                f.write("NOT ENOUGH DATA LEADER BLOCKED")
+                print("NOT ENOUGH DATA LEADER BLOCKED", fname1Match)
         return fname1Match, None, None, None
 
 
@@ -655,7 +947,7 @@ def matchParticles(fnameLv1Detect, config,
     matchedDats = []
     # lopp over all follower segments seperated by camera restarts
     for tt, (FR1, FR2) in enumerate(zip(timeBlocks[:-1], timeBlocks[1:])):
-        print(tt, "of", len(timeBlocks) - 1, "slice for follower restart",FR1, FR2)
+        print(tt+1, "of", len(timeBlocks) - 1, "slice for follower restart",FR1, FR2)
         if (FR1 < leaderMinTime) and (FR2 < leaderMinTime):
             print("CONTINUE, slice for follower restart",tt, FR1, FR2, "before leader time range", leaderMinTime)
             continue
@@ -672,6 +964,27 @@ def matchParticles(fnameLv1Detect, config,
         # TIMES = REGEX nach  file_starttime
         follower1D = follower1DAll.isel(fpid=TIMES)
 
+        if "makeCaptureTimeEven" in config.dataFixes:
+            #does not make sense for leader
+            # redo capture_time based on first time stamp...
+            try: 
+                follower1D = fixes.makeCaptureTimeEven(follower1D, config, dim="fpid")
+            except AssertionError  as e: 
+                print("fixes.makeCaptureTimeEven FAILED")
+                print(str(e))
+                if not rotationOnly:
+                    if np.sum(TIMES) <= 20:
+                        print(f"so little data {np.sum(TIMES)} ignore it!")
+                        continue
+                    else:
+                        with open('%s.broken.txt' % fname1Match, 'w') as f:
+                            f.write("fixes.makeCaptureTimeEven FAILED")
+                            f.write("\n")
+                            f.write(str(e))
+                            return fname1Match, None, None, None
+
+                else:
+                    continue
 
         assert np.all(np.diff(follower1D.capture_id) >= 0), "follower camera reset detected"
 
@@ -688,12 +1001,6 @@ def matchParticles(fnameLv1Detect, config,
             captureIdOffset2 = nMatched2 = -99
             error2 = str(e)
 
-        if (nMatched2 <= 1) and (nMatched1 <= 1):
-            with open(f"{fname1Match}.nodata", "w") as f:
-                f.write("NOT ENOUGH DATA")
-                print("NOT ENOUGH DATA", fname1Match)
-            return fname1Match, None, None, None
-
         if nMatched2 == nMatched1 == -99:
             print("tools.estimateCaptureIdDiff FAILED")
             print(error1)
@@ -705,7 +1012,13 @@ def matchParticles(fnameLv1Detect, config,
                     f.write("\n")
                     f.write(error1)
                     f.write(error2)
-                return fname1Match, np.nan, None, None
+                continue
+
+        if (nMatched2 <= 1) and (nMatched1 <= 1):
+            with open(f"{fname1Match}.nodata", "w") as f:
+                f.write("NOT ENOUGH DATA")
+                print("NOT ENOUGH DATA", fname1Match)
+            continue
 
 
         # In theory, capture time is much better, but there are cases were it is off. Try to identify them by chgecking whether record_time yielded more matches.
@@ -745,19 +1058,29 @@ def matchParticles(fnameLv1Detect, config,
             leader1D4rot = leader1D.copy()
 
 
-        if len(leader1D4rot.fpid) > nSamples4rot*10: #assuming we have about 10 times more particles outside the obs volume
-            leader1D4rot = leader1D4rot.isel(fpid=slice(nSamples4rot*20))
-            dataTruncated4rot = True
-        elif len(leader1D4rot.fpid) < minSamples4rot:
-            print("not enough leader data to estimate rotation")
-            doRot = False
-
         if (minDMax4rot > 0):
             filt = (follower1D.Dmax>minDMax4rot).values
             print("DMax filter follower:", minDMax4rot, np.sum(filt)/len(follower1D.fpid) * 100,"%")
             follower1D4rot = follower1D.isel(fpid=filt)
         else:
             follower1D4rot = follower1D.copy()
+
+
+        # to get rotation coefficients, using frames with only a single particle is helpful!
+        if singleParticleFramesOnly:
+            un, ii, counts = np.unique(leader1D4rot.capture_time, return_index=True, return_counts=True)
+            leader1D4rot = leader1D4rot.isel(fpid=ii[counts==1])
+
+            un, ii, counts = np.unique(follower1D4rot.capture_time, return_index=True, return_counts=True)
+            follower1D4rot = follower1D4rot.isel(fpid=ii[counts==1])
+
+
+        if len(leader1D4rot.fpid) > nSamples4rot*10: #assuming we have about 10 times more particles outside the obs volume
+            leader1D4rot = leader1D4rot.isel(fpid=slice(nSamples4rot*20))
+            dataTruncated4rot = True
+        elif len(leader1D4rot.fpid) < minSamples4rot:
+            print("not enough leader data to estimate rotation")
+            doRot = False
 
 
         if len(follower1D4rot.fpid) > nSamples4rot*10:
@@ -789,10 +1112,15 @@ def matchParticles(fnameLv1Detect, config,
             
                     x_ap = rotate
                     x_cov_diag = (rotate_err*10)**2
-                    rotate, rotate_err = retrieveRotation(matchedDat4Rot, x_ap, x_cov_diag, y_cov_diag)
+                    try: 
+                        rotate, rotate_err, dgf_x = retrieveRotation(matchedDat4Rot, x_ap, x_cov_diag, y_cov_diag, config, verbose=True)
+                    except AssertionError as e:
+                        print(f"pyOE error, taking previous values.")
+                        print(str(e))
+                        break
 
                     print("MATCH",ii, matchedDat.matchScore.mean().values, )
-                    print("ROTATE",ii,"\n", rotate ,"\n", "error","\n", rotate_err)
+                    print("ROTATE",ii,"\n", rotate ,"\n", "error","\n", rotate_err, "\n", "dgf","\n", dgf_x )
                     rotates.append(rotate)
 
                     if ii > 0:
@@ -810,7 +1138,8 @@ def matchParticles(fnameLv1Detect, config,
 
 
         if rotationOnly:
-            return fname1Match, matchedDat4Rot, rotate, rotate_err
+            continue
+            # return fname1Match, matchedDat4Rot, rotate, rotate_err
 
         if dataTruncated4rot or (not doRot):
             print("final doMatch")
@@ -844,6 +1173,10 @@ def matchParticles(fnameLv1Detect, config,
             matchedDats.append(matchedDat)
 
         # end loop camera restart
+
+    if rotationOnly:
+        return fname1Match, matchedDat4Rot, rotate, rotate_err
+
 
     if len(matchedDats) == 0:
         with open(f"{fname1Match}.nodata", "w") as f:
@@ -922,7 +1255,7 @@ def createLevel1match(case, config, skipExisting=True, version=__version__ ,
         minSamples4rot = minSamples4rot,
         testing=testing, 
 )
-            return fout, matchedDat, rot, rot_err 
+            
         except RuntimeError:
             print("matchParticles FAILED", fname1Match)
             print(str(e))
@@ -931,4 +1264,4 @@ def createLevel1match(case, config, skipExisting=True, version=__version__ ,
                 f.write("in scripts: matchParticles FAILED")
                 f.write("\r")
                 f.write(str(e))
-            return None, None, None, None 
+            

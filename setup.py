@@ -22,7 +22,7 @@ setuptools.setup(
     package_dir={"": "src"},
     packages=setuptools.find_packages(where="src"),
     python_requires=">=3.6",
-    install_requires=['numpy', 'scipy', 'xarray', 'dask[complete]', 'pandas', "pyyaml",
+    install_requires=['numpy', 'scipy', 'xarray', 'dask[complete]', 'pandas', "pyyaml", "trimesh",
                    "matplotlib", "ipywidgets", "bottleneck", "pillow", "image-packer", "addict", "pyOptimalEstimation"],
     setup_requires=['setuptools_scm'],
 )

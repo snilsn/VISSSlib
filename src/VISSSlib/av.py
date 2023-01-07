@@ -11,8 +11,7 @@ except ImportError:
     warnings.warn("opencv not available!")
 import xarray as xr
 
-from .tools import readSettings
-from .files import Filenames
+from . import *
 
 __all__ = ["VideoReader", "VideoReaderMeta"]
 
@@ -65,7 +64,7 @@ class VideoReader(cv2.VideoCapture):
 # can cause segfaults!
 
 class VideoReaderMeta(object):
-    def __init__(self, movFilePattern, metaFrames, lv1detect=None, lv1match=None, saveMode=False, config=None):
+    def __init__(self, movFilePattern, metaFrames, lv1detect=None, lv1match=None, imagesL1detect=None, saveMode=False, config=None):
         if type(metaFrames) is xr.Dataset:
             self.metaFrames = metaFrames
         else:
@@ -78,6 +77,14 @@ class VideoReaderMeta(object):
             self.lv1match = lv1match
         else:
             raise ValurError("provide level1match as Dataset with data selected for corresponding camera")
+
+        if imagesL1detect is not None:
+            self.tarFile = tools.imageTarFile.open(imagesL1detect, "r:bz2")
+            self.tarRoot = imagesL1detect.split("/")[-1].replace(".tar.bz2","")
+        else:
+            self.tarFile = None
+            self.tarRoot = None
+
         self.saveMode = saveMode
         self.config = config
 
@@ -191,6 +198,7 @@ class VideoReaderMeta(object):
         colors=[(0, 255, 0), (255, 0, 0), (0, 0 , 255), (255, 255, 0), (0, 255, 255)] * 30
 
         matchedDats = []
+        particles = {}
 
         if markParticles:
             for jj, pid in enumerate(self.currentlv1detect.pid.values):
@@ -244,12 +252,23 @@ class VideoReaderMeta(object):
                 cv2.putText(self.curentFrameC, '%i %s %s' % (partic1.pid, extra1, extraInfo),
                             (posX, posY), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
 
+                pidStr = '%07i' % pid
+                imName = '%s.png' % (pidStr)
+
+                if self.tarFile is not None:
+                    try:
+                        imfname = '%s/%s/%s' % (self.tarRoot, pidStr[:4], imName)
+                        particles[pid] = self.tarFile.extractimage(imfname)
+                    except KeyError:
+                        # print(f"{pid} not found")
+                        continue
+
             if len(matchedDats) > 0:
                 matchedDats = xr.concat(matchedDats, dim="fpair_id")
             else:
                 matchedDats = None
 
-        return self.res, self.curentFrameC, self.currentMetaFrames, self.currentlv1detect, matchedDats
+        return self.res, self.curentFrameC, self.currentMetaFrames, self.currentlv1detect, matchedDats, particles
 
 
     def getFrameByIndexWithParticles(self, ii, markParticles=False, highlightPid=None, increaseContrast=False):
@@ -286,6 +305,8 @@ class VideoReaderMeta(object):
     def release(self):
         for tt in self.threads:
             self.video[tt].release()
+        if self.tarFile is not None:
+            self.tarFile.close()
 
     def getParticle(self, pid,heightOffset=64):
         particle = self.lv1detect.sel(pid=pid)
@@ -347,10 +368,10 @@ def main():
     outFile = sys.argv[10]
 
     try:
-        config = readSettings(confFile)
+        config = tools.readSettings(confFile)
 
-        f1 = Filenames(fname1, config, version)
-        f2 = Filenames(fname2, config, version)
+        f1 = files.Filenames(fname1, config, version)
+        f2 = files.Filenames(fname2, config, version)
 
         frames = []
         video1 = VideoReaderMeta(

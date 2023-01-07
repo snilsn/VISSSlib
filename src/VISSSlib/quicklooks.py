@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import shutil
 
 from image_packer import packer
 
@@ -25,12 +26,9 @@ try:
 except ImportError:
     warnings.warn("opencv not available!")
 
-from .tools import nicerNames, readSettings
-from .av import VideoReaderMeta
-
 from . import __version__
-from . import files
-from . import tools
+from . import *
+from . import av
 
 
 
@@ -125,8 +123,9 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
     if type(config) is str:
         config = tools.readSettings(config)
-    minBlur = config["minBlur4Plotting"]
-    minSize = config["minDmax4Plotting"]
+    minBlur = config["level1detectQuicklook"]["minBlur"]
+    minSize = config["level1detectQuicklook"]["minSize"]
+
 
     total_width = (container_width + extra) * nTiles // nRows
     max_height = (20 + container_height_max) * nRows + 60
@@ -156,6 +155,11 @@ def createLevel1detectQuicklook(timestamp, camera, config,
         if (len(ff.listFiles("level0")) == 0) and (len(ff.listFiles("level0status")) == 0):
             print("NO DATA YET (TRANSFERRED?)", ff.quicklook.level1detect)
             return None, None
+
+    if len(ff.listFiles("metaFrames")) > len(ff.listFiles("level0")):
+        print("DATA TRANSFER INCOMPLETE ", ff.quicklook.level1detect)
+        print(len(ff.listFiles("level0")), "of", len(ff.listFiles("metaFrames")), "transmitted")
+        return None, None
 
     if (len(ff.listFilesExt("level1detect")) == 0) and (len(ff.listFiles("level0")) > 0):
         print("NO DATA YET ", ff.quicklook.level1detect)
@@ -190,10 +194,9 @@ def createLevel1detectQuicklook(timestamp, camera, config,
             else:
                 raise FileNotFoundError(fname2)
 
-        dat2 = dat2[["Dmax", "blur", "touchesBorder",
+        dat2 = dat2[["Dmax", "blur",
                      "record_time", "record_id", "roi"]]
-        dat2 = dat2.where((dat2.blur > minBlur) & (dat2.Dmax > minSize) & (
-            ~(dat2.touchesBorder.any('side')))).dropna('pid')
+        dat2 = dat2.isel(pid=((dat2.blur > minBlur) & (dat2.Dmax > minSize)))
 
         if len(dat2.pid) == 0:
             continue
@@ -256,10 +259,12 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                 pids = deepcopy(thisDat.fpid.values)
                 fnames = thisDat.fpid.file.values
                 tars = {}
-                for fname in fnames:
+                for fname in np.unique(fnames):
                     fn = files.FilenamesFromLevel(fname, config)
-                    tarRoot = fn.fname.imagesL1detect.split("/")[-1].replace(".tar.gz","")
-                    tars[fname] = (tools.imageTarFile.open(fn.fname.imagesL1detect, "r:gz"), tarRoot)
+                    # tarRoot = fn.fname.imagesL1detect.split("/")[-1].replace(".tar.bz2","")
+                    # tars[fname] = (tools.imageTarFile.open(fn.fname.imagesL1detect, "r:bz2"), tarRoot)
+                    # print(fn.fname.imagesL1detect)
+                    tars[fname] = tools.imageZipFile(fn.fname.imagesL1detect, "r")
 
                 nPids = len(pids)
                 np.random.seed(tt)
@@ -296,12 +301,13 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                             for k in videos.keys():
                                 videos[k].release()
 
-                            videos[thisfname_lv0] = VideoReaderMeta(
+                            videos[thisfname_lv0] = av.VideoReaderMeta(
                                 thisfname_lv0, fname)
                 #             print('opened %s'%thisfname_lv0)
 
                     particle = thisDat.sel(fpid=(fname, pid))
                     kk = int(particle.record_id.values)
+                    background = 0
                     if not readParticlesFromFiles:
                         _, frame1, _ = videos[thisfname_lv0].getFrameByIndex(
                             kk)
@@ -317,24 +323,25 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
 
                         pidStr = '%07i' % pid
-                        imName = '%s.png' % (pidStr)
-                        imfname = '%s/%s/%s' % (tars[fname][1],pidStr[:4], imName)
+                        # imName = '%s.png' % (pidStr)
+                        # imfname = '%s/%s/%s' % (tars[fname][1],pidStr[:4], imName)
                         try:
-                            im = tars[fname][0].extractimage(imfname)
+                            # im = tars[fname][0].extractimage(imfname)
+                            im = tars[fname].extractnpy(pidStr)
                         except KeyError:
-                            print("NOT FOUND ", imfname)
+                            print("NOT FOUND ", pidStr)
                             continue
                         #apply alpha channel
-                        im[...,0][im[...,1] == 0] = 0
+                        # im[...,0][im[...,1] == 0] = background
                         #drop alpha channel
                         im = im[...,0]
 
-                    im = av.doubleDynamicRange(im, offset=2)
+                    # im = av.doubleDynamicRange(im, offset=2)
 
                     im = np.pad(im, [(0, 1), (0, 1)])
                     fid = np.where(fname == np.array(ff.listFiles("metaFrames")))[0][0]
 
-                    text = np.zeros((100, 100))
+                    text = np.full((100, 100), background, dtype=np.uint8)
                     text = cv2.putText(text, '%i.%i' % (fid, pid),
                                        (0, 50), cv2.FONT_HERSHEY_PLAIN, .75, 255, 1,)
 
@@ -348,7 +355,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
                         y3 = y1+y2
                         x3 = max(x1, x2)
-                        imT = np.zeros((y3, x3), dtype=np.uint8)
+                        imT = np.full((y3, x3), background, dtype=np.uint8)
                         imT[:y1, :x1] = im
                         imT[y1:, :x2] = text
                     else:
@@ -357,7 +364,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                     totalArea += np.prod(imT.shape)
 
                 for fname in fnames:
-                    tars[fname][0].close()
+                    tars[fname].close()
 
 
                 # make tile
@@ -406,7 +413,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
     tenmm = 1e6/config["resolution"]/100
 
     title = '%s-%s-%s %s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger detections plotted, 10 mm = %.1f px =' % (
-        ff.year, ff.month, ff.day, nicerNames(camera), config["name"], minSize, minSize * config["resolution"] * 1e-6 * 1000, particlesPloted, nParticles, tenmm)
+        ff.year, ff.month, ff.day, tools.nicerNames(camera), config["name"], minSize, minSize * config["resolution"] * 1e-6 * 1000, particlesPloted, nParticles, tenmm)
 
     # new_im = cv2.putText(np.array(new_im), title,
     #                      (0, 45), FONT, FONT_SCALE, (0, 0, 0), FONT_THICKNESS,)
@@ -421,6 +428,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                15+round(tenmm), 30), fill=0, width=5)
 
     new_im.save(ff.quicklook.level1detect)
+    print("SAVED ", ff.quicklook.level1detect)
 
     return ff.quicklook.level1detect, new_im
 
@@ -535,120 +543,120 @@ class Packer_patched(packer.Packer):
         return blank_image
 
 
-def createMetaCoefQuicklook(case, config, version=__version__, skipExisting=True):
-    '''
-    Quicklooks of the coefficients obtained for matching in level3
-    '''
+# def createMetaCoefQuicklook(case, config, version=__version__, skipExisting=True):
+#     '''
+#     Quicklooks of the coefficients obtained for matching in level3
+#     '''
 
-    version = deepcopy(version)
-    versionOld = version[:8]
+#     version = deepcopy(version)
+#     versionOld = version[:8]
 
-    if type(config) is str:
-        config = readSettings(config)
+#     if type(config) is str:
+#         config = tools.readSettings(config)
 
-    leader = config["leader"]
-    follower = config["follower"]
+#     leader = config["leader"]
+#     follower = config["follower"]
 
-    fn = files.FindFiles(case, leader, config, version)
-    ff = files.FindFiles(case, follower, config, version)
-    fnOld = files.FindFiles(case, leader, config, versionOld)
-    ffOld = files.FindFiles(case, follower, config, versionOld)
+#     fn = files.FindFiles(case, leader, config, version)
+#     ff = files.FindFiles(case, follower, config, version)
+#     fnOld = files.FindFiles(case, leader, config, versionOld)
+#     ffOld = files.FindFiles(case, follower, config, versionOld)
 
-    outFile = fn.quicklook.matchCoefficients
+#     outFile = fn.quicklook.matchCoefficients
 
-    if os.path.isfile(outFile) and skipExisting:
-        print(f"skip {case} ")
-        return None, None
+#     if os.path.isfile(outFile) and skipExisting:
+#         print(f"skip {case} ")
+#         return None, None
 
-    coefFiles = fn.listFiles("metaMatchCoefficients")
-    if len(coefFiles) == 0:
-        print(f"no data {case} {fn.fnamesPattern.metaMatchCoefficients}")
-        return None, None
+#     coefFiles = fn.listFiles("metaMatchCoefficients")
+#     if len(coefFiles) == 0:
+#         print(f"no data {case} {fn.fnamesPattern.metaMatchCoefficients}")
+#         return None, None
 
-    print(f"running {case}")
+#     print(f"running {case}")
 
-    dat3 = xr.open_mfdataset(coefFiles, concat_dim="file_starttime")
-    print("VERSION HACK")
+#     dat3 = xr.open_mfdataset(coefFiles, concat_dim="file_starttime")
+#     print("VERSION HACK")
 
-    fig, (bx1, bx2, bx3, bx4) = plt.subplots(
-        figsize=(10, 10), nrows=4, sharex=True)
+#     fig, (bx1, bx2, bx3, bx4) = plt.subplots(
+#         figsize=(10, 10), nrows=4, sharex=True)
 
-    dat3Stats = dat3.isel(iteration=1)
+#     dat3Stats = dat3.isel(iteration=1)
 
-    bx1.plot(dat3Stats.file_firsttime,
-             dat3Stats.usedSamples, marker=".", ls="None")
-    bx1.set_yscale("log")
-    bx1.set_ylabel("Used matches  [#]")
+#     bx1.plot(dat3Stats.file_firsttime,
+#              dat3Stats.usedSamples, marker=".", ls="None")
+#     bx1.set_yscale("log")
+#     bx1.set_ylabel("Used matches  [#]")
 
-    bx2.fill_between(dat3Stats.file_firsttime, (dat3Stats.muH + dat3Stats.sigmaH),
-                     (dat3Stats.muH - dat3Stats.sigmaH), facecolor='C1', alpha=0.4)
-    bx2.plot(dat3Stats.file_firsttime, dat3Stats.muH,
-             marker=".", ls="None", color="C1")
-    bx2.set_ylabel("Height difference [px]")
-    bx2.axhline(0, color="gray")
+#     bx2.fill_between(dat3Stats.file_firsttime, (dat3Stats.muH + dat3Stats.sigmaH),
+#                      (dat3Stats.muH - dat3Stats.sigmaH), facecolor='C1', alpha=0.4)
+#     bx2.plot(dat3Stats.file_firsttime, dat3Stats.muH,
+#              marker=".", ls="None", color="C1")
+#     bx2.set_ylabel("Height difference [px]")
+#     bx2.axhline(0, color="gray")
 
-    bx3.fill_between(dat3Stats.file_firsttime, (dat3Stats.muY + dat3Stats.sigmaY),
-                     (dat3Stats.muY - dat3Stats.sigmaY), facecolor='C2', alpha=0.4)
-    bx3.plot(dat3Stats.file_firsttime, dat3Stats.muY,
-             marker=".", ls="None", color="C2")
-    bx3.set_ylabel("Y position difference [px]")
+#     bx3.fill_between(dat3Stats.file_firsttime, (dat3Stats.muY + dat3Stats.sigmaY),
+#                      (dat3Stats.muY - dat3Stats.sigmaY), facecolor='C2', alpha=0.4)
+#     bx3.plot(dat3Stats.file_firsttime, dat3Stats.muY,
+#              marker=".", ls="None", color="C2")
+#     bx3.set_ylabel("Y position difference [px]")
 
-    bx4.fill_between(dat3Stats.file_firsttime, (dat3Stats.muT + dat3Stats.sigmaT)
-                     * 1000, (dat3Stats.muT - dat3Stats.sigmaT)*1000, facecolor='C3', alpha=0.4)
-    bx4.plot(dat3Stats.file_firsttime, dat3Stats.muT *
-             1000, marker=".", ls="None", color="C3")
-    bx4.set_ylabel("Time difference [ms]")
-    # bx4.axhline(1/config["fps"], color= "gray")
-    # bx4.axhline(-1/config["fps"], color= "gray")
-    bx4.axhline(0, color="gray")
+#     bx4.fill_between(dat3Stats.file_firsttime, (dat3Stats.muT + dat3Stats.sigmaT)
+#                      * 1000, (dat3Stats.muT - dat3Stats.sigmaT)*1000, facecolor='C3', alpha=0.4)
+#     bx4.plot(dat3Stats.file_firsttime, dat3Stats.muT *
+#              1000, marker=".", ls="None", color="C3")
+#     bx4.set_ylabel("Time difference [ms]")
+#     # bx4.axhline(1/config["fps"], color= "gray")
+#     # bx4.axhline(-1/config["fps"], color= "gray")
+#     bx4.axhline(0, color="gray")
 
 
-    tStart = dat3Stats.file_firsttime.to_pandas().index[0].replace(hour=0, minute=0, second=0)
-    tEnd = dat3Stats.file_firsttime.to_pandas().index[-1].replace(hour=23, minute=59, second=59)
+#     tStart = dat3Stats.file_firsttime.to_pandas().index[0].replace(hour=0, minute=0, second=0)
+#     tEnd = dat3Stats.file_firsttime.to_pandas().index[-1].replace(hour=23, minute=59, second=59)
     
-    eventDatL = xr.open_dataset(fnOld.listFiles("metaEvents")[0])
-    for event in eventDatL.event:
-        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
-            for bx in [bx1,bx2,bx3,bx4]:
-                bx.axvline(event.file_starttime.values, color="r")
-    lBlocked = (eventDatL.blocking.sel(blockingThreshold=50) > 0.1)
-    lBlocked = lBlocked.file_starttime.where(lBlocked).values
-    for bx in [bx1,bx2,bx3,bx4]:
-        ylim = bx.get_ylim() 
-        bx.fill_between(lBlocked, [ylim[0]]*len(lBlocked), [ylim[1]]*len(lBlocked), color="red", alpha=0.25, label="Leader")
-        bx.set_ylim(ylim) 
+#     eventDatL = xr.open_dataset(fnOld.listFiles("metaEvents")[0])
+#     for event in eventDatL.event:
+#         if str(event.values).startswith("start") or str(event.values).startswith("launch"):
+#             for bx in [bx1,bx2,bx3,bx4]:
+#                 bx.axvline(event.file_starttime.values, color="r")
+#     lBlocked = (eventDatL.blocking.sel(blockingThreshold=50) > 0.1)
+#     lBlocked = lBlocked.file_starttime.where(lBlocked).values
+#     for bx in [bx1,bx2,bx3,bx4]:
+#         ylim = bx.get_ylim() 
+#         bx.fill_between(lBlocked, [ylim[0]]*len(lBlocked), [ylim[1]]*len(lBlocked), color="red", alpha=0.25, label="Leader")
+#         bx.set_ylim(ylim) 
 
-    eventDatF = xr.open_dataset(ffOld.listFiles("metaEvents")[0])
-    for event in eventDatF.event:
-        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
-            for bx in [bx1,bx2,bx3,bx4]:
-                bx.axvline(event.file_starttime.values, color="blue")
-    fBlocked = (eventDatF.blocking.sel(blockingThreshold=50) > 0.1)
-    fBlocked = fBlocked.file_starttime.where(fBlocked).values
-    for bx in [bx1,bx2,bx3,bx4]:
-        ylim = bx.get_ylim() 
-        bx.fill_between(fBlocked, [ylim[0]]*len(fBlocked), [ylim[1]]*len(fBlocked), color="blue", alpha=0.25, label="Follower")
-        bx.set_ylim(ylim) 
+#     eventDatF = xr.open_dataset(ffOld.listFiles("metaEvents")[0])
+#     for event in eventDatF.event:
+#         if str(event.values).startswith("start") or str(event.values).startswith("launch"):
+#             for bx in [bx1,bx2,bx3,bx4]:
+#                 bx.axvline(event.file_starttime.values, color="blue")
+#     fBlocked = (eventDatF.blocking.sel(blockingThreshold=50) > 0.1)
+#     fBlocked = fBlocked.file_starttime.where(fBlocked).values
+#     for bx in [bx1,bx2,bx3,bx4]:
+#         ylim = bx.get_ylim() 
+#         bx.fill_between(fBlocked, [ylim[0]]*len(fBlocked), [ylim[1]]*len(fBlocked), color="blue", alpha=0.25, label="Follower")
+#         bx.set_ylim(ylim) 
 
-    bx1.legend() 
-    bx1.grid(True)
-    bx2.grid(True)
-    bx3.grid(True)
-    bx4.grid(True)
+#     bx1.legend() 
+#     bx1.grid(True)
+#     bx2.grid(True)
+#     bx3.grid(True)
+#     bx4.grid(True)
 
 
-    bx4.set_xlim(
-        tStart, 
-        tEnd,
-    )
+#     bx4.set_xlim(
+#         tStart, 
+#         tEnd,
+#     )
 
-    fig.suptitle(f"{fn.year}-{fn.month}-{fn.day}")
-    fig.tight_layout()
+#     fig.suptitle(f"{fn.year}-{fn.month}-{fn.day}")
+#     fig.tight_layout()
 
-    fn.createQuicklookDirs()
-    print(outFile)
-    fig.savefig(outFile)
-    return outFile, fig
+#     fn.createQuicklookDirs()
+#     print(outFile)
+#     fig.savefig(outFile)
+#     return outFile, fig
 
 
 def metaFramesQuicklook(
@@ -660,7 +668,7 @@ def metaFramesQuicklook(
     """
 
     if type(config) is str:
-        config = readSettings(config)
+        config = tools.readSettings(config)
         
 
     global metaDats
@@ -683,14 +691,14 @@ def metaFramesQuicklook(
 
     if plotCompleteOnly and not ff.isCompleteMetaFrames:
         print("NOT COMPLETE YET %i of %i %s" %
-              (len(ff.listFilesExt("metaFrames")), len(ff.listFiles("level0txt")),  ff.fnamesPattern.level1match))
+              (len(ff.listFilesExt("metaFrames")), len(ff.listFiles("level0txt")),  ff.fnamesPattern.metaFrames))
         return None, None
 
 
 
     print(case, camera, fOut)
 
-    if len(ff.listFiles("level0")) == 0 and len(ff.listFiles("level0status")) == 0:
+    if len(ff.listFiles("level0txt")) == 0 and len(ff.listFiles("level0status")) == 0:
         print(case, "no data")
 
         return None, None
@@ -708,6 +716,10 @@ def metaFramesQuicklook(
         events = xr.open_dataset(ff.listFiles("metaEvents")[0])
     except :
         print(f'{ff.listFiles("metaEvents")[0]} broken')
+        return None, None
+
+    if len(events.data_vars) == 0:
+        print(f'{ff.listFiles("metaEvents")[0]} empty')
         return None, None
 
     if not ff.isCompleteMetaFrames:
@@ -765,7 +777,14 @@ def metaFramesQuicklook(
             ax1.plot(metaDats.capture_time, delay)
             ax1.set_ylabel('record delay [s]', fontsize=20)
 
+    isBlocked = (events.blocking.dropna("file_starttime").sel(blockingThreshold=50) > 0.1)
+    isBlocked = isBlocked.file_starttime.where(isBlocked).values
+
+
+
     ylim = ax1.get_ylim() 
+    if isBlocked.any():
+        ax1.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
     ax1.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
     ax1.set_title(r"$\bf{" + str(camera_new) + "}$""\n""queue size", fontsize=20)
     ax1.set_ylim(ylim)
@@ -777,19 +796,24 @@ def metaFramesQuicklook(
     if metaDats is not None:
         frames=metaDats.capture_time.notnull().resample(capture_time="5T").sum()
         ax2.plot(frames.capture_time, frames)
-    ylim = [0,config.fps*60*1.1]
+    ylim = [0,config.fps*5*60*1.05]
+    if isBlocked.any():
+        ax2.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
     ax2.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
     ax2.set_ylim(ylim)
     ax2.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
-    ax2.set_title('total frames / min', fontsize=20)
+    ax2.set_title('total frames / 5 min', fontsize=20)
     ax2.set_ylabel('frames', fontsize=20)
     ax2.tick_params(axis='both', labelsize=15)
     ax2.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
     ax2.grid()
 
-    if len(events.blocking.isel(blockingThreshold=[2, 4, 6, 8, 10]).dropna("file_starttime")) != 0:
-        events.blocking.isel(blockingThreshold=[2, 4, 6, 8, 10]).dropna("file_starttime").plot.line(x="file_starttime")
+
+    if len(events.blocking.isel(blockingThreshold=range(0, len(events.blockingThreshold), 2)).dropna("file_starttime")) != 0:
+        events.blocking.isel(blockingThreshold=range(0, len(events.blockingThreshold), 2)).dropna("file_starttime").plot.line(x="file_starttime")
         ylim = [0,1]
+        if isBlocked.any():
+            ax3.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
         ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5)
         ax3.set_ylim(ylim)
         ax3.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
@@ -802,6 +826,8 @@ def metaFramesQuicklook(
         ax3.grid()
 
     else: 
+        if isBlocked.any():
+            ax3.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
         ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5)
         ax3.set_ylim(0,1)
         ax3.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
@@ -823,10 +849,13 @@ def metaFramesQuicklook(
                     label = None
                 bx.axvline(event.file_starttime.values, color="red", ls=":", label=label)
 
-    ax1.legend(fontsize=15, bbox_to_anchor=(1, 1.3))
+    ax1.legend(fontsize=15, bbox_to_anchor=(1, 1.4))
 
     ff.createQuicklookDirs()
     fig.savefig(fOut)
+
+    if ff.datetime.date() == datetime.datetime.today().date():
+        shutil.copy(fOut, ff.quicklookCurrent.metaFrames)
 
     if metaDats is not None: metaDats.close()
     events.close()
@@ -837,7 +866,9 @@ def metaFramesQuicklook(
 
 
 
-def createLevel1matchQuicklook(case, config, skipExisting = True, version=__version__, plotCompleteOnly=True):
+def createLevel1matchQuicklook(case, config, skipExisting = True, version=__version__, plotCompleteOnly=True, minMatchScore=1e-3):
+
+    resample = "5T" # 5 mins
 
     # find files
     fl = files.FindFiles(case, config["leader"], config, version)
@@ -886,9 +917,11 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     assert len(fnames1DL)>0
     assert len(fnames1DF)>0
 
-    datM = tools.open_mflevel1match(fnames1M, config)        
-    datDL = tools.open_mflevel1detect(fnames1DL, config, skipFixes="all", datVars=["Dmax", "capture_time", "touchesBorder"])        
-    datDF = tools.open_mflevel1detect(fnames1DF, config, skipFixes="all", datVars=["Dmax", "capture_time", "touchesBorder"])        
+    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position3D", "roi", "theta", "phi", "Ofz"])        
+    datM = datMfull.isel(fpair_id=(datMfull.matchScore >= minMatchScore))
+
+    datDL = tools.open_mflevel1detect(fnames1DL, config, skipFixes="all", datVars=["Dmax", "capture_time"])        
+    datDF = tools.open_mflevel1detect(fnames1DF, config, skipFixes="all", datVars=["Dmax", "capture_time"])        
 
     fig, axcax = plt.subplots(nrows=9, ncols=2, figsize=(10,15),gridspec_kw={"width_ratios":[1, 0.01], "height_ratios":[2, 2, 2, 1, 1, 1, 1, 1, 1]})
     
@@ -900,9 +933,9 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     
     
     Dmax = datM.Dmax.mean("camera").values
-    _, rs = plotVar(Dmax, datM.capture_time, ax[0], "Counts [-]", func="count", label="matched", color="C1")
-    _, rs1 = plotVar(datDL.Dmax, datDL.capture_time, ax[0], "Counts [-]", func="ratio", label="ratio leader", color="C2", ratiovar=rs)
-    _, rs1 = plotVar(datDF.Dmax, datDF.capture_time, ax[0], "Counts [-]", func="ratio", label="ratio follower", color="C3", ratiovar=rs)
+    _, rs = plotVar(Dmax, datM.capture_time, ax[0], "Counts [-]", func="count", label="matched", color="C1", resample=resample)
+    _, rs1 = plotVar(datDL.Dmax, datDL.capture_time, ax[0], "Counts [-]", func="ratio", label="ratio leader", color="C2", ratiovar=rs, resample=resample)
+    _, rs1 = plotVar(datDF.Dmax, datDF.capture_time, ax[0], "Counts [-]", func="ratio", label="ratio follower", color="C3", ratiovar=rs, resample=resample)
     ax[0].set_yscale("log")
     cax[0].axis('off')
     ax[0].legend()
@@ -912,36 +945,47 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     bins=np.logspace(0,2.5,21)
     _, _ = plot2dhist(Dmax, datM.capture_time, ax[1], cax[1],bins, ylabel="Dmax [px]", cbarlabel="%")
     
-    matchScore = datM.matchScore.values
+    matchScore = datMfull.matchScore.values
     bins=np.logspace(-10,0, 41)
-    _, _ = plot2dhist(matchScore, datM.capture_time, ax[2], cax[2], bins, ylabel="match score [-]", cbarlabel="%")
+    _, _ = plot2dhist(matchScore, datMfull.capture_time, ax[2], cax[2], bins, ylabel="match score [-]", cbarlabel="%")
+    ax[2].axhline(minMatchScore)
     
-    zDiff = datM.position.sel(position_elements=["z", "z_rotated"]).diff("position_elements").values.squeeze()
-    _, rs = plotVar(zDiff, datM.capture_time, ax[3], "z difference [px]", axhline=0)
+    zDiff = datM.position3D.sel(position3D_elements=["z", "z_rotated"]).diff("position3D_elements").values.squeeze()
+    _, rs = plotVar(zDiff, datM.capture_time, ax[3], "z difference [px]", axhline=0, resample=resample)
     cax[3].axis('off')
     
     
     hDiff = datM.roi.sel(ROI_elements="h").diff("camera").values.squeeze()
-    _, _ = plotVar(hDiff, datM.capture_time, ax[4], "h difference [px]", axhline=0)
+    _, _ = plotVar(hDiff, datM.capture_time, ax[4], "h difference [px]", axhline=0, resample=resample)
     cax[4].axis('off')
 
     tDiff = datM.capture_time.diff("camera").values.squeeze().astype(int)*1e-9
-    _, _ = plotVar(tDiff, datM.capture_time, ax[5], "t difference [s]", axhline=0)
+    _, _ = plotVar(tDiff, datM.capture_time, ax[5], "t difference [s]", axhline=0, resample=resample)
     cax[5].axis('off')
 
+    defaultRotation = tools.getPrevRotationEstimate(ff.datetime64, "transformation", config)
 
     theta = datM.theta.sel(rotation="mean").values.squeeze()
-    _, _ = plotVar(theta, datM.capture_time.isel(camera=0), ax[6], "theta", axhline=config.rotate.theta)
+    _, _ = plotVar(theta, datM.capture_time.isel(camera=0), ax[6], "theta", axhline=defaultRotation.theta, resample=resample)
     phi = datM.phi.sel(rotation="mean").values.squeeze()
-    _, _ = plotVar(phi, datM.capture_time.isel(camera=0), ax[7], "phi", axhline=config.rotate.phi)
+    _, _ = plotVar(phi, datM.capture_time.isel(camera=0), ax[7], "phi", axhline=defaultRotation.phi, resample=resample)
     Ofz = datM.Ofz.sel(rotation="mean").values.squeeze()
-    _, _ = plotVar(Ofz, datM.capture_time.isel(camera=0), ax[8], "Ofz", axhline=config.rotate.Ofz)
+    _, _ = plotVar(Ofz, datM.capture_time.isel(camera=0), ax[8], "Ofz", axhline=defaultRotation.Ofz, resample=resample)
 
     cax[6].axis('off')
     cax[7].axis('off')
     cax[8].axis('off')
 
-    
+    fnamesMD = {}    
+    fnamesMD["leader"] = fl.listFilesWithNeighbors("metaDetection")
+    fnamesMD["follower"] = ff.listFilesWithNeighbors("metaDetection")
+    timeIndex1 = pd.date_range(start=case, end=fl.datetime64 +
+                              np.timedelta64(1, "D"), freq=resample, inclusive="both")
+    blowingSnow = tools.identifyBlowingSnowData(fnamesMD, config, timeIndex1)
+    blowingSnowL = blowingSnow.sel(camera="leader")
+    blowingSnowF = blowingSnow.sel(camera="follower")
+    blowingSnowL = blowingSnowL.time.where(blowingSnowL > 0.01).values # i.e. 1% of the frames is lost
+    blowingSnowF = blowingSnowF.time.where(blowingSnowF > 0.01).values # i.e. 1% of the frames is lost
 
     eventDatL = xr.open_dataset(fl.listFiles("metaEvents")[0])
     for event in eventDatL.event:
@@ -952,7 +996,8 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     lBlocked = lBlocked.file_starttime.where(lBlocked).values
     for bx in ax:
         ylim = bx.get_ylim() 
-        bx.fill_between(lBlocked, [ylim[0]]*len(lBlocked), [ylim[1]]*len(lBlocked), color="red", alpha=0.25, label="Leader")
+        bx.fill_between(lBlocked, [ylim[0]]*len(lBlocked), [ylim[1]]*len(lBlocked), color="red", alpha=0.25, label="blocked leader")
+        bx.fill_between(blowingSnowL, [ylim[0]]*len(blowingSnowL), [ylim[1]]*len(blowingSnowL), color="orange", alpha=0.25, label="blow. snow leader", hatch='///')
         bx.set_ylim(ylim) 
 
     eventDatF = xr.open_dataset(ff.listFiles("metaEvents")[0])
@@ -964,7 +1009,8 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     fBlocked = fBlocked.file_starttime.where(fBlocked).values
     for bx in ax:
         ylim = bx.get_ylim() 
-        bx.fill_between(fBlocked, [ylim[0]]*len(fBlocked), [ylim[1]]*len(fBlocked), color="blue", alpha=0.25, label="Follower")
+        bx.fill_between(fBlocked, [ylim[0]]*len(fBlocked), [ylim[1]]*len(fBlocked), color="blue", alpha=0.25, label="blocked follower")
+        bx.fill_between(blowingSnowF, [ylim[0]]*len(blowingSnowF), [ylim[1]]*len(blowingSnowF), color="purple", alpha=0.25, label="blow. snow follower", hatch='///')
         bx.set_ylim(ylim) 
 
     ax[1].legend() 

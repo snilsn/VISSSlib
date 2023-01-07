@@ -2,7 +2,9 @@
 
 Conda dependencies
 
-    conda install numpy  scipy  xarray  dask[complete]  pandas pyyaml matplotlib bottleneck pillow  addict opencv Pillow netcdf4 ipywidgets
+    conda install numpy  scipy  xarray  dask[complete]  pandas pyyaml matplotlib bottleneck pillow  addict opencv Pillow netcdf4 ipywidgets trimesh
+
+Note that trimesh also requires Blender or OpenSCAD which is not available through conda. 
 
 PIP dependencies
 

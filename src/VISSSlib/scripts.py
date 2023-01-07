@@ -6,6 +6,7 @@ import multiprocessing
 import subprocess
 import collections
 import logging
+import time
 import shlex
 from functools import partial
 
@@ -78,7 +79,7 @@ def loopLevel1matchQuicklooks(settings, version=__version__, nDays = 0, skipExis
 
     config = tools.readSettings(settings)
 
-    days = tools.getDateRange(nDays, config)
+    days = tools.getDateRange(nDays, config, endYesterday=False)
 
     for dd in days:
 
@@ -156,6 +157,24 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
         for camera in config.instruments:
             metadata.createEvent(case, camera, config, skipExisting=True)
 
+def loopCreateLevel2match(settings, skipExisting=True, nDays = 0):
+
+
+    config = tools.readSettings(settings)
+
+    days = tools.getDateRange(nDays, config, endYesterday=False)
+
+    for dd in days:
+
+        year = str(dd.year)
+        month = "%02i" % dd.month
+        day = "%02i" % dd.day
+        case = f"{year}{month}{day}"
+
+        distributions.createLevel2match(case, config, skipExisting=True)
+
+
+
 
 def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"):
 
@@ -185,7 +204,7 @@ def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"
 def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, stdout=subprocess.DEVNULL, nCPU=1):
 
     '''
-    We need this worker function becuase  we want to do the detection by indiependent 
+    We need this worker function becuase  we want to do the detection by indipendent 
     processes in parallel
     '''
     config = tools.readSettings(settings)
@@ -194,11 +213,15 @@ def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, stdout=subp
 
     errorlines = collections.deque([], 50)
     
+
+    #avoid tmp file race condition
+    time.sleep(np.random.random())
             
     fn = files.Filenames(fname, config, __version__)
     camera = fn.camera
     
     fn.createDirs()
+    tmpFile = os.path.basename('%s.processing.txt' % fn.fname.level1detect)
     if skipExisting and ( os.path.isfile('%s' % fn.fname.level1detect)):
         # log.info('output exists %s %s' % (fname, fn.fname.level1detect))
         return 0
@@ -208,54 +231,52 @@ def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, stdout=subp
     elif skipExisting and (os.path.isfile('%s.broken.txt' % fn.fname.level1detect)):
         log.error('output broken %s %s' % (fname, fn.fname.level1detect))
         return 1
-    elif skipExisting and ( os.path.isfile(os.path.basename('%s.processing.txt' % fn.fname.level1detect))):
-        log.info('output processing %s %s' % (fname, fn.fname.level1detect))
-        return 0
     elif skipExisting and ( os.path.isfile('%s.nodata' % fn.fname.metaFrames)):
         log.info('metaFrames contains no data %s %s' % (fname, fn.fname.metaFrames))
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('metaFrames contains no data %s %s' % (fname, fn.fname.metaFrames))
         return 0
+    elif skipExisting and ( os.path.isfile(tmpFile)):
+        log.info('output processing %s %s' % (fname, fn.fname.level1detect))
+        return 0
     else:
         pass
 
-
-    tmpFile = os.path.basename('%s.processing.txt' % fn.fname.level1detect)
+    # with statement extended to avoid race conditions
     with open(tmpFile, 'w') as f:
         f.write('%i %s' % (os.getpid(), socket.gethostname()))
         print("written", tmpFile, "in", os.getcwd())
         
-    BIN = os.path.join(sys.exec_prefix, "bin", "python")
+        BIN = os.path.join(sys.exec_prefix, "bin", "python")
 
-    if nCPU is None:
-        command = f"{BIN} -m VISSSlib detection.detectParticles  {fname} {settings}"
-    else:
-        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib detection.detectParticles  {fname} {settings}"
-
-    log.info(command)
-    # sleep to avoid py38 env not found error
-    with subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=stdout, universal_newlines=True) as proc:
-        try:
-            for line in proc.stdout:
-                print(str(line),end='')
-        except TypeError:
-            pass
-        for line in proc.stderr:
-            print(str(line),end='')
-            errorlines.append(line)
-        proc.wait() # required, otherwise returncode can be none is process is too fast
-        if proc.returncode != 0:
-            with open('%s.broken.txt' % fn.fname.level1detect, 'w') as f:
-                
-                for errorline in list(errorlines):
-                    f.write(errorline)
-                f.write("\r")
-                f.write(command)
-            log.info(f"{fname} BROKEN {proc.returncode}")
+        if nCPU is None:
+            command = f"{BIN} -m VISSSlib detection.detectParticles  {fname} {settings}"
         else:
-            log.info(f"{fname} SUCCESS {proc.returncode}")
+            command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib detection.detectParticles  {fname} {settings}"
+
+        log.info(command)
+        with subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=stdout, universal_newlines=True) as proc:
+            try:
+                for line in proc.stdout:
+                    print(str(line),end='')
+            except TypeError:
+                pass
+            for line in proc.stderr:
+                print(str(line),end='')
+                errorlines.append(line)
+            proc.wait() # required, otherwise returncode can be none is process is too fast
+            if proc.returncode != 0:
+                with open('%s.broken.txt' % fn.fname.level1detect, 'w') as f:
+                    
+                    for errorline in list(errorlines):
+                        f.write(errorline)
+                    f.write("\r")
+                    f.write(command)
+                log.info(f"{fname} BROKEN {proc.returncode}")
+            else:
+                log.info(f"{fn.fname.level1detect} SUCCESS {proc.returncode}")
     try:
-        os.remove(os.path.basename('%s.processing.txt' % fn.fname.level1detect))
+        os.remove(tmpFile)
     except:
         pass
     
@@ -272,7 +293,7 @@ def loopCreateLevel1detect(settings, skipExisting=True, nDays = 0, cameras = "al
     log = logging.getLogger()
 
 
-    days = tools.getDateRange(nDays, config)
+    days = tools.getDateRange(nDays, config, endYesterday=False)
     if cameras == "all":
         cameras = [config.follower, config.leader]
 
@@ -320,7 +341,7 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0, version=__vers
 
     config = tools.readSettings(settings)
 
-    days = tools.getDateRange(nDays, config)
+    days = tools.getDateRange(nDays, config, endYesterday=False)
     leader = config["leader"]
     follower = config["follower"]
     
@@ -353,9 +374,9 @@ def loopCreateLevel1matchWorker(day, settings=None, skipExisting=True, nCPU=1, s
     BIN = os.path.join(sys.exec_prefix, "bin", "python")
 
     if nCPU is None:
-        command = f"{BIN} -m VISSSlib scripts.loopCreateLevel1match   {settings} {day}"
+        command = f"{BIN} -m VISSSlib scripts.loopCreateLevel1match   {settings} {day} {int(skipExisting)}"
     else:
-        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib scripts.loopCreateLevel1match   {settings} {day}"
+        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib scripts.loopCreateLevel1match   {settings} {day} {int(skipExisting)} 0"
 
     log.info(command)
     errorlines = collections.deque([], 50)
@@ -396,15 +417,16 @@ def loopCheckCompleteness(settings, nDays = 0, cameras = "all", checkDuplicates=
         for camera in cameras:
             # find files
             ff = files.FindFiles(case, camera, config)
+            # l0 = ff.isCompleteL0
             mf = ff.isCompleteMetaFrames
             l1d = ff.isCompleteL1detect
             l1m = ff.isCompleteL1match
-            products = ["metaFrames", "level1detect", "level1match"]
+            products = ["metaFrames", "level1detect", "level1match"] #"level0", 
 
             if camera == config.leader:
-                allDone = [mf, l1d, l1m]
+                allDone = [mf, l1d, l1m] #"level0", 
             else:
-                allDone = [mf, l1d]
+                allDone = [mf, l1d] #"level0", 
             if np.all(allDone):
                 print(camera, case, "all done", np.all(allDone))
             else:

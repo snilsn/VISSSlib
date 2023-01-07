@@ -56,6 +56,7 @@ class _stereoViewMatch(object):
         self.lv1detect = {}
         self.videos = {}
         self.idDiffs = {}
+        self.imagesL1detect = {}
 
         fnamesLv0[self.config.leader] = fL.listFiles("level0")[0]
         fnames0F = fL1.filenamesOtherCamera(graceInterval=-1, level="level0")
@@ -64,9 +65,9 @@ class _stereoViewMatch(object):
             fnames0F = fnames0F[:1]
         fnamesLv0[self.config.follower] = fnames0F[0]
 
-        self.meta[self.config.leader] = tools.open_mfmetaFrames(fL.listFiles("metaFrames"), self.config, skipFixes=["makeCaptureTimeEven"])
-        self.lv1detect[self.config.leader] = tools.open_mflevel1detect(fL.listFiles("level1detect"), self.config, skipFixes=["makeCaptureTimeEven"])
-        
+        self.meta[self.config.leader] = tools.open_mfmetaFrames(fL.listFiles("metaFrames"), self.config)
+        self.lv1detect[self.config.leader] = tools.open_mflevel1detect(fL.listFiles("level1detect"), self.config)
+        self.imagesL1detect[self.config.leader] = fL.listFiles("imagesL1detect")[0]
         fnamesMF = fL1.filenamesOtherCamera(graceInterval=-1, level="metaFrames")
         if len(fnamesMF)>1:
             print("Cannot handle camera restarts yet, taking only first file, omitting", fnamesMF[1:])
@@ -76,12 +77,13 @@ class _stereoViewMatch(object):
             print("Cannot handle camera restarts yet, taking only first file, omitting", fnames1F[1:])
             fnames1F = fnames1F[:1]
 
-        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config, skipFixes=["makeCaptureTimeEven"])
-        self.lv1detect[self.config.follower] = tools.open_mflevel1detect(fnames1F, self.config, skipFixes=["makeCaptureTimeEven"])
+        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config)
+        self.lv1detect[self.config.follower] = tools.open_mflevel1detect(fnames1F, self.config)
         
         self.lv1match = tools.open_mflevel1match(fL.listFiles("level1match"), self.config)
-        
+        self.imagesL1detect[self.config.follower] = fL1.filenamesOtherCamera(graceInterval=-1, level="imagesL1detect")[0]
 
+        print(self.imagesL1detect)
         # #get capture ID diffs
         # self.idDiff, nMatched = tools.estimateCaptureIdDiffCore(*self.meta.values(), "capture_time", nPoints=500, timeDim="record_time")
         # idDiff2, nMatched = tools.estimateCaptureIdDiffCore(*self.lv1detect.values(), "fpid", nPoints=500, timeDim="record_time")
@@ -121,6 +123,7 @@ class _stereoViewMatch(object):
                 self.meta[camera], 
                 lv1detect=self.lv1detect[camera], 
                 lv1match=self.lv1match.sel(camera=camera), 
+                imagesL1detect=self.imagesL1detect[camera],
                 config=self.config, 
                 saveMode=False
             )
@@ -147,45 +150,47 @@ class _stereoViewMatch(object):
                 # print(f"found record {rr} in {camera} data at {captureTime}")
     
                 # print(camera, captureTime)
-                res, self.frame1, meta1, meta2, meta3 = self.videos[camera].getFrameByCaptureTimeWithParticles(captureTime, markParticles=self.markParticles, highlightPid="meta", increaseContrast=self.increaseContrast)
+                res, self.frame1, meta1, meta2, meta3, particle1 = self.videos[camera].getFrameByCaptureTimeWithParticles(captureTime, markParticles=self.markParticles, highlightPid="meta", increaseContrast=self.increaseContrast)
                 if self.frame1 is not None:
                     frame.append(self.frame1)
-                    if meta2 is not None:
+                if particle1 is not None:
+                    particles[camera] = particle1
+                    # if meta2 is not None:
                         
-                        for fpid in meta2.fpid.values:
-                            thisMeta2 = meta2.sel(fpid=fpid)
-                            cnt = thisMeta2.cnt.values[thisMeta2.cnt.values[...,0]>=0]
-                            thisFrame = self.frame1[self.config.height_offset:,:,0]
-                            particleBoxMask, xOffset, yOffset = detection.extractRoi(thisMeta2.roi.values, cv2.fillPoly(np.zeros_like(thisFrame), pts =np.array([cnt], dtype=np.int32), color=255))
-                            particleBox, xOffset, yOffset = detection.extractRoi(thisMeta2.roi.values, thisFrame)
-                            particleBoxCropped = deepcopy(particleBox)
-                            particleBoxCropped[particleBoxMask == 0] = 255
+                        # for fpid in meta2.fpid.values:
+                            # thisMeta2 = meta2.sel(fpid=fpid)
+                            # cnt = thisMeta2.cnt.values[thisMeta2.cnt.values[...,0]>=0]
+                            # thisFrame = self.frame1[self.config.height_offset:,:,0]
+                            # particleBoxMask, xOffset, yOffset = detection.extractRoi(thisMeta2.roi.values, cv2.fillPoly(np.zeros_like(thisFrame), pts =np.array([cnt], dtype=np.int32), color=255))
+                            # particleBox, xOffset, yOffset = detection.extractRoi(thisMeta2.roi.values, thisFrame)
+                            # particleBoxCropped = deepcopy(particleBox)
+                            # particleBoxCropped[particleBoxMask == 0] = 255
 
-                            # particleBox = np.concatenate((particleBox, particleBoxMask),-1)
-                            particleBox = np.hstack((particleBox, particleBoxCropped ) )
+                            # # particleBox = np.concatenate((particleBox, particleBoxMask),-1)
+                            # particleBox = np.hstack((particleBox, particleBoxCropped ) )
 
-                            if np.prod(particleBoxCropped.shape) > 100:
-                                factor = 2
-                            else:
-                                factor = 4
-                            particleBox = skimage.transform.resize(particleBox,
-                               np.array(particleBox.shape[:2])*factor,
-                               mode='edge',
-                               anti_aliasing=False,
-                               anti_aliasing_sigma=None,
-                               preserve_range=True,
-                               order=0) 
+                            # if np.prod(particleBoxCropped.shape) > 100:
+                            #     factor = 2
+                            # else:
+                            #     factor = 4
+                            # particleBox = skimage.transform.resize(particleBox,
+                            #    np.array(particleBox.shape[:2])*factor,
+                            #    mode='edge',
+                            #    anti_aliasing=False,
+                            #    anti_aliasing_sigma=None,
+                            #    preserve_range=True,
+                            #    order=0) 
 
-                            if meta3 is None:
-                                color = (255,0,0)
-                            elif thisMeta2.pid.values in meta3.pid.values:
-                                color = (0,0,0)
-                            else:
-                                color = (255,0,0)
+                            # if meta3 is None:
+                            #     color = (255,0,0)
+                            # elif thisMeta2.pid.values in meta3.pid.values:
+                            #     color = (0,0,0)
+                            # else:
+                            #     color = (255,0,0)
 
                             
-                            cv2.putText(particleBox, str(thisMeta2.pid.values), (0,20), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
-                            particles[camera].append(particleBox)
+                            # cv2.putText(particleBox, str(thisMeta2.pid.values), (0,20), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+                            
 
                 else:
                     frame.append(
@@ -327,8 +332,9 @@ class matchGUI():
 
             if particles is not None:
                 for k in particles:
-                    for part in particles[k]:
-                        tools.displayImage(part)
+                    for pid, part in particles[k].items():
+                        print(k, pid)
+                        tools.displayImage(part, rescale=4)
 
             if metaFrames[0] is None:
                 c0, i0 = "n/a", "n/a"
@@ -458,8 +464,8 @@ class _stereoViewDetect(object):
             fnames0F = fnames0F[:1]
         fnamesLv0[self.config.follower] = fnames0F[0]
 
-        self.meta[self.config.leader] = tools.open_mfmetaFrames(fL.listFiles("metaFrames"), self.config, skipFixes=["makeCaptureTimeEven"])
-        self.lv1detect[self.config.leader] = tools.open_mflevel1detect(fL.listFiles("level1detect"), self.config, skipFixes=["makeCaptureTimeEven"])
+        self.meta[self.config.leader] = tools.open_mfmetaFrames(fL.listFiles("metaFrames"), self.config)
+        self.lv1detect[self.config.leader] = tools.open_mflevel1detect(fL.listFiles("level1detect"), self.config)
         
         fnamesMF = fL1.filenamesOtherCamera(graceInterval=-1, level="metaFrames")
         if len(fnamesMF)>1:
@@ -470,8 +476,8 @@ class _stereoViewDetect(object):
             print("Cannot handle camera restarts yet, taking only first file, omitting", fnames[1:])
             fnames1F = fnames1F[:1]
 
-        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config, skipFixes=["makeCaptureTimeEven"])
-        self.lv1detect[self.config.follower] = tools.open_mflevel1detect(fnames1F, self.config, skipFixes=["makeCaptureTimeEven"])
+        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config)
+        self.lv1detect[self.config.follower] = tools.open_mflevel1detect(fnames1F, self.config)
         
 
         self.index = {}

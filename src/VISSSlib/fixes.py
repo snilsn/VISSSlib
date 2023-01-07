@@ -94,6 +94,7 @@ def captureIdOverflows(dat, config, storeOrig=True, idOffset=0, dim="pid"):
     idDiffEstimated = np.round(
             dat.capture_time.diff(dim) / np.timedelta64(round(1/config.fps * 1e6),"us")
         ).astype(int)
+
     stepsObserved = (idDiffObserved<0) | (idDiffEstimated >= maxInt)
     nStepsObserved = stepsObserved.sum()
 
@@ -225,6 +226,9 @@ def makeCaptureTimeEven(datF, config, dim="capture_time"):
     that clocks drifts more than 1 frame apart within 10 mins.
     Therefore, lets build a new time vector (based on a capture_id 
     that we trust) with even spacing.
+
+    we care about this only for the capture id offset estimation, so make 
+    special variable
     '''
     print("making follower times even")
 
@@ -232,13 +236,18 @@ def makeCaptureTimeEven(datF, config, dim="capture_time"):
         print("makeCaptureTimeEven: too short, nothing to do")
         return datF
 
-    assert np.all(datF.capture_id.diff(dim)>=0), "capture_id must increase monotonically "
-    assert np.all(datF.capture_time.diff(dim).astype(int)>=0), "capture_time must increase monotonically "
+    if dim in ["fpid", "pid"]:
+        unqiue, uniqueII = np.unique(datF.capture_time, return_index=True)
+        datF4slope = datF.isel(**{dim:uniqueII})
+    else:
+        datF4slope = datF
+
+    assert np.all(datF4slope.capture_id.diff(dim)>=0), "capture_id must increase monotonically "
+    assert np.all(datF4slope.capture_time.diff(dim).astype(int)>0), "capture_time must increase monotonically "
 
 
-    slopeF = ((datF["capture_time"].diff(dim) /
-          datF["capture_id"].diff(dim))).astype(int)
-    
+    slopeF = ((datF4slope["capture_time"].diff(dim).astype(int) //
+          datF4slope["capture_id"].diff(dim).astype(int)))
 
     configSlope = int(round(1e9/config.fps, -3))
     deltaSlope = 1000 # =1us
@@ -254,12 +263,12 @@ def makeCaptureTimeEven(datF, config, dim="capture_time"):
     offset = datF.capture_time.values[0]
     fixedTime = (((datF.capture_id-datF.capture_id[0]) * configSlope)+offset)
     
-    datF["capture_time_orig"] = deepcopy(datF["capture_time"])
-    datF["capture_time"] = fixedTime
+    # datF["capture_time_orig"] = deepcopy(datF["capture_time"])
+    datF["capture_time_even"] = fixedTime
     
     return datF
 
-def revertMakeCaptureTimeEven(dat):
-    dat = dat.rename({"capture_time": "capture_time_even"})
-    dat = dat.rename({"capture_time_orig": "capture_time"})
-    return dat
+# def revertMakeCaptureTimeEven(dat):
+#     dat = dat.rename({"capture_time": "capture_time_even"})
+#     dat = dat.rename({"capture_time_orig": "capture_time"})
+#     return dat

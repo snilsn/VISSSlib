@@ -24,7 +24,7 @@ def main():
 
     if sys.argv[1] == "scripts.loopCreateEvents":
         settings = sys.argv[2]
-        nDays = int(sys.argv[3])
+        nDays = sys.argv[3]
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
@@ -34,10 +34,8 @@ def main():
 
     elif sys.argv[1] == "scripts.loopCreateMetaFrames":
         settings = sys.argv[2]
-        if len(sys.argv[3])<6:
-            nDays = int(sys.argv[3])
-        else:
-            nDays = str(sys.argv[3])
+        nDays = sys.argv[3]
+
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
@@ -73,7 +71,7 @@ def main():
 
     elif sys.argv[1] == "scripts.loopLevel1detectQuicklooks":
         settings = sys.argv[2]
-        nDays = int(sys.argv[3])
+        nDays = sys.argv[3]
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
@@ -95,10 +93,8 @@ def main():
 
     elif sys.argv[1] == "scripts.loopMetaFramesQuicklooks":
         settings = sys.argv[2]
-        if len(sys.argv[3])<6:
-            nDays = int(sys.argv[3])
-        else:
-            nDays = str(sys.argv[3])
+        nDays = sys.argv[3]
+
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
@@ -119,10 +115,8 @@ def main():
     elif sys.argv[1] == "scripts.loopCreateLevel1detect":
 
         settings = sys.argv[2]
-        if len(sys.argv[3])<6:
-            nDays = int(sys.argv[3])
-        else:
-            nDays = str(sys.argv[3])
+        nDays = sys.argv[3]
+
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
@@ -134,16 +128,20 @@ def main():
     elif sys.argv[1] == "scripts.loopCreateLevel1match":
 
         settings = sys.argv[2]
-        if len(sys.argv[3])<6:
-            nDays = int(sys.argv[3])
-        else:
-            nDays = str(sys.argv[3])
+        nDays = sys.argv[3]
+
         try:
             skipExisting = bool(int(sys.argv[4]))
         except IndexError:
             skipExisting = True
 
-        scripts.loopCreateLevel1match(settings, skipExisting=skipExisting, nDays = nDays)
+        try: 
+            useWorker = bool(int(sys.argv[5]))
+        except IndexError:
+            useWorker = True
+
+
+        scripts.loopCreateLevel1match(settings, skipExisting=skipExisting, nDays = nDays, useWorker=useWorker)
 
 
 

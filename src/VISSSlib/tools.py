@@ -14,11 +14,13 @@ import xarray as xr
 import io
 import os
 import tarfile
+import zipfile
 
 import IPython.display
 import ipywidgets
 import cv2
 from PIL import Image
+import skimage
 
 from . import files
 from . import fixes
@@ -78,6 +80,7 @@ def readSettings(fname):
     return Dict(config)
 
 def getDateRange(nDays, config, endYesterday=True):
+
     if config["end"] == "today":
         end = datetime.datetime.utcnow() 
         if endYesterday:
@@ -90,6 +93,9 @@ def getDateRange(nDays, config, endYesterday=True):
     if (type(nDays) is int) or type(nDays) is float:
         if nDays > 1000:
             nDays = str(nDays)
+    elif (type(nDays) is str) and (len(nDays)<6):
+        nDays = int(nDays)
+   
 
     if nDays == 0:
         days = pd.date_range(
@@ -288,7 +294,7 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
     dat.load()
     return dat
 
-def open_mflevel1match(fnamesExt, config):
+def open_mflevel1match(fnamesExt, config, datVars="all"):
     '''
     helper function to open multiple level1match files at once
     '''
@@ -313,6 +319,8 @@ def open_mflevel1match(fnamesExt, config):
         fname = dat.encoding["source"]
         ffl1 = files.FilenamesFromLevel(fname, config)
         dat["file_starttime"] = xr.DataArray([ffl1.datetime64]*len(dat.pair_id), coords=[dat.pair_id])
+        if datVars != "all":
+            dat = dat[datVars]
         return dat
 
     dat = xr.open_mfdataset(fnames, combine="nested", concat_dim="pair_id", preprocess=preprocess).load()
@@ -320,6 +328,31 @@ def open_mflevel1match(fnamesExt, config):
     dat = dat.swap_dims({"pair_id": "fpair_id"})
 
     return dat
+
+def identifyBlowingSnowData(fnames, config, timeIndex1):
+    # handle blowing snow, estimate ratio of skipped frames
+
+
+    blowingSnowRatio = {}
+    for cam in ["leader", "follower"]:
+        # print("starting identifyBlowingSnowData", cam)
+        movingObjects = []
+        for fna in fnames[cam]:
+            movingObjects.append(xr.open_dataset(fna).movingObjects)
+        movingObjects = xr.concat(movingObjects, dim="capture_time")
+        # movingObjects = xr.open_mfdataset(fnames[cam],  combine='nested', preprocess=preprocess).movingObjects.load()
+        movingObjects = movingObjects.sortby("capture_time")
+        tooManyMove = movingObjects > config.maxMovingObjects
+        tooManyMove = tooManyMove.groupby_bins("capture_time", timeIndex1, labels=timeIndex1[:-1])
+        blowingSnowRatio[cam] = tooManyMove.sum()/tooManyMove.count() #now a ratio
+        # nan means nothing recorded, so no blowing snow either
+        blowingSnowRatio[cam] = blowingSnowRatio[cam].fillna(0)
+    blowingSnowRatio = xr.concat((blowingSnowRatio["leader"], blowingSnowRatio["follower"]), dim="camera")
+    blowingSnowRatio["camera"] = ["leader", "follower"]
+    blowingSnowRatio = blowingSnowRatio.rename(capture_time_bins="time")
+
+    # print("done identifyBlowingSnowData")
+    return blowingSnowRatio
 
 
 def removeBlockedData(dat1D, events, threshold=0.1):
@@ -339,6 +372,9 @@ def removeBlockedData(dat1D, events, threshold=0.1):
     dat1D = dat1D.isel(fpid=(~isBlocked))
     events.close()
 
+    if np.any(isBlocked) and (len(dat1D.fpid) > 0):
+        print(f"{np.sum(isBlocked)/ len(dat1D.fpid)*100}% blocked data removed")
+
     if len(dat1D.fpid) == 0:
         print("no data after removing blocked data")
         return None
@@ -346,26 +382,26 @@ def removeBlockedData(dat1D, events, threshold=0.1):
         return dat1D
 
 
-def estimateCaptureIdDiff(leaderFile, followerFiles, config, dim, nPoints = 500, maxDiffMs = 1):
+def estimateCaptureIdDiff(leaderFile, followerFiles, config, dim, concat_dim="capture_time", nPoints = 500, maxDiffMs = 1):
 
     '''
     estimate capture id difference between two cameras
     look at capture id difference of images at the "same" time
     '''
     leaderDat = xr.open_dataset(leaderFile)
-    followerDat = xr.open_mfdataset(followerFiles, combine="nested", concat_dim=dim).load()
+    followerDat = xr.open_mfdataset(followerFiles, combine="nested", concat_dim=concat_dim).load()
 
-    followerDat = cutFollowerToLeader(leaderDat, followerDat, gracePeriod=0, dim=dim)
+    followerDat = cutFollowerToLeader(leaderDat, followerDat, gracePeriod=0, dim=concat_dim)
 
     if "captureIdOverflows" in config.dataFixes:
         leaderDat = fixes.captureIdOverflows(leaderDat, config, storeOrig=True, idOffset=0, dim=dim)
         followerDat = fixes.captureIdOverflows(followerDat, config, storeOrig=True, idOffset=0, dim=dim)
         # fix potential integer overflows if necessary
 
-    # if "makeCaptureTimeEven" in config.dataFixes:
-    #     #does not make sense for leader
-    #     # redo capture_time based on first time stamp...
-    #     followerDat = fixes.makeCaptureTimeEven(followerDat, config, dim)
+    if "makeCaptureTimeEven" in config.dataFixes:
+        #does not make sense for leader
+        # redo capture_time based on first time stamp...
+        followerDat = fixes.makeCaptureTimeEven(followerDat, config, dim)
 
     idDiff =  estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = nPoints, maxDiffMs = maxDiffMs)
     leaderDat.close()
@@ -380,6 +416,11 @@ def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDif
     if len(followerDat[dim]) == 0:
         raise RuntimeError(f"followerDat has zero length" )
 
+    #check whether correction has been applied and use if present
+    if (timeDim == "capture_time") and ("capture_time_even" in followerDat.data_vars):
+        timeDimFollower = "capture_time_even"
+    else:
+        timeDimFollower = timeDim
 
     # cut number of investigated points in time if required
     if len(leaderDat[dim])>nPoints:
@@ -390,7 +431,7 @@ def estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = 500, maxDif
     # loop through all points
     idDiffs = []
     for point in points:
-        absDiff = np.abs(leaderDat[timeDim].isel(**{dim: point}).values - followerDat[timeDim])
+        absDiff = np.abs(leaderDat[timeDim].isel(**{dim: point}).values - followerDat[timeDimFollower])
         pMin = np.min(absDiff).values
         if pMin < np.timedelta64(int(maxDiffMs),"ms"):
             pII = absDiff.argmin().values
@@ -442,8 +483,28 @@ def nextCase(case):
 def prevCase(case):
     return str(np.datetime64(f"{case[:4]}-{case[4:6]}-{case[6:8]}") - np.timedelta64(1,"D")).replace("-","")
 
-def displayImage(frame, doDisplay=True):
+def displayImage(frame, doDisplay=True, rescale = None):
+
+    #opencv cannot handle grayscale png with alpha channel
+    if (len(frame.shape) == 3) and (frame.shape[2] == 2):
+        fill_color = 0
+        frameAlpha = frame[:,:,1]
+        frameData = frame[:,:,0]
+        frameCropped = deepcopy(frameData)
+        frameCropped[frameAlpha==0] = fill_color
+        frame = np.hstack((frameData, frameCropped ) )
+
+    if rescale is not None:
+        frame = skimage.transform.resize(frame,
+                               np.array(frame.shape)*rescale,
+                               mode='edge',
+                               anti_aliasing=False,
+                               anti_aliasing_sigma=None,
+                               preserve_range=True,
+                               order=0)
+
     _, frame = cv2.imencode('.png', frame)
+
     if doDisplay:
         IPython.display.display(IPython.display.Image(data=frame.tobytes()))
     else:
@@ -461,7 +522,7 @@ def _addimage(self, fname, img):
     # encode
     img = Image.fromarray(img)
     buf1 = io.BytesIO()
-    img.save(buf1, format='PNG')
+    img.save(buf1, format='PNG', compress_level=9)
 
     # convert to uint8
     buf2 = np.frombuffer(buf1.getbuffer(), dtype=np.uint8)
@@ -486,15 +547,45 @@ imageTarFile = tarfile.TarFile
 imageTarFile.addimage = _addimage
 imageTarFile.extractimage = _extractimage
 
+import zipfile
+class imageZipFile(zipfile.ZipFile):
+    def addimage(self, fname, img):
+        # encode
+        img = Image.fromarray(img)
+        buf1 = io.BytesIO()
+        img.save(buf1, format='PNG', compress_level=9)
+        # convert to uint8
+        buf2 = np.frombuffer(buf1.getbuffer(), dtype=np.uint8)
+
+        #add file
+        return self.writestr(fname, buf2)        
+
+    def addnpy(self, fname, array):
+        # encode
+        buf1 = io.BytesIO()
+        np.save(buf1, array)
+        return self.writestr(fname, buf1.getbuffer()) 
+    
+    def extractimage(self, fname):
+        image = self.read(fname)
+        image = np.array(Image.open(io.BytesIO(image)))
+        return image
+
+    def extractnpy(self, fname):
+        array = np.load(io.BytesIO(self.read(fname)))
+        return array
+
 
 def ncAttrs(extra={}):
     attrs = {
         "VISSSlib-version": __versionFull__,
         "OpenCV-version": cv2.__version__,
         "host": socket.getfqdn(),
-        "user": os.environ.get('USER'),
         "creation-time": str(datetime.datetime.utcnow()),
         }
+    if  os.environ.get('USER') is not None:
+        attrs["user"] =  os.environ.get('USER')
+
     attrs.update(extra)
     return attrs
 
@@ -503,6 +594,10 @@ def finishNc(dat, extra={} ):
     dat.attrs.update(ncAttrs(extra=extra))
 
     for k in list(dat.data_vars) + list(dat.coords):
+
+        if dat[k].dtype == np.float64:
+            dat[k] = dat[k].astype(np.float32)
+
         dat[k].encoding = {}
         dat[k].encoding["zlib"] = True
         dat[k].encoding["complevel"] = 5
@@ -512,3 +607,16 @@ def finishNc(dat, extra={} ):
             dat[k].encoding["units"] = 'microseconds since 1970-01-01 00:00:00'
     return dat
 
+def getPrevRotationEstimate(datetime64, key, config):
+
+    rotate_all = {np.datetime64(datetime.datetime.strptime(d.ljust(15, "0"), "%Y%m%d-%H%M%S")):r[key] for d,r in config.rotate.items()}
+    rotTimes = np.array(list(rotate_all.keys()))
+    rotDiff = datetime64 -rotTimes 
+    rotTimes = rotTimes[rotDiff>np.timedelta64(0)]
+    rotDiff = rotDiff[rotDiff>np.timedelta64(0)]
+    
+    try:
+        prevTime = rotTimes[np.argmin(rotDiff)]
+    except ValueError:
+        raise RuntimeError(f"datetime64 {datetime64} before earliest rotation estimate {np.min(np.array(list(rotate_all.keys())))}")
+    return rotate_all[prevTime]
