@@ -213,6 +213,7 @@ class detectedParticles(object):
                  applyCanny2Particle = True, #much faster than 2 whole Frame!
                  dilateIterations=1,
                  blurSigma=1.5,
+                 arThreshold=None,#testing only
                  ):
 
         self.version = __version__.split(".")[0]
@@ -252,12 +253,14 @@ class detectedParticles(object):
         self.applyCanny2Particle = applyCanny2Particle
         self.dilateIterations = dilateIterations
         self.blurSigma = blurSigma
+        self.arThreshold = arThreshold
+
 
         return
 
 
 
-    def update(self, frame, pp, capture_id, record_id, capture_time, record_time, nThread, training=False, testing=[]):
+    def update(self, frame, pp, capture_id, record_id, capture_time, record_time, nThread, training=False, testing=[], blockingThresh=None):
 
         self.testing = testing
         self.capture_id = capture_id
@@ -274,6 +277,7 @@ class detectedParticles(object):
         # convert to gray scale if required
         if len(self.frame.shape) == 3:
             self.frame = av.cvtColor(self.frame)
+
 
         if self.maskCorners is not None:
             self.frame[:self.maskCorners, :self.maskCorners] = 0
@@ -297,6 +301,13 @@ class detectedParticles(object):
 
         if training :
             return True
+
+        if blockingThresh is not None:
+            nBlocked = np.sum(self.frame<blockingThresh)
+            print("%%%%%%%%%%%%%%%%%%% pixels blocked",nBlocked, blockingThresh)
+            if nBlocked>blockingThresh:
+                return True
+
 
         # tools.displayImage(self.backSub.getBackgroundImage())
         # self.frame = av.doubleDynamicRange(cv2.bitwise_not(cv2.subtract(self.backSub.getBackgroundImage(), self.frame, )))
@@ -337,7 +348,7 @@ class detectedParticles(object):
             print("SHOWING", "fgMask")
             tools.displayImage(self.fgMask)
 
-        if "result" in testing:
+        if ("result" in testing) or ("resultAddedOnly" in testing):
             self.frame4drawing = self.frame.copy()
 
         # thresh = cv2.dilate(self.fgMask, None, iterations=2)
@@ -359,15 +370,20 @@ class detectedParticles(object):
             print("particles.update", "FRAME", pp, 'SKIPPED. more than', self.maxNParticle, 'particles')
             return False
 
-
+        added = False
         # loop over the contours
         for cnt in self.cnts:
 
-            self.add(self.frame , self.fgMask, cnt, testing, verbosity=self.verbosity, composite = self.composite)
+            added = self.add(self.frame , self.fgMask, cnt, testing, verbosity=self.verbosity, composite = self.composite)
 
         if "result" in testing:
-            print("SHOWING", "result")
-            tools.displayImage(self.frame4drawing)
+            if len(self.cnts)>0:
+                print("SHOWING", "result")
+                tools.displayImage(self.frame4drawing)
+        if "resultAddedOnly" in testing:
+            if len(self.cnts)>0 and added:
+                print("SHOWING", "resultAddedOnly")
+                tools.displayImage(self.frame4drawing)
 
         return True
 
@@ -417,6 +433,7 @@ class detectedParticles(object):
 
     def add(self, frame1, fgMask, cnt, testing, **kwargs):
 
+        added = False
         #check whether it touches border
         roi = tuple(int(b) for b in cv2.boundingRect(cnt))
         frameHeight, frameWidth = frame1.shape[:2]
@@ -429,7 +446,7 @@ class detectedParticles(object):
         if np.any(touchesBorder):
             print("particles.add", "PID", "n/a", "touches border", touchesBorder)
             print("particles.update", "PID", "n/a", "Not added")
-            return
+            return added
 
         #canny filter is expensive. so apply it of part of image taht is moving (plus a little extra otherwise edge detection does not work)
         # in case more than one particle is in one moving area, iterate over all of them
@@ -495,18 +512,20 @@ class detectedParticles(object):
                 elif self.lastParticle.area < self.minArea:
                     print("particles.add", "PID", self.lastParticle.pid, "too small area", self.lastParticle.area)
 
-                #do not apply to needles or similalrly shaped particles, also does not work to very small particles
-                elif (self.lastParticle.aspectRatio > 0.4) and (self.lastParticle.Dmax > 5) and(ratio < self.erosionTestThreshold):
+                #erosionTestThreshold does not apply to needles or similalrly shaped particles, also does not work to very small particles
+                elif (self.lastParticle.aspectRatio > 0.4) and (self.lastParticle.Dmax > 5) and (ratio < self.erosionTestThreshold):
                     print("particles.add", "PID", self.lastParticle.pid, "particle not properly detected", ratio, self.erosionTestThreshold, self.lastParticle.aspectRatio )
+
+                #only for testing
+                elif (self.arThreshold is not None) and (self.lastParticle.aspectRatio <self.arThreshold):
+                    print("particles.add", "PID", self.lastParticle.pid, "particle below arThresh", self.lastParticle.aspectRatio, self.arThreshold )
+
+                elif np.prod(self.lastParticle.particleBox.shape) == 0:
+                    print("particles.add", "PID", self.lastParticle.pid, "flat", particleFrame.shape)
 
                 else:
 
-                    particleFrame = self.lastParticle.particleBox
-                    if np.prod(particleFrame.shape) == 0:
-                        print("particles.add", "PID", self.lastParticle.pid, "flat", particleFrame.shape)
-                        return added, self.lastParticle
-
-                    print("FILTER", particleFrame.mean(), particleFrame.max()   , particleFrame.std(ddof=1)   )
+                    print("FILTER", self.lastParticle.particleBox.mean(), self.lastParticle.particleBox.max()   , self.lastParticle.particleBox.std(ddof=1)   )
 
                     self.all[self.pp] = self.lastParticle
                     self.lastFrame[self.pp] = self.lastParticle
@@ -516,30 +535,38 @@ class detectedParticles(object):
 
 
             if added:
-                print("particles.update", "PID", self.lastParticle.pid, "Added with area =%i"%(self.lastParticle.area), f"max contrast {self.lastParticle.particleContrast}", f"Dmax/Dmin={self.lastParticle.Dmax:.2f}/{self.lastParticle.Dmin:.2f}", f"blur: %.2f"%self.lastParticle.blur)
-                print(f"Dmax/Dmin={self.lastParticle.Dmax*44.18/1000}/{self.lastParticle.Dmin*44.18/1000}, Dmax/Dmin={self.lastParticle.Dmax*43.125/1000}/{self.lastParticle.Dmin*43.125/1000},Pixmin {self.lastParticle.pixMin}, Pixmax {self.lastParticle.pixMax}")
+                print("particles.update")
+                print(self.lastParticle)
                 # print("TEST4Canny", self.lastParticle.perimeter, self.lastParticle.perimeterEroded, self.lastParticle.perimeterEroded/self.lastParticle.perimeter)
 
-                if "result" in testing:
+                if ("result" in testing) or ("resultAddedOnly" in testing):
                     self.frame4drawing = self.lastParticle.drawContour(self.frame4drawing)
                     self.frame4drawing = self.lastParticle.annotate(self.frame4drawing, extra='added')
             else:
                 print("particles.update", "PID", self.lastParticle.pid, "Not added")
 
-        return 
+        return added
 
     def collectResults(self):
         self.particleProps = xr.Dataset(coords = {'pid':list(self.all.keys()), 'percentiles': range(10,100,10)}) 
         for key in [
-            'Dmax', 'Dmin', 'area', 'aspectRatio', 'angle', 'roi', 'x', 'y', 'perimeter','perimeterEroded', 'pixMin', 'pixMax', 
-            'pixMean', 'pixStd', 'pixSkew', 'pixKurtosis', 'blur', 'capture_id', 'record_id', 'capture_time', 
+            'Dmax', 'area', "position_centroid", "position_rect", "position_ellipse", 
+            "position_ellipseDirect", "position_upperLeft", "position_circle", "Dfit_rect",
+             "Dfit_ellipse", "Dfit_ellipseDirect","Droi", "angle_rect", "angle_ellipse", 
+             "angle_ellipseDirect", 'angle', 'Droi', 'perimeter','perimeterEroded', 
+             'pixMin', 'pixMax', 'pixMean', 'pixStd', 'pixSkew', 'pixKurtosis', 
+             'blur', 'capture_id', 'record_id', 'capture_time', 
             'record_time', 'nThread'
             ]:
             arr = []
             for i in self.all.values():
                 arr.append(getattr(i, key))
-            if key == 'roi':
-                self.particleProps[key] = xr.DataArray(arr,coords=[self.particleProps.pid, ['x','y','w','h']], dims=('pid','ROI_elements'))
+            if key in [
+            "position_centroid", "position_rect", "position_ellipse", 
+            "position_ellipseDirect", "position_upperLeft", "position_circle", 
+            "Dfit_rect", "Dfit_ellipse", "Dfit_ellipseDirect","Droi"
+            ]:
+                self.particleProps[key] = xr.DataArray(arr,coords=[self.particleProps.pid, ['x','y']], dims=('pid','position'))
             # elif key == 'touchesBorder':
             #     self.particleProps[key] = xr.DataArray(arr, coords=[self.particleProps.pid, ['left', 'right','top','bottom']], dims=('pid','side'))
             
@@ -549,7 +576,7 @@ class detectedParticles(object):
             # We do not need 64 bit accuracy here and can save storage space
             if self.particleProps[key].dtype == np.float64:
                 self.particleProps[key] = self.particleProps[key].astype(np.float32)
-            elif key in [ 'roi','x', 'y','pixMin', 'pixMax', 'nThread']:
+            elif key in [ "position_upperLeft",'pixMin', 'pixMax', 'nThread',"Droi"]:
                 self.particleProps[key] = self.particleProps[key].astype(np.int16)
 
         arrTmp = []
@@ -701,30 +728,60 @@ class singleParticle(object):
                 self.cntChild[cc][...,0] += self.xOffset
                 self.cntChild[cc][...,1] += self.yOffset
 
+
+        self.position_upperLeft = (self.roi[0], self.roi[1])
+        self.Droi = (self.roi[2], self.roi[3])
+
+        #estimate Dmax
+        self.position_circle,radius = cv2.minEnclosingCircle(self.cnt)
+        self.Dmax = 2*radius
+
         #estimate properties that need shifted position
         self.rect = cv2.minAreaRect(self.cnt)
         center, dims, self.angle = self.rect
         # angle definition depends on opencv version https://github.com/opencv/opencv/issues/19472
         # for newer opencv versions where angle is postive, this makes sure it ranges form 0 to 180
-        if dims[1] > dims[0]:
-            self.angle = self.angle  - 90
+        # angle definition will be tackled at late rprocessing stage becusae full rect information is now saved
+        # if dims[1] > dims[0]:
+        #     self.angle = self.angle  - 90
+        self.position_rect = self.rect[0]
+        self.Dfit_rect = self.rect[1]
+        self.angle_rect = self.rect[2]
 
-        self.Dmax = max(dims)
-        self.Dmin = min(dims)
-        self.aspectRatio = self.Dmin / self.Dmax
+        if len(self.cnt)> 4: #fitELlipse doesnt work for 4 or less points
+            # according to @fitzgibbon_direct_1996 , the direct method is both robust and fast.
+            self.ellipseDirect  = cv2.fitEllipseDirect(self.cnt)
+            #method used by MASC 
+            self.ellipse  = cv2.fitEllipse(self.cnt)
+
+        else:
+            self.ellipseDirect = (np.nan, np.nan), (np.nan, np.nan), np.nan
+            self.ellipse = (np.nan, np.nan), (np.nan, np.nan), np.nan
+
+        self.position_ellipse = self.ellipse[0]
+        self.position_ellipseDirect = self.ellipseDirect[0]
+
+        self.Dfit_ellipse = self.ellipse[1]
+        self.Dfit_ellipseDirect = self.ellipseDirect[1]
+
+        self.angle_ellipse = self.ellipse[2]
+        self.angle_ellipseDirect = self.ellipseDirect[2]
+
+        # use fitEllipseDirect for now
+        self.aspectRatio = self.Dfit_ellipseDirect[0]/self.Dfit_ellipseDirect[1]
 
         self.area = cv2.contourArea(self.cnt)
         M = cv2.moments(self.cnt)
         #https://docs.opencv.org/master/dd/d49/tutorial_py_contour_features.html
         try:
-           self.centroid = (int(M['m10']/M['m00']), int(M['m01']/M['m00']))
+           self.position_centroid = (int(M['m10']/M['m00']), int(M['m01']/M['m00']))
         except ZeroDivisionError:
-            self.centroid = 0,0
-        self.x, self.y = self.centroid
+            self.position_centroid = 0,0
+
         self.perimeter = cv2.arcLength(self.cnt,True)
         # data type cv2.CV_16S requried to avoid overflow
         # https://pyimagesearch.com/2015/09/07/blur-detection-with-opencv/
-        self.blur = cv2.Laplacian(self.particleBox, cv2.CV_16S).var(ddof=1)
+        self.blur = cv2.Laplacian(self.particleBox, cv2.CV_64F).var(ddof=1)
         self.success = True
 
 
@@ -746,17 +803,17 @@ class singleParticle(object):
         props += '\n'
         props += 'PID: %i\n'%(self.pid)
         props += 'record_id, capture_id, capture_time, record_time: %i %i %s %s\n'%(self.record_id, self.capture_id, self.capture_time, self.record_time)
-        props += 'Dmax, Dmin: %i %i\n'%(self.Dmax, self.Dmin)
+        props += 'Dmax: %.1f\n'%(self.Dmax)
         props += 'aspectRatio: %f\n'%(self.aspectRatio)
-        props += 'angle: %f\n'%(self.angle)
-        props += 'ROI (x, y, w, h): %i %i %i %i\n'%self.roi
-        props += 'Area: %i\n'%self.area
-        props += 'Centroid: %i, %i\n'%self.centroid
-        props += 'Perimeter: %i\n'%self.perimeter
-        props += 'PerimeterEroded: %i\n'%self.perimeterEroded
-        props += 'pixMin/pixMax: %i %i %f\n'%(self.pixMin, self.pixMax, self.pixMin/self.pixMax)
+        props += 'angle_ellipseDirect: %f\n'%(self.angle_ellipseDirect)
+        props += 'ROI (x, y, w, h): %i %i %i %i\n'%tuple(self.roi)
+        props += 'Area: %.1f\n'%self.area
+        props += 'position_centroid: %.1f, %.1f\n'%self.position_centroid
+        props += 'Perimeter, PerimeterEroded: %.1f %.1f\n'%(self.perimeter, self.perimeterEroded)
+        props += 'pixMin/pixMax: %.1f %i %f\n'%(self.pixMin, self.pixMax, self.pixMin/self.pixMax)
         props += 'pixPercentiles: ' + str(self.pixPercentiles.tolist()) + '\n'
         props += 'pixMean, pixStd, pixSkew, pixKurtosis: %.1f %.1f %.1f %.1f \n'%(self.pixMean, self.pixStd, self.pixSkew, self.pixKurtosis)
+        props +=  "max contrast: %.1f\n"%self.particleContrast
         props += 'Blur: %f\n'%self.blur
         # props += f'touches border: {self.touchesBorder} \n'
         props += "#"*30
@@ -774,7 +831,10 @@ class singleParticle(object):
         box = cv2.boxPoints(self.rect)
         box = np.int0(box)
         cv2.drawContours(frame,[box],0,np.array(color) * 1/3,1)
-
+        try:
+            cv2.ellipse( frame, self.ellipseDirect, np.array(color) * 1/2, 1 );
+        except:
+            pass
         return frame
 
     def annotate(self, frame, color=(0, 255, 0), extra=''):
@@ -868,6 +928,7 @@ def detectParticles(fname,
                     minArea = 1,
                     minDmax = 2,
                     stopAfter = None,
+                    arThreshold=None,
                     version=__version__
                     ):
 
@@ -1076,6 +1137,7 @@ def detectParticles(fname,
         erosionTestThreshold = erosionTestThreshold,
         minArea = minArea,
         minDmax= minDmax,
+        arThreshold=arThreshold,
                         )
 
 
@@ -1184,6 +1246,7 @@ def detectParticles(fname,
                 continue
             else:
                 raise ValueError('TOO FEW FRAMES???? %i of %i, %s thread %i'%(pp,nFrames,fname,nThread))
+
 
 
         if not motionChecked:

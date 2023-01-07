@@ -56,6 +56,19 @@ LOGGING_CONFIG = {
     } 
 }
 
+
+#settings that stay mostly constant
+DEFAULT_SETTINGS = {
+    'height_offset': 64,
+    'minMovingPixels': [20, 10, 5, 2, 2, 2, 2],
+    'threshs': [20, 30, 40, 60, 80, 100, 120],
+    'goodFiles': ['None', 'None'],
+    'level1detectQuicklook': {'minBlur': 500, 'minSize': 17},
+    'rotate': {},
+    'maxMovingObjects': 60
+}
+
+
 def get_logging_config(fname):
     lc = deepcopy(LOGGING_CONFIG)
     lc['handlers']['file']['filename'] = fname
@@ -76,8 +89,10 @@ def nicerNames(string):
 
 def readSettings(fname):
     with open(fname, 'r') as stream:
-        config = yaml.load(stream, Loader=yaml.Loader)
-    return Dict(config)
+        config1 = yaml.load(stream, Loader=yaml.Loader)
+
+    config = Dict(DEFAULT_SETTINGS).update(config1)
+    return config
 
 def getDateRange(nDays, config, endYesterday=True):
 
