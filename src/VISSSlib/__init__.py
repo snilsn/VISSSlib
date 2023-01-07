@@ -21,7 +21,7 @@
 
 from importlib.metadata import version, PackageNotFoundError
 try:
-    __version__ = version("VISSSlib").split(".")[0]
+    __version__ = ".".join(version("VISSSlib").split(".")[:2])
     __versionFull__ = version("VISSSlib")
 except PackageNotFoundError:
     # package is not installed

@@ -88,11 +88,10 @@ def nicerNames(string):
     return string
 
 def readSettings(fname):
+    config = DEFAULT_SETTINGS
     with open(fname, 'r') as stream:
-        config1 = yaml.load(stream, Loader=yaml.Loader)
-
-    config = Dict(DEFAULT_SETTINGS).update(config1)
-    return config
+        config.update(yaml.load(stream, Loader=yaml.Loader))
+    return Dict(config)
 
 def getDateRange(nDays, config, endYesterday=True):
 

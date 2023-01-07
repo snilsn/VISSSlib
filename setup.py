@@ -5,7 +5,9 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="VISSSlib",
-    use_scm_version=True,
+    use_scm_version={
+        "version_scheme": "post-release",
+    },
     author="Maximilian Maahn",
     description="VISSS processing library",
     long_description=long_description,
