@@ -22,6 +22,24 @@ from . import metadata
 from . import matching
 from . import __version__
 
+def loopLevel0Quicklook(settings, version=__version__, skipExisting=True, nDays=0):
+
+    config = tools.readSettings(settings)
+    instruments = config["instruments"]
+    computers = config["computers"]    
+    
+    days = tools.getDateRange(nDays, config, endYesterday=False)
+
+
+    for dd in days:
+        year = str(dd.year)
+        month = "%02i" % dd.month
+        day = "%02i" % dd.day
+        case = f"{year}{month}{day}"
+        print(case)
+        for computer, camera in zip(computers, instruments):
+            quicklooks.level0Quicklook(
+                case, camera, config, version=version, skipExisting=skipExisting)
 
 
 def loopMetaFramesQuicklooks(settings, version=__version__, skipExisting=True, nDays=0):

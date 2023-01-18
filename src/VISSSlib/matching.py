@@ -468,10 +468,10 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
     
     # particle camera Y position difference
     if "Y" in sigma.keys():
-        fyCenter = (follower1D.roi.sel(ROI_elements="y") +
-                    (follower1D.roi.sel(ROI_elements="h")/2))
-        lyCenter = (leader1D.roi.sel(ROI_elements="y") +
-                    (leader1D.roi.sel(ROI_elements="h")/2))
+        fyCenter = (follower1D.position_upperLeft.sel(dim2D="y") +
+                    (follower1D.Droi.sel(dim2D="y")/2))
+        lyCenter = (leader1D.position_upperLeft.sel(dim2D="y") +
+                    (leader1D.Droi.sel(dim2D="y")/2))
 
         diffY = (np.array([fyCenter.values]) -
                  np.array([lyCenter.values]).T)
@@ -486,8 +486,8 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
 
     # particle height difference
     if "H" in sigma.keys():
-        diffH = (np.array([follower1D.roi.sel(ROI_elements='h').values]) -
-                 np.array([leader1D.roi.sel(ROI_elements='h').values]).T)
+        diffH = (np.array([follower1D.Droi.sel(dim2D="y").values]) -
+                 np.array([leader1D.Droi.sel(dim2D="y").values]).T)
 
         prop["H"] = probability(
             diffH,
@@ -665,14 +665,14 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
     new_sigma= {}
     
     if len(matchedDat.pair_id) >= minNumber4Stats:
-        yCenter = (matchedDat.roi.sel(ROI_elements='y') +
-                   (matchedDat.roi.sel(ROI_elements="h")/2))
+        yCenter = (matchedDat.position_upperLeft.sel(dim2D='y') +
+                   (matchedDat.Droi.sel(dim2D="y")/2))
         di = yCenter.diff('camera').values
         new_sigma["Y"] = bn.nanstd(di)
         new_mu["Y"] = bn.nanmedian(di)
 
-        di = matchedDat.roi.sel(
-            ROI_elements='h').diff("camera").values
+        di = matchedDat.Droi.sel(
+            dim2D='y').diff("camera").values
         new_sigma["H"] = bn.nanstd(di)
         new_mu["H"] = bn.nanmedian(di)
 
@@ -699,14 +699,14 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
 
 
 def get3DPosition(leaderDat, followerDat, config):
-    F_z = (followerDat.roi.sel(ROI_elements="y") +
-                (followerDat.roi.sel(ROI_elements="h")/2)).values
-    F_y = (followerDat.roi.sel(ROI_elements="x") +
-                (followerDat.roi.sel(ROI_elements="w")/2)).values
-    L_x = (leaderDat.roi.sel(ROI_elements="x") +
-                (leaderDat.roi.sel(ROI_elements="w")/2)).values
-    L_z = (leaderDat.roi.sel(ROI_elements="y") +
-                (leaderDat.roi.sel(ROI_elements="h")/2)).values
+    F_z = (followerDat.position_upperLeft.sel(dim2D="y") +
+                (followerDat.Droi.sel(dim2D="y")/2)).values
+    F_y = (followerDat.position_upperLeft.sel(dim2D="x") +
+                (followerDat.Droi.sel(dim2D="x")/2)).values
+    L_x = (leaderDat.position_upperLeft.sel(dim2D="x") +
+                (leaderDat.Droi.sel(dim2D="x")/2)).values
+    L_z = (leaderDat.position_upperLeft.sel(dim2D="y") +
+                (leaderDat.Droi.sel(dim2D="y")/2)).values
 
     #watch out, right hand coordinate system! 
     F_y = config.frame_width - F_y
@@ -725,8 +725,8 @@ def addPosition(matchedDat, rotate, rotate_err, config):
 
     L_z_estimated = calc_L_z_withOffsets(L_x, F_y, F_z, **rotate)
 
-    matchedDat["position3D_elements"] = ["x", "y", "z", "z_rotated"]
-    matchedDat["position3D"] = xr.DataArray([L_x, F_y, L_z, L_z_estimated], coords=[matchedDat.position3D_elements, matchedDat.pair_id] )
+    matchedDat["dim3D_elements"] = ["x", "y", "z", "z_rotated"]
+    matchedDat["dim3D"] = xr.DataArray([L_x, F_y, L_z, L_z_estimated], coords=[matchedDat.dim3D_elements, matchedDat.pair_id] )
 
     nid = len(matchedDat.pair_id)
     matchedDat["rotation"] = np.array(["mean", "err"])

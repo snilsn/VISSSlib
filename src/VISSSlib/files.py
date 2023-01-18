@@ -22,7 +22,7 @@ from . import __version__
 
 dailyLevels = ["metaEvents", "metaMatchCoefficients", "level2match"]
 fileLevels = ["level1detect", "level1match", "level1track", "metaFrames", "metaDetection", "imagesL1detect"]#, "metaFixedCaptureId"]
-quicklookLevelsSep = ["metaFrames", "metaEvents", "level1detect", "level1match"]
+quicklookLevelsSep = ["level0", "metaFrames", "metaEvents", "level1detect", "level1match"]
 quicklookLevelsComb = [ "matchCoefficients"]
 imageLevels = ["imagesL1detect"]
 
@@ -84,11 +84,15 @@ class FindFiles(object):
                 self.outpath.level0, self.case, config["movieExtension"])
             self.fnamesPattern.level0txt = '%s/*%s*.%s' % (
                 self.outpath.level0, self.case, "txt")
+            self.fnamesPattern.level0jpg = '%s/*%s*.%s' % (
+                self.outpath.level0, self.case, "jpg")
         else:
             self.fnamesPattern.level0 = '%s/*%s*_0.%s' % (
                 self.outpath.level0, self.case, config["movieExtension"])
             self.fnamesPattern.level0txt = '%s/*%s*_0.%s' % (
                 self.outpath.level0, self.case, "txt")
+            self.fnamesPattern.level0jpg = '%s/*%s*_0.%s' % (
+                self.outpath.level0, self.case, "jpg")
         self.fnamesPattern.level0status = f"{self.outpath['level0']}/*_{config['visssGen']}_{camera}_{self.case}_status.txt"
         for dL in dailyLevels:
             self.fnamesPattern[dL] = "%s/%s_V%s_*%s*%s%s%s.nc"%(self.outpath[dL], dL, version, camera, self.year, self.month, self.day)
@@ -99,6 +103,7 @@ class FindFiles(object):
         for dL in fileLevels + dailyLevels:
             self.fnamesPatternExt[dL] = "%s/%s_V%s_*%s*%s*nc.[b,n]*"%(self.outpath[dL], dL, version, camera, self.case) #finds broken & nodata
         self.fnamesPatternExt.level0txt = ""
+        self.fnamesPatternExt.level0jpg = ""
         self.fnamesPatternExt.level0 = ""
 
         self.fnamesDaily = Dict({})
@@ -205,6 +210,7 @@ class Filenames(object):
             {
                 "level0":fname,
                 "level0txt":fname.replace(config.movieExtension,"txt"),
+                "level0jpg":fname.replace(config.movieExtension,"jpg"),
             }
             )
 

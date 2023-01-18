@@ -12,8 +12,9 @@
 # __version__ = '20220308' # fixed time stamp for mosaic!!
 # __version__ = '20220521' # reversed timestamp fix, applied capture_id fix instead!
 # __version__ = '20220521' # Aug 3rd: added background image and nThread to level1detect without new version number
-# __version__ = 'next' # bug fixes: blur, angle. more blocking bins 4 event file. using canny for particle detection, added cnt, perimeterEroded to nc file. 
-                        # image sin tar file, alpha channel shows applied mask, particles touching border noct procesed
+# __version__ = '20221024' # bug fixes: blur, angle. more blocking bins 4 event file. using canny for particle detection, added cnt, perimeterEroded to nc file. 
+                        # images in tar file, alpha channel shows applied mask, particles touching border noct procesed
+# __version__ = '20230106' # Dmax bugfix, clean up of variables, 
 
 # Version is pulled from git tag!!
 
@@ -21,7 +22,7 @@
 
 from importlib.metadata import version, PackageNotFoundError
 try:
-    __version__ = ".".join(version("VISSSlib").split(".")[:2])
+    __version__ = ".".join(version("VISSSlib").split(".")[:3])
     __versionFull__ = version("VISSSlib")
 except PackageNotFoundError:
     # package is not installed

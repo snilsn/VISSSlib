@@ -352,8 +352,8 @@ class matchGUI():
                     lv1match.pair_id.values.flatten(),
                     ["%.7f score"%(l) for l in lv1match.matchScore.values],
                     ["%.i ms"%(l/1e6) for l in lv1match.capture_time.diff("camera").values.astype(int).flatten() ] ,
-                    ["%.2f y"%(l) for l in lv1match.roi.diff("camera").sel(ROI_elements="y", drop=True).values.flatten()],
-                    ["%.2f h"%(l) for l in lv1match.roi.diff("camera").sel(ROI_elements="h", drop=True).values.flatten()], 
+                    ["%.2f y"%(l) for l in lv1match.position_upperLeft.diff("camera").sel(dim2D="y", drop=True).values.flatten()],
+                    ["%.2f h"%(l) for l in lv1match.Droi.diff("camera").sel(dim2D="y", drop=True).values.flatten()], 
                     ["%.2f Z"%z for z in Zdiff]
                     )
                 print("blur", lv1match.blur.values)

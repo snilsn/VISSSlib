@@ -3,7 +3,9 @@
 import yaml
 import warnings
 import datetime
+import time
 import socket
+import subprocess
 
 from addict import Dict
 from copy import deepcopy
@@ -63,9 +65,16 @@ DEFAULT_SETTINGS = {
     'minMovingPixels': [20, 10, 5, 2, 2, 2, 2],
     'threshs': [20, 30, 40, 60, 80, 100, 120],
     'goodFiles': ['None', 'None'],
-    'level1detectQuicklook': {'minBlur': 500, 'minSize': 17},
+    'level1detectQuicklook': {
+        'minBlur': 500, 
+        'minSize': 8,
+        'omitLabel4small': True
+    },
     'rotate': {},
-    'maxMovingObjects': 60
+    'level1detect': {
+        'maxMovingObjects': 60,
+        'minAspectRatio' : None
+    },
 }
 
 
@@ -506,23 +515,30 @@ def displayImage(frame, doDisplay=True, rescale = None):
         frameData = frame[:,:,0]
         frameCropped = deepcopy(frameData)
         frameCropped[frameAlpha==0] = fill_color
-        frame = np.hstack((frameData, frameCropped ) )
+        frame1 = np.hstack((frameData, frameCropped ) )
+    else:
+        frame1 = frame
+
 
     if rescale is not None:
-        frame = skimage.transform.resize(frame,
-                               np.array(frame.shape)*rescale,
+        if (len(frame.shape) == 3):
+            newShape = np.array((frame1.shape[0]*rescale, frame1.shape[1]*rescale, frame1.shape[2]))
+        else:
+            newShape = np.array(frame1.shape)*rescale
+        frame1 = skimage.transform.resize(frame1,
+                               newShape,
                                mode='edge',
                                anti_aliasing=False,
                                anti_aliasing_sigma=None,
                                preserve_range=True,
                                order=0)
 
-    _, frame = cv2.imencode('.png', frame)
+    _, frame1 = cv2.imencode('.png', frame1)
 
     if doDisplay:
-        IPython.display.display(IPython.display.Image(data=frame.tobytes()))
+        IPython.display.display(IPython.display.Image(data=frame1.tobytes()))
     else:
-        return IPython.display.Image(data=frame.tobytes())
+        return IPython.display.Image(data=frame1.tobytes())
 
 '''
 monkey patch standard tarfile.TarFile class extended with a special function to add and read a png file
@@ -603,9 +619,12 @@ def ncAttrs(extra={}):
     attrs.update(extra)
     return attrs
 
-def finishNc(dat, extra={} ):
+def finishNc(dat, extra={}):
+
+    #todo: add yaml dump of config file
 
     dat.attrs.update(ncAttrs(extra=extra))
+
 
     for k in list(dat.data_vars) + list(dat.coords):
 
@@ -634,3 +653,27 @@ def getPrevRotationEstimate(datetime64, key, config):
     except ValueError:
         raise RuntimeError(f"datetime64 {datetime64} before earliest rotation estimate {np.min(np.array(list(rotate_all.keys())))}")
     return rotate_all[prevTime]
+
+def execute_stdout(command):
+    # launch application as subprocess and print output constantly:
+    # http://stackoverflow.com/questions/4417546/constantly-print-subprocess-output-while-process-is-running
+    print(command)
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = ''
+
+    # Poll process for new output until finished
+    for line in process.stdout: 
+        line = line.decode()
+        print(line, end='')
+        output += line
+        time.sleep(0.1)
+    for line in process.stderr: 
+        line = line.decode()
+        print(line, end=' ')
+        output += line
+        time.sleep(0.1)
+        
+    process.wait()
+    exitCode = process.returncode
+
+    return exitCode, output

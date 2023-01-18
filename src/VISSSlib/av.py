@@ -207,7 +207,8 @@ class VideoReaderMeta(object):
                 except KeyError:
                     partic1 = self.currentlv1detect.sel(fpid=(self.currentlv1detect.pid==pid)).squeeze()
                 
-                (x, y, w, h) = partic1.roi.values.astype(int)
+                (x, y) = partic1.position_upperLeft.values.astype(int)
+                (w, h) = partic1.Droi.values.astype(int)
                 y = y + self.config['height_offset']
 
                 if self.config.cropImage is not None:
@@ -243,8 +244,8 @@ class VideoReaderMeta(object):
 
                 extra1 = str(partic1.capture_time.values)[:-6].split('T')[-1]
 
-                posY = int(partic1.roi[1]+self.config['height_offset'] -10)
-                posX = int(partic1.roi[0])
+                posY = int(partic1.position_upperLeft[1]+self.config['height_offset'] -10)
+                posX = int(partic1.position_upperLeft[0])
                 if self.config.cropImage is not None:
                     posY = posY + self.config['cropImage'][1]
                     posX = posX + self.config['cropImage'][0]
@@ -312,7 +313,8 @@ class VideoReaderMeta(object):
         particle = self.lv1detect.sel(pid=pid)
         kk = int(particle.record_id.values)
         _, frame1, _ = self.getFrameByIndex(kk)
-        x, y, w, h = particle.roi.values.astype(int)
+        (x, y) = particle.position_upperLeft.values.astype(int)
+        (w, h) = particle.Droi.values.astype(int)
         if len(frame1.shape) == 3:
             frame1 = frame1[:,:,0]
         return frame1[y+heightOffset:y+heightOffset+h, x:x+w], frame1
@@ -406,6 +408,12 @@ def main():
 def cvtColor(frame):
     #faster than cv2.cvtColor but works only for gray images 
     return frame[:,:,0]
+
+def cvtGray(frame):
+    #faster than cv2.cvtColor but works only for gray images 
+    return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+
 
 if __name__ == '__main__':
     main()

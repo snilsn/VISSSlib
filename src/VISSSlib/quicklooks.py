@@ -125,6 +125,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
         config = tools.readSettings(config)
     minBlur = config["level1detectQuicklook"]["minBlur"]
     minSize = config["level1detectQuicklook"]["minSize"]
+    omitLabel4small = config["level1detectQuicklook"]["omitLabel4small"]
 
 
     total_width = (container_width + extra) * nTiles // nRows
@@ -195,13 +196,12 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                 raise FileNotFoundError(fname2)
 
         dat2 = dat2[["Dmax", "blur",
-                     "record_time", "record_id", "roi"]]
+                     "record_time", "record_id", "position_upperLeft","Droi"]]
         dat2 = dat2.isel(pid=((dat2.blur > minBlur) & (dat2.Dmax > minSize)))
 
         if len(dat2.pid) == 0:
             continue
-        dat2 = dat2[["record_time", "record_id", "roi"]]
-        dat2 = dat2.sel(ROI_elements=["w", "h"])
+        dat2 = dat2[["record_time", "record_id", "Droi"]]
 
         dat2 = dat2.expand_dims(dict(file=[fname1]))
     #     dat2 = dat2.set_coords(dict(file = fname2))
@@ -276,8 +276,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                     nParticlesNeeded = len(pids)
                 else:
                     try:
-                        nParticlesNeeded = np.where(thisDat.sel(fpid=pids).roi.sel(ROI_elements=[
-                                                    "w", "h"]).prod("ROI_elements").cumsum("fpid")/containerSize > 1)[0][0] + 1
+                        nParticlesNeeded = np.where(thisDat.sel(fpid=pids).Droi.prod("dim2D").cumsum("fpid")/containerSize > 1)[0][0] + 1
                     except IndexError:
                         nParticlesNeeded = nPids
 
@@ -315,7 +314,8 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                         if frame1 is None:
                             continue
 
-                        x, y, w, h = particle.roi.values.astype(int)
+                        w, h = particle.Droi.values.astype(int)
+                        x, y  = particle.position_upperLeft.values.astype(int)
                         if len(frame1.shape) == 3:
                             frame1 = frame1[:, :, 0]
                         im = frame1[y+height_offset:y+height_offset+h, x:x+w]
@@ -351,15 +351,15 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                     y2, x2 = text.shape
 
                     # only add label if large enough
-                    if x1 >= x2:
+                    if omitLabel4small and x1 < x2:
+                        imT = im
+                    else:
 
                         y3 = y1+y2
                         x3 = max(x1, x2)
                         imT = np.full((y3, x3), background, dtype=np.uint8)
                         imT[:y1, :x1] = im
                         imT[y1:, :x2] = text
-                    else:
-                        imT = im
                     ims.append(imT)
                     totalArea += np.prod(imT.shape)
 
@@ -436,6 +436,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 class Packer_patched(packer.Packer):
     """
     patched image_packer routine that works without files
+    https://pypi.org/project/image-packer/
     """
 
     def __init__(self, images):
@@ -657,6 +658,60 @@ class Packer_patched(packer.Packer):
 #     print(outFile)
 #     fig.savefig(outFile)
 #     return outFile, fig
+
+
+def level0Quicklook(
+                case, camera, config, version=__version__, skipExisting=True):
+
+
+
+    if type(config) is str:
+        config = tools.readSettings(config)
+        
+
+    global metaDats
+    metaDats = []
+
+    #get level 0 file names
+    ff = files.FindFiles(case, camera, config, version)
+    fOut = ff.quicklook.level0
+    ff.createQuicklookDirs()
+
+    if skipExisting and os.path.isfile(fOut):
+        if os.path.getmtime(fOut) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
+            print("file exists but older than event file, redoing", fOut)
+        else:
+            print(case, camera, "skip exisiting")
+            return None, None
+
+    print(case, camera, fOut)
+
+    if len(ff.listFiles("level0txt")) == 0 and len(ff.listFiles("level0status")) == 0:
+        print(case, "no data")
+
+        return None, None
+
+    fnames = []
+    cases = []
+    for fname in ff.listFiles("level0jpg"):
+        fn = files.Filenames(fname, config, version)
+        if fn.case.endswith("0000") or fn.case.endswith("5959"):
+            fnames.append(fname)
+            cases.append(fn.case)
+    fnames = fnames[:24]
+    cases = cases[:24]
+    execStr = ""
+    for f, c in zip(fnames, cases):
+        execStr += f"-label {c} {f} "
+    if len(fnames) > 0:
+        tools.execute_stdout(f"montage {execStr} -geometry 225x180+1+1 -tile 6x4 -quality 70% -title '{config.name} {camera} {case}' {fOut}")
+    else:
+        print("no input files")
+        return None
+    if ff.datetime.date() == datetime.datetime.today().date():
+        shutil.copy(fOut, ff.quicklookCurrent.level0)
+
+    return fOut
 
 
 def metaFramesQuicklook(
@@ -917,7 +972,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     assert len(fnames1DL)>0
     assert len(fnames1DF)>0
 
-    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position3D", "roi", "theta", "phi", "Ofz"])        
+    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position3D", "position_upperLeft","Droi", "theta", "phi", "Ofz"])        
     datM = datMfull.isel(fpair_id=(datMfull.matchScore >= minMatchScore))
 
     datDL = tools.open_mflevel1detect(fnames1DL, config, skipFixes="all", datVars=["Dmax", "capture_time"])        
@@ -955,7 +1010,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     cax[3].axis('off')
     
     
-    hDiff = datM.roi.sel(ROI_elements="h").diff("camera").values.squeeze()
+    hDiff = datM.Droi.sel(dim2D="y").diff("camera").values.squeeze()
     _, _ = plotVar(hDiff, datM.capture_time, ax[4], "h difference [px]", axhline=0, resample=resample)
     cax[4].axis('off')
 
