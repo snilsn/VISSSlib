@@ -120,6 +120,12 @@ def main():
 
         detection.detectParticles(fname, settings)
 
+    elif sys.argv[1] == "matching.matchParticles":
+
+        fname = sys.argv[2]
+        settings = sys.argv[3]
+
+        matching.matchParticles(fname, settings)
 
 
     elif sys.argv[1] == "scripts.loopCreateLevel1detect":
@@ -145,16 +151,40 @@ def main():
         except IndexError:
             skipExisting = True
 
-        try: 
-            useWorker = bool(int(sys.argv[5]))
+        scripts.loopCreateLevel1match(settings, skipExisting=skipExisting, nDays = nDays, nCPU=None)
+
+    elif sys.argv[1] == "scripts.loopLevel1matchQuicklooks":
+        settings = sys.argv[2]
+        nDays = sys.argv[3]
+        try:
+            skipExisting = bool(int(sys.argv[4]))
         except IndexError:
-            useWorker = True
+            skipExisting = True
+
+        scripts.loopLevel1matchQuicklooks(settings, nDays=nDays, skipExisting=skipExisting)
 
 
-        scripts.loopCreateLevel1match(settings, skipExisting=skipExisting, nDays = nDays, useWorker=useWorker)
+
+    elif sys.argv[1] == "scripts.loopCreateMetaRotation":
+        settings = sys.argv[2]
+        nDays = sys.argv[3]
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+
+        scripts.loopCreateMetaRotation(settings, nDays=nDays, skipExisting=skipExisting)
 
 
+    elif sys.argv[1] == "scripts.loopMetaRotationQuicklooks":
+        settings = sys.argv[2]
+        nDays = sys.argv[3]
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
 
+        scripts.loopMetaRotationQuicklooks(settings, nDays=nDays, skipExisting=skipExisting)
 
     else:
         print(f"Do not understand {sys.argv[1]}")

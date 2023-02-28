@@ -23,6 +23,7 @@ import ipywidgets
 import cv2
 from PIL import Image
 import skimage
+import flatten_dict
 
 from . import files
 from . import fixes
@@ -66,14 +67,16 @@ DEFAULT_SETTINGS = {
     'threshs': [20, 30, 40, 60, 80, 100, 120],
     'goodFiles': ['None', 'None'],
     'level1detectQuicklook': {
-        'minBlur': 500, 
-        'minSize': 8,
+        'minBlur': 1000, 
+        'minSize': 10,
         'omitLabel4small': True
     },
     'rotate': {},
     'level1detect': {
         'maxMovingObjects': 60,
-        'minAspectRatio' : None
+        'minAspectRatio' : None,
+        'minBlur': 500, 
+        'minSize': 8,
     },
 }
 
@@ -97,10 +100,13 @@ def nicerNames(string):
     return string
 
 def readSettings(fname):
-    config = DEFAULT_SETTINGS
+    # we have to flatten the dictionary so that update works
+    config = flatten_dict.flatten(DEFAULT_SETTINGS)
     with open(fname, 'r') as stream:
-        config.update(yaml.load(stream, Loader=yaml.Loader))
-    return Dict(config)
+        loadedSettings = flatten_dict.flatten(yaml.load(stream, Loader=yaml.Loader))
+        config.update(loadedSettings)
+    # unflatten again and convert to addict.Dict
+    return Dict(flatten_dict.unflatten(config))
 
 def getDateRange(nDays, config, endYesterday=True):
 
@@ -365,7 +371,7 @@ def identifyBlowingSnowData(fnames, config, timeIndex1):
         movingObjects = xr.concat(movingObjects, dim="capture_time")
         # movingObjects = xr.open_mfdataset(fnames[cam],  combine='nested', preprocess=preprocess).movingObjects.load()
         movingObjects = movingObjects.sortby("capture_time")
-        tooManyMove = movingObjects > config.maxMovingObjects
+        tooManyMove = movingObjects > config.level1detect.maxMovingObjects
         tooManyMove = tooManyMove.groupby_bins("capture_time", timeIndex1, labels=timeIndex1[:-1])
         blowingSnowRatio[cam] = tooManyMove.sum()/tooManyMove.count() #now a ratio
         # nan means nothing recorded, so no blowing snow either
@@ -645,14 +651,27 @@ def getPrevRotationEstimate(datetime64, key, config):
     rotate_all = {np.datetime64(datetime.datetime.strptime(d.ljust(15, "0"), "%Y%m%d-%H%M%S")):r[key] for d,r in config.rotate.items()}
     rotTimes = np.array(list(rotate_all.keys()))
     rotDiff = datetime64 -rotTimes 
-    rotTimes = rotTimes[rotDiff>np.timedelta64(0)]
-    rotDiff = rotDiff[rotDiff>np.timedelta64(0)]
+    rotTimes = rotTimes[rotDiff>=np.timedelta64(0)]
+    rotDiff = rotDiff[rotDiff>=np.timedelta64(0)]
     
     try:
         prevTime = rotTimes[np.argmin(rotDiff)]
     except ValueError:
         raise RuntimeError(f"datetime64 {datetime64} before earliest rotation estimate {np.min(np.array(list(rotate_all.keys())))}")
-    return rotate_all[prevTime]
+    return rotate_all[prevTime], prevTime
+
+def rotXr2dict(dat, config=None):
+    if config is None:
+        config = {}
+        config["rotate"] = {}
+    for tt in dat.file_starttime:
+        t1 = pd.to_datetime(str(tt.values)).strftime('%Y%m%d-%H%M%S')
+        config["rotate"][t1] = {
+            "transformation": dat.sel(file_starttime=tt, camera_rotation="mean").to_pandas().to_dict(), 
+            "transformation_err": dat.sel(file_starttime=tt, camera_rotation="err").to_pandas().to_dict()
+            }
+
+    return config
 
 def execute_stdout(command):
     # launch application as subprocess and print output constantly:

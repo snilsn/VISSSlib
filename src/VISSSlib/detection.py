@@ -494,8 +494,7 @@ class detectedParticles(object):
             #     self.lastParticle = None
             #     return added, self.lastParticle
             if not self.lastParticle.success:
-                log.info(" ".join(["particles.add", "PID",
-                                   self.lastParticle.pid, "empty"]))
+                log.info(f"particles.add PID {str(self.lastParticle.pid)} empty")
             else:
 
                 ratio = self.lastParticle.perimeterEroded/self.lastParticle.perimeter
@@ -556,7 +555,7 @@ class detectedParticles(object):
 
         return added
 
-    def collectResults(self):
+    def collectResults(self, includeCnts=False):
 
         fitMethod = ["cv2.fitEllipseDirect", "cv2.fitEllipse",
                       "cv2.minAreaRect"]
@@ -569,7 +568,7 @@ class detectedParticles(object):
             "Dfit", 'angle', 'perimeter', 'perimeterEroded',
             'pixMin', 'pixMax', 'pixMean', 'pixStd', 'pixSkew', 'pixKurtosis',
             'blur', 'capture_id', 'record_id', 'capture_time',
-            'record_time', 'nThread', "aspectRatio"
+            'record_time', 'nThread', "aspectRatio","position_centroid"
         ]:
             arr = []
             for i in self.all.values():
@@ -579,10 +578,10 @@ class detectedParticles(object):
                     arr, coords=[self.particleProps.pid, dim2D], dims=('pid', 'dim2D'))
             # elif key == 'touchesBorder':
             #     self.particleProps[key] = xr.DataArray(arr, coords=[self.particleProps.pid, ['left', 'right','top','bottom']], dims=('pid','side'))
-            if key in ["position_fit", "Dfit"]:
+            elif key in ["position_fit", "Dfit"]:
                 self.particleProps[key] = xr.DataArray(
                     arr, coords=[self.particleProps.pid, fitMethod, dim2D], dims=('pid', 'fitMethod', 'dim2D'))
-            if key in ["angle", "aspectRatio"]:
+            elif key in ["angle", "aspectRatio"]:
                 self.particleProps[key] = xr.DataArray(
                     arr, coords=[self.particleProps.pid, fitMethod], dims=('pid', 'fitMethod'))
             else:
@@ -596,37 +595,37 @@ class detectedParticles(object):
             elif key in ["position_upperLeft", 'pixMin', 'pixMax', 'nThread', "Droi"]:
                 self.particleProps[key] = self.particleProps[key].astype(
                     np.int16)
+        if includeCnts:
+            arrTmp = []
+            arrTmp2 = []
+            for i in self.all.values():
+                arrTmp.append(getattr(i, "cnt").squeeze())
+                cntChild = getattr(i, "cntChild")
+                allChildren = []
+                if cntChild is not None:
+                    for cntChild1 in cntChild:
+                        allChildren.append(cntChild1.squeeze())
+                        allChildren.append(np.full((1, 2), -99))
+                    allChildren = np.concatenate(allChildren, axis=0)
+                else:
+                    allChildren = np.full((1, 2), -99)
+                arrTmp2.append(allChildren)
 
-        arrTmp = []
-        arrTmp2 = []
-        for i in self.all.values():
-            arrTmp.append(getattr(i, "cnt").squeeze())
-            cntChild = getattr(i, "cntChild")
-            allChildren = []
-            if cntChild is not None:
-                for cntChild1 in cntChild:
-                    allChildren.append(cntChild1.squeeze())
-                    allChildren.append(np.full((1, 2), -99))
-                allChildren = np.concatenate(allChildren, axis=0)
-            else:
-                allChildren = np.full((1, 2), -99)
-            arrTmp2.append(allChildren)
+            arrayLengths = [a.shape[0] for a in arrTmp]
+            arrayLengths2 = [a.shape[0] for a in arrTmp2]
 
-        arrayLengths = [a.shape[0] for a in arrTmp]
-        arrayLengths2 = [a.shape[0] for a in arrTmp2]
-
-        maxLen = max(arrayLengths)
-        maxLen2 = max(arrayLengths2)
-        arr = np.zeros([len(arrTmp), maxLen, 2], dtype=np.int16) - 99
-        arr2 = np.zeros([len(arrTmp2), maxLen2, 2], dtype=np.int16) - 99
-        for i, j in enumerate(arrTmp):
-            arr[i, 0:len(j)] = j
-        for i, j in enumerate(arrTmp2):
-            arr2[i, 0:len(j)] = j
-        self.particleProps["cnt"] = xr.DataArray(arr, coords=[self.particleProps.pid, np.arange(
-            arr.shape[-2], dtype=np.int16), ['x', 'y']], dims=('pid', 'cnt_element', 'position'))
-        self.particleProps["cntChildren"] = xr.DataArray(arr2, coords=[self.particleProps.pid, np.arange(
-            arr2.shape[-2], dtype=np.int16), ['x', 'y']], dims=('pid', 'cntChildren_element', 'position'))
+            maxLen = max(arrayLengths)
+            maxLen2 = max(arrayLengths2)
+            arr = np.zeros([len(arrTmp), maxLen, 2], dtype=np.int16) - 99
+            arr2 = np.zeros([len(arrTmp2), maxLen2, 2], dtype=np.int16) - 99
+            for i, j in enumerate(arrTmp):
+                arr[i, 0:len(j)] = j
+            for i, j in enumerate(arrTmp2):
+                arr2[i, 0:len(j)] = j
+            self.particleProps["cnt"] = xr.DataArray(arr, coords=[self.particleProps.pid, np.arange(
+                arr.shape[-2], dtype=np.int16), ['x', 'y']], dims=('pid', 'cnt_element', 'position'))
+            self.particleProps["cntChildren"] = xr.DataArray(arr2, coords=[self.particleProps.pid, np.arange(
+                arr2.shape[-2], dtype=np.int16), ['x', 'y']], dims=('pid', 'cntChildren_element', 'position'))
 
         percentiles = []
         for i in self.all.values():
@@ -723,7 +722,7 @@ class singleParticle(object):
         self.particleContrast = parent.brightnessBackground - self.pixMin
 
         # figure out whether particle was properly detected
-        # if not, contour describes only a line whoch can be detected by
+        # if not, contour describes only a line which can be detected by
         # looking into how perimeter changes during erosion
         erodeMask = cv2.erode(self.particleBoxMask, None, 1)
         cntsAfter = cv2.findContours(erodeMask, cv2.RETR_EXTERNAL,
@@ -1055,8 +1054,8 @@ def detectParticles(fname,
     cropImage = config["cropImage"]
     site = config["site"]
     goodFiles = config["goodFiles"]
-    minBlur4Plotting = config["level1detectQuicklook"]["minBlur"]
-    minDmax4Plotting = config["level1detectQuicklook"]["minSize"]
+    minBlur4write = config["level1detect"]["minBlur"]
+    minDmax4write = config["level1detect"]["minSize"]
 
     fn = files.Filenames(fname, config, version=version)
     print("running", fn.fname.level1detect)
@@ -1078,7 +1077,8 @@ def detectParticles(fname,
     goodFile = goodFilesDict[camera]
 
     fnamesV = fn.fnameMovAllThreads
-
+    asfgh
+    
     if len(fnamesV) == 0:
         with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
             f.write('no data in %s' % fn.fname.metaFrames)
@@ -1116,7 +1116,14 @@ def detectParticles(fname,
 
     for t, fna in fnamesV.items():
         if not os.path.isfile(fna):
-            log.info('movie file not found (yet?) ' + fna)
+            if config.end == "today": 
+                log.info('movie file not found (yet?) ' + fna)
+            else:
+                log.info('movie file not found, no data ' + fna)
+                with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
+                    f.write('no data')
+                with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+                    f.write('no data')
             return 0
 
     if testMovieFile and (goodFile is not None) and (goodFile != "None"):
@@ -1289,7 +1296,9 @@ def detectParticles(fname,
     for nThread, fnameV in fnamesV.items():
         assert fnameV.endswith(config.movieExtension)
         inVid[nThread] = cv2.VideoCapture(fnameV)
-
+        nFrames = int(inVid[nThread].get(cv2.CAP_PROP_FRAME_COUNT))
+        log.info(f'opened {fnameV} with {nFrames} frames.')
+        assert nFrames > 0
     frame = None
 
     if writeImg:
@@ -1389,8 +1398,8 @@ def detectParticles(fname,
 
             if writeImg:
                 if (
-                    (part.Dmax >= minDmax4Plotting) and
-                    (part.blur >= minBlur4Plotting)
+                    (part.Dmax >= minDmax4write) and
+                    (part.blur >= minBlur4write)
                 ):
                     pidStr = '%07i' % part.pid
                     # imName = '%s/%s/%s.npy' % (tarRoot, pidStr[:4], pidStr)

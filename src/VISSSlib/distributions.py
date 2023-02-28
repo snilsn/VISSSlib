@@ -7,6 +7,7 @@ import numpy as np
 import xarray as xr
 import trimesh
 import dask
+from tqdm import tqdm
 
 import functools
 import logging
@@ -23,7 +24,7 @@ def createLevel2match(
     endTime=np.timedelta64(1, "D"),
     blockedPixThresh=0.1, 
     blowingSnowFrameThresh=0.05,
-    skipExisiting = True, 
+    skipExisting = True, 
     ):
 
     fL = files.FindFiles(case, config.leader, config)
@@ -50,7 +51,12 @@ def createLevel2match(
 
 
     matchFiles = fL.listFilesWithNeighbors("level1match")
-    assert len(matchFiles) > 0
+
+    if len(matchFiles) == 0:
+        print("level1match NOT AVAILABLE %s" %
+              lv2File)
+        print("look at ", fL.fnamesPatternExt["level1match"])
+        return None, None
 
     timeIndex = pd.date_range(start=case, end=fL.datetime64 +
                               endTime, freq=freq, inclusive="left")
@@ -60,12 +66,12 @@ def createLevel2match(
     def preprocess(dat):
         del dat["pair_id"]
         # we do not need all variables
-        dat = dat[["capture_time","Dmax", "Dmin", "area","matchScore",
-                                "aspectRatio", "angle", "perimeter", "position3D", 
-                                "phi", "theta", "Ofz"]]
+        dat = dat[["capture_time","Dmax", "area","matchScore",
+                                "aspectRatio", "angle", "perimeter", "position_3D", 
+                                "camera_phi", "camera_theta", "camera_Ofz"]]
         return dat
 
-    print("open match files")
+    print("open level1match files")
     with dask.config.set(**{'array.slicing.split_large_chunks': True}):
         matchDat = xr.open_mfdataset(
             matchFiles, preprocess=preprocess, combine="nested", concat_dim="pair_id")
@@ -93,23 +99,23 @@ def createLevel2match(
         camera=config.leader, drop=True), matchDatT.sel(camera=config.follower, drop=True))
     matchDatTJ = xr.concat(matchDatTJ, dim="camera")
     matchDatTJ["camera"] = ["max", "mean", "min", "leader", "follower"]
-    # position3D is the same for all
-    matchDatTJ["position3D"] = matchDatTJ["position3D"].sel(
+    # position_3D is the same for all
+    matchDatTJ["position_3D"] = matchDatTJ["position_3D"].sel(
         camera="max", drop=True)
 
-    del matchDatTJ["phi"]
-    del matchDatTJ["theta"]
-    del matchDatTJ["Ofz"]
+    del matchDatTJ["camera_phi"]
+    del matchDatTJ["camera_theta"]
+    del matchDatTJ["camera_Ofz"]
 
 
     # remove particles too close to the edge
     # this is possible for non symmetrical particles
     DmaxHalf = matchDatTJ.Dmax.sel(camera="max", drop=True)/2
     farEnoughFromBorder = (
-        (matchDatTJ.position3D.sel(position3D_elements=["x", "y", "z"]) >= DmaxHalf).all("position3D_elements") &
-        (config.frame_width - matchDatTJ.position3D.sel(position3D_elements=["x", "y"]) >= DmaxHalf).all("position3D_elements") &
+        (matchDatTJ.position_3D.sel(dim3D=["x", "y", "z"]) >= DmaxHalf).all("dim3D") &
+        (config.frame_width - matchDatTJ.position_3D.sel(dim3D=["x", "y"]) >= DmaxHalf).all("dim3D") &
         (config.frame_height -
-         matchDatTJ.position3D.sel(position3D_elements="z", drop=True) >= DmaxHalf)
+         matchDatTJ.position_3D.sel(dim3D="z", drop=True) >= DmaxHalf)
     )
     print("farEnoughFromBorder applies to",
           (farEnoughFromBorder.sum()/len(farEnoughFromBorder)).values*100, 
@@ -119,7 +125,7 @@ def createLevel2match(
     matchDatTJ = addPerParticleVariables(matchDatTJ)
 
     #position is not needed nay more
-    del matchDatTJ["position3D"]
+    del matchDatTJ["position_3D"]
 
     # now load data
     matchDatTJ.load()
@@ -132,8 +138,8 @@ def createLevel2match(
 
     # iterate through every 1 min piece
     res = {}
-    for interv, matchDatG1 in iter(matchDatG):
-        print(interv)
+    for interv, matchDatG1 in tqdm(matchDatG):
+        #print(interv)
         tmp = []
         # for each camera/min/max/mean seperately
         for cam in matchDatG1.camera:
@@ -274,8 +280,8 @@ def estimateObservationVolume(matchDatT, config, DbinsPixel, timeIndex1):
 
     '''
 
-    rotDat = matchDatT[["phi", "theta", "Ofz"]].sel(
-        rotation="mean").groupby_bins("time", timeIndex1, squeeze=False).mean()
+    rotDat = matchDatT[["camera_phi", "camera_theta", "camera_Ofz"]].sel(
+        camera_rotation="mean").groupby_bins("time", timeIndex1, squeeze=False).mean()
     rotDat = rotDat.rename(time_bins="time")
     # we want time stamps not intervals
     rotDat["time"] = [a.left for a in rotDat["time"].values]
@@ -287,9 +293,9 @@ def estimateObservationVolume(matchDatT, config, DbinsPixel, timeIndex1):
     for ii in range(len(rotDat.time)):
         Ds, volume = estimateVolumes(config.frame_width,
                                      config.frame_height,
-                                     rotDat.phi.values[ii],
-                                     rotDat.theta.values[ii],
-                                     rotDat.Ofz.values[ii],
+                                     rotDat.camera_phi.values[ii],
+                                     rotDat.camera_theta.values[ii],
+                                     rotDat.camera_Ofz.values[ii],
                                      minDistance=min(DbinsPixel),
                                      maxDistance=max(DbinsPixel),)
         volumes.append(volume[1:])
@@ -299,7 +305,11 @@ def estimateObservationVolume(matchDatT, config, DbinsPixel, timeIndex1):
 def calibrateData(level2dat, matchDatT, config, DbinsPixel, timeIndex1):
     '''go from pixel to SI units'''
 
-    resolution = config.resolution * 1e-6
+    assert "intercept" in config.calibration.keys()
+    assert "slope" in config.calibration.keys()
+
+    slope = config.calibration.slope
+    intercept = config.calibration.intercept
 
     calibDat = level2dat.rename(N="counts").copy()
 
@@ -308,9 +318,9 @@ def calibrateData(level2dat, matchDatT, config, DbinsPixel, timeIndex1):
         volumes, coords=[level2dat.time, level2dat.D_bins])
 
     # apply resolution
-    calibDat["D_bins"] = calibDat["D_bins"] * config.resolution*1e-6
-    calibDat["obs_volume"] = calibDat["obs_volume"] * \
-        resolution**3
+    calibDat["D_bins"] = (calibDat["D_bins"] - intercept) / slope / 1e6
+    # assume that intercept is an artifact of Dmax estimation
+    calibDat["obs_volume"] = calibDat["obs_volume"]  / slope**3 / 1e6**3
 
     # go from intervals to center values
     calibDat["D_bins_left"] = xr.DataArray(
@@ -321,16 +331,23 @@ def calibrateData(level2dat, matchDatT, config, DbinsPixel, timeIndex1):
         D_bins=[b.mid for b in calibDat.D_bins.values])
 
     #remaining variables
-    calibDat["area_dist"] = calibDat["area_dist"] * resolution**2
-    calibDat["perimeter_dist"] = calibDat["perimeter_dist"] * resolution
-    calibDat["Dmax_mean"] = calibDat["Dmax_mean"] * resolution
-    calibDat["Dmin_mean"] = calibDat["Dmin_mean"] * resolution
-    calibDat["area_mean"] = calibDat["area_mean"] * resolution**2
-    calibDat["perimeter_mean"] = calibDat["perimeter_mean"] * resolution
-    calibDat["Dequiv_mean"] = calibDat["Dequiv_mean"] * resolution
+    # assume that intercept is an artifact of Dmax estimation
+    calibDat["area_dist"] = calibDat["area_dist"]  / slope**2 / 1e6**2
+    calibDat["perimeter_dist"] = calibDat["perimeter_dist"] / slope / 1e6
+    calibDat["Dmax_mean"] = (calibDat["Dmax_mean"] -intercept )/ slope / 1e6
+    calibDat["area_mean"] = calibDat["area_mean"]  / slope**2 / 1e6**2
+    calibDat["perimeter_mean"] = calibDat["perimeter_mean"] / slope / 1e6
+    # is the intercept correction needed for Dequiv? good question...
+    calibDat["Dequiv_mean"] = (calibDat["Dequiv_mean"]) / slope / 1e6
 
     return calibDat
 
+
+def applyCalib(pixel, slope, intercept):
+    #pix = slope*um + intercept
+    um = (pixel - intercept)/slope
+    m = um / 1e6
+    return m
 
 def getDataQuality(case, config, timeIndex, timeIndex1):
     """Estimate data quality for level2 
@@ -453,7 +470,7 @@ def createLeaderBox(width, height, delta=0):
     return _createBox(p1, p2, p3, p4, p5, p6, p7, p8)
 
 
-def createFollowerBox(width, height, phi, theta, Ofz, delta=0):
+def createFollowerBox(width, height, camera_phi, camera_theta, camera_Ofz, delta=0):
     '''get trimesh representing the follower observation volume
 
     Parameters
@@ -462,11 +479,11 @@ def createFollowerBox(width, height, phi, theta, Ofz, delta=0):
         image width
     height : int
         image height
-    phi : float
+    camera_phi : float
         roll of follower camera
-    theta : float
+    camera_theta : float
         pitch of follower camera
-    Ofz : float
+    camera_Ofz : float
         offset in z direction
     delta : number, optional
         distance to the edges (the default is 0)
@@ -485,19 +502,19 @@ def createFollowerBox(width, height, phi, theta, Ofz, delta=0):
 
     psi = Olx = Ofy = 0.
 
-    p1 = shiftRotate_F2L(X0, Y0, Z0, phi, theta, psi, Olx, Ofy, Ofz)
-    p2 = shiftRotate_F2L(X0, Y0, Z1, phi, theta, psi, Olx, Ofy, Ofz)
-    p3 = shiftRotate_F2L(X0, Y1, Z0, phi, theta, psi, Olx, Ofy, Ofz)
-    p4 = shiftRotate_F2L(X0, Y1, Z1, phi, theta, psi, Olx, Ofy, Ofz)
-    p5 = shiftRotate_F2L(X1, Y0, Z0, phi, theta, psi, Olx, Ofy, Ofz)
-    p6 = shiftRotate_F2L(X1, Y0, Z1, phi, theta, psi, Olx, Ofy, Ofz)
-    p7 = shiftRotate_F2L(X1, Y1, Z0, phi, theta, psi, Olx, Ofy, Ofz)
-    p8 = shiftRotate_F2L(X1, Y1, Z1, phi, theta, psi, Olx, Ofy, Ofz)
+    p1 = shiftRotate_F2L(X0, Y0, Z0, camera_phi, camera_theta, psi, Olx, Ofy, camera_Ofz)
+    p2 = shiftRotate_F2L(X0, Y0, Z1, camera_phi, camera_theta, psi, Olx, Ofy, camera_Ofz)
+    p3 = shiftRotate_F2L(X0, Y1, Z0, camera_phi, camera_theta, psi, Olx, Ofy, camera_Ofz)
+    p4 = shiftRotate_F2L(X0, Y1, Z1, camera_phi, camera_theta, psi, Olx, Ofy, camera_Ofz)
+    p5 = shiftRotate_F2L(X1, Y0, Z0, camera_phi, camera_theta, psi, Olx, Ofy, camera_Ofz)
+    p6 = shiftRotate_F2L(X1, Y0, Z1, camera_phi, camera_theta, psi, Olx, Ofy, camera_Ofz)
+    p7 = shiftRotate_F2L(X1, Y1, Z0, camera_phi, camera_theta, psi, Olx, Ofy, camera_Ofz)
+    p8 = shiftRotate_F2L(X1, Y1, Z1, camera_phi, camera_theta, psi, Olx, Ofy, camera_Ofz)
 
     return _createBox(p1, p2, p3, p4, p5, p6, p7, p8)
 
 
-def estimateVolume(width, height, phi, theta, Ofz, delta=0):
+def estimateVolume(width, height, camera_phi, camera_theta, camera_Ofz, delta=0):
     '''estimate intersecting volume of leader and follower
 
 
@@ -507,11 +524,11 @@ def estimateVolume(width, height, phi, theta, Ofz, delta=0):
         image width
     height : int
         image height
-    phi : float
+    camera_phi : float
         roll of follower camera
-    theta : float
+    camera_theta : float
         pitch of follower camera
-    Ofz : float
+    camera_Ofz : float
         offset in z direction
     delta : number, optional
         distance to the edges (the default is 0)
@@ -522,14 +539,14 @@ def estimateVolume(width, height, phi, theta, Ofz, delta=0):
         intersection volume
     '''
 
-    follower = createFollowerBox(width, height, phi, theta, Ofz, delta=delta)
+    follower = createFollowerBox(width, height, camera_phi, camera_theta, camera_Ofz, delta=delta)
     leader = createLeaderBox(width, height, delta=delta)
 
     return leader.intersection(follower).volume
 
 
 @functools.cache
-def estimateVolumes(width, height, phi, theta, Ofz, minDistance, maxDistance, nSteps=5, interpolate=True):
+def estimateVolumes(width, height, camera_phi, camera_theta, camera_Ofz, minDistance, maxDistance, nSteps=5, interpolate=True):
     '''estimate intersecting volume of leader and follower for different distances to 
     the edge of the volume
 
@@ -539,11 +556,11 @@ def estimateVolumes(width, height, phi, theta, Ofz, minDistance, maxDistance, nS
         image width
     height : int
         image height
-    phi : float
+    camera_phi : float
         roll of follower camera
-    theta : float
+    camera_theta : float
         pitch of follower camera
-    Ofz : float
+    camera_Ofz : float
         offset in z direction
     minDistance : int
         minimum distance to consider
@@ -563,12 +580,12 @@ def estimateVolumes(width, height, phi, theta, Ofz, minDistance, maxDistance, nS
     volumes = []
     Ds = np.linspace(minDistance, maxDistance, nSteps, dtype=int)
 
-    if np.any(np.isnan((phi, theta, Ofz))):
+    if np.any(np.isnan((camera_phi, camera_theta, camera_Ofz))):
         volumes = np.full(Ds.shape, np.nan)
     else:
         for d in Ds:
             volumes.append(estimateVolume(
-                width, height, phi, theta, Ofz, delta=d))
+                width, height, camera_phi, camera_theta, camera_Ofz, delta=d))
 
     if interpolate:
         Ds, volumes = interpolateVolumes(minDistance, maxDistance, Ds, volumes)

@@ -388,7 +388,7 @@ def _getMetaData1(metaFname, camera, config, stopAfter=-1, detectMotion4oldVersi
 
             #for MOSAiC we can use an exisiting estimate of the numbe rof moving pixels even though it is not in the ASCII data
             fn = files.Filenames(metaFname, config, version=version)
-            helperDat = xr.open_dataset(f'{config["pathOut"].format(level="metaFrames_nMovingPixel")}/{config.site}_{camera}_{fn.year}{fn.month}{fn.day}.nc')
+            helperDat = xr.open_dataset(f'{config["pathOut"].format(level="metaFrames_nMovingPixel", version=version)}/{config.site}_{camera}_{fn.year}{fn.month}{fn.day}.nc')
             try:
                 helperDat = helperDat.sel(record_starttime=fn.datetime64, drop=True)
                 helperDat = helperDat.sel(record_id = metaDat.record_id.values, drop=True)
@@ -630,7 +630,7 @@ def getEvents(fnames0, config, fname0status=None):
             metaDats['blocking'] = xr.DataArray(np.zeros((nEvents, len(bins4xr)))*np.nan, dims=["file_starttime", "blockingThreshold"], coords=[metaDats.file_starttime,bins4xr])
 
     # no status files are available for MOSAiC, therefore use netcdf generated from log files to figure out when instrument was started (and clock was reset!)
-    if config.site == "mosaic":
+    if (len(fnames0) > 0) and (config.site == "mosaic"):
 
         #becuase this is the only time we use _softwareStarttimes files, name is hardcoded here:
         path = "/".join(fname0.split("/")[:-6])
@@ -675,8 +675,11 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
             print("eventDat empty, redoing event file" )
             eventDat.close()
         else:
-            nFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
-            nFiles = int(nFiles.values)
+            if "noLevel0Files" in eventDat.attrs:
+                nFiles = eventDat.attrs["noLevel0Files"]
+            else:
+                nFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
+                nFiles = int(nFiles.values)
             if nFiles == len(fnames0):
                 print("Skipping", case, eventFile )
                 eventDat.close()
@@ -693,6 +696,9 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
         assert len(metaDats.file_starttime) > 0
         fn.createDirs()
         metaDats = tools.finishNc(metaDats)
+        nFiles = sum(metaDats.event == "newfile") + sum(metaDats.event == "brokenfile")
+        nFiles = int(nFiles.values)
+        metaDats.attrs["noLevel0Files"] = nFiles
         metaDats.to_netcdf(eventFile)
 
 

@@ -20,10 +20,10 @@ from .tools import nicerNames, otherCamera
 from . import __version__
 
 
-dailyLevels = ["metaEvents", "metaMatchCoefficients", "level2match"]
+dailyLevels = ["metaEvents", "metaRotation", "level2match"]
 fileLevels = ["level1detect", "level1match", "level1track", "metaFrames", "metaDetection", "imagesL1detect"]#, "metaFixedCaptureId"]
-quicklookLevelsSep = ["level0", "metaFrames", "metaEvents", "level1detect", "level1match"]
-quicklookLevelsComb = [ "matchCoefficients"]
+quicklookLevelsSep = ["level0", "metaFrames", "metaEvents", "level1detect", "level1match", "metaRotation"]
+quicklookLevelsComb = [ "level2match"]
 imageLevels = ["imagesL1detect"]
 
 class FindFiles(object):
@@ -34,6 +34,7 @@ class FindFiles(object):
 
         for level 0, only thread 0 files are returned!
         '''
+        assert type(config) is not str
 
         if type(case) is not str:
             self.case = pn.to_datetime(case).strftime('%Y%m%d-%H%M%S')
@@ -51,7 +52,11 @@ class FindFiles(object):
 
         self.year  =self.case[:4]
         self.month  =self.case[4:6]
-        self.day  =self.case[6:8]        
+        self.day  =self.case[6:8]
+
+        self.hour = self.case[9:11]
+        self.minute = self.case[11:13]
+
         try:
             self.timestamps  =self.case[9:]        
         except IndexError:
@@ -69,7 +74,7 @@ class FindFiles(object):
 
         self.outpath = Dict({})
         for dL in fileLevels + dailyLevels:
-            self.outpath[dL] = outpath.format(site=config.site, level=dL)
+            self.outpath[dL] = outpath.format(site=config.site, level=dL, version=self.version)
         self.outpath["level0"] = config["path"].format(site=config["site"], level='level0')+f'/{self.computer}_{config["visssGen"]}_{camera}/{self.year}/{self.month}/{self.day}'
 
         # for iL in imageLevels:
@@ -115,14 +120,20 @@ class FindFiles(object):
         self.quicklookCurrent = Dict({})
         self.quicklookPath = Dict({})
         for qL in quicklookLevelsSep + quicklookLevelsComb:
-            self.quicklookPath[qL] =f'{config["pathQuicklooks"].format(site=config["site"], level=qL)}/{self.year}'
+            self.quicklookPath[qL] =f'{config["pathQuicklooks"].format(version=version, site=config["site"], level=qL)}/{self.year}'
 
         for qL in quicklookLevelsSep:
-            self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
-            self.quicklookCurrent[qL] = f"{config['pathQuicklooks'].format(site=config['site'], level=qL)}/{qL}_{config['site']}_{nicerNames(camera)}_current.png"
+            if self.hour == "":
+                self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{nicerNames(camera)}_{self.year}{self.month}{self.day}.png"
+            else:
+                self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{nicerNames(camera)}_{self.year}{self.month}{self.day}T{self.hour}.png"
+            self.quicklookCurrent[qL] = f"{config['pathQuicklooks'].format(version=version,site=config['site'], level=qL)}/{qL}_{config['site']}_{nicerNames(camera)}_current.png"
         for qL in quicklookLevelsComb:
-            self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
-            self.quicklookCurrent[qL] = f"{config['pathQuicklooks'].format(site=config['site'], level=qL)}/{qL}_{config['site']}_current.png"
+            if self.hour == "":
+                self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{self.year}{self.month}{self.day}.png"
+            else:
+                self.quicklook[qL] = f"{self.quicklookPath[qL]}/{qL}_V{version}_{config['site']}_{self.year}{self.month}{self.day}T{self.hour}.png"
+            self.quicklookCurrent[qL] = f"{config['pathQuicklooks'].format(version=version,site=config['site'], level=qL)}/{qL}_{config['site']}_current.png"
 
         
     @functools.cache
@@ -151,16 +162,48 @@ class FindFiles(object):
 
     @property
     def isCompleteL0(self):
-        return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level0")))
+        return self.nMissingL0 == 0
     @property
     def isCompleteL1detect(self):
-        return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level1detect")))
+        return self.nMissingL1detect == 0
     @property
     def isCompleteMetaFrames(self):
-        return (len(self.listFiles("level0txt")) == len(self.listFilesExt("metaFrames")))
+        return self.nMissingMetaFrames == 0
     @property
     def isCompleteL1match(self):
-        return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level1match")))
+        return self.nMissingL1match == 0
+
+    def isComplete(self, level):
+        return self.nMissing(level) == 0
+
+
+    @property
+    def nL0(self):
+        return len(self.listFiles("level0txt"))
+
+    @property
+    def nMissingL0(self):
+        return self.nMissing("level0") 
+    @property
+    def nMissingL1detect(self):
+        return self.nMissing("level1detect") 
+    @property
+    def nMissingMetaFrames(self):
+        return self.nMissing("metaFrames") 
+    @property
+    def nMissingL1match(self):
+        return self.nMissing("level1match") 
+
+    def nMissing(self, level):
+        if level in dailyLevels:
+            return 1 - len(self.listFilesExt(level)) 
+        else:
+            return self.nL0 - len(self.listFilesExt(level)) 
+
+
+
+
+
     # @property
     # def isCompleteL2match(self):
     #     return (len(self.listFiles("level0txt")) == len(self.listFilesExt("level2match")))
@@ -200,6 +243,7 @@ class Filenames(object):
         create matching filenames based on mov file
         Use always thread 0 file!
         '''
+        assert type(config) is not str
         if  fname.endswith("txt"):
             fname = fname.replace("txt", config.movieExtension)
 
@@ -251,11 +295,11 @@ class Filenames(object):
 
         for fL in fileLevels:
             self.fname[fL] = '%s/%s_V%s_%s_%s.nc' % (
-            self.outpath.format(site=config["site"], level=fL), fL, version, config["site"], self.basename)
+            self.outpath.format(version=self.version, site=config["site"], level=fL), fL, version, config["site"], self.basename)
             self.fname[fL] = self.fname[fL].replace("//", "/")
         for fL in dailyLevels:
             self.fname[fL] = '%s/%s_V%s_%s_%s.nc' % (
-            self.outpath.format(site=config["site"], level=fL), fL, version, config["site"], self.basenameShort)
+            self.outpath.format(version=self.version, site=config["site"], level=fL), fL, version, config["site"], self.basenameShort)
             self.fname[fL] = self.fname[fL].replace("//", "/")
 
         self.fname["imagesL1detect"] = self.fname["imagesL1detect"].replace(".nc", ".zip")
@@ -268,7 +312,7 @@ class Filenames(object):
         outpathQuicklooks = "%s/%s/%s/%s" % (config["pathQuicklooks"], self.year, self.month, self.day)
         self.quicklookPath = Dict({})
         for qL in quicklookLevelsSep + quicklookLevelsComb:
-            self.quicklookPath[qL] =outpathQuicklooks.format(site=config['site'], level=qL)
+            self.quicklookPath[qL] =outpathQuicklooks.format(version=version, site=config['site'], level=qL)
 
         return
 
@@ -277,7 +321,7 @@ class Filenames(object):
         res = []
         for fL in dailyLevels + fileLevels:
             res.append(os.system('mkdir -p %s' %
-                  self.outpath.format(site=self.config["site"], level=fL)))
+                  self.outpath.format(version=self.version, site=self.config["site"], level=fL)))
         return res
 
     def createQuicklookDirs(self):
@@ -527,6 +571,7 @@ class FilenamesFromLevel(Filenames):
         get all filenames from a level 1 or level 2 file
         '''
         
+        assert type(config) is not str
         level, version, site, computer, visssGen, visssType, visssSerial, ts = fname.split("/")[-1].split("_")
         #remove leading "V"
         version = version[1:]
@@ -540,7 +585,7 @@ class FilenamesFromLevel(Filenames):
         month = case[4:6]
         day = case[6:8]
 
-        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["pathOut"].format(level="level0", site=site), computer, camera, year, month, day)
+        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["pathOut"].format(level="level0", site=site, version=version), computer, camera, year, month, day)
         if config["nThreads"] is None:
             fnameLevel0 = f"{outpath0}/{basename}.{config['movieExtension']}"
         else:

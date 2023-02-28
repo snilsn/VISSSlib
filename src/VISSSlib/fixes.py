@@ -242,6 +242,8 @@ def makeCaptureTimeEven(datF, config, dim="capture_time"):
     else:
         datF4slope = datF
 
+    assert len(datF4slope.capture_id) > 1, "need at least two samples to do derivative" 
+
     assert np.all(datF4slope.capture_id.diff(dim)>=0), "capture_id must increase monotonically "
     assert np.all(datF4slope.capture_time.diff(dim).astype(int)>0), "capture_time must increase monotonically "
 

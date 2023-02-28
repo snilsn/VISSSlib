@@ -14,7 +14,7 @@
 # __version__ = '20220521' # Aug 3rd: added background image and nThread to level1detect without new version number
 # __version__ = '20221024' # bug fixes: blur, angle. more blocking bins 4 event file. using canny for particle detection, added cnt, perimeterEroded to nc file. 
                         # images in tar file, alpha channel shows applied mask, particles touching border noct procesed
-# __version__ = '20230106' # Dmax bugfix, clean up of variables, 
+# __version__ = '20230106' # Dmax bugfix, clean up of variables, position_centroid missing until jan 31st!!
 
 # Version is pulled from git tag!!
 

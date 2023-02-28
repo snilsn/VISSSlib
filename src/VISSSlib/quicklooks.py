@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import shutil
+from tqdm import tqdm
 
 from image_packer import packer
 
@@ -118,18 +119,27 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                        extra=1,
                        readParticlesFromFiles=True,
                        skipExisting=True,
+                       ffOut="default",
+                       timeStep="variable", #attempt to fill plot equally
+                       minBlur="config",
+                       minSize="config",
+                       omitLabel4small="config",
+                       timedelta=np.timedelta64(1,"D"),
                        ):
 
 
     if type(config) is str:
         config = tools.readSettings(config)
-    minBlur = config["level1detectQuicklook"]["minBlur"]
-    minSize = config["level1detectQuicklook"]["minSize"]
-    omitLabel4small = config["level1detectQuicklook"]["omitLabel4small"]
+    if minBlur == "config":
+        minBlur = config["level1detectQuicklook"]["minBlur"]
+    if minSize == "config":
+        minSize = config["level1detectQuicklook"]["minSize"]
+    if omitLabel4small == "config":
+        omitLabel4small = config["level1detectQuicklook"]["omitLabel4small"]
 
 
     total_width = (container_width + extra) * nTiles // nRows
-    max_height = (20 + container_height_max) * nRows + 60
+    max_height = (20 + extra + container_height_max) * nRows + 60
 
     # let use a matplotlib font becuase we can be sure it is there
     mpl_data_dir = os.path.dirname(mpl.matplotlib_fname())
@@ -138,51 +148,54 @@ def createLevel1detectQuicklook(timestamp, camera, config,
     fontL = ImageFont.truetype(f"{mpl_ttf_dir}/DejaVuSans.ttf", 16)
 
     ff = files.FindFiles(timestamp, camera, config, version)
+    if ffOut == "default":
+        ffOut = ff.quicklook.level1detect
 
     site = config["site"]
 
     particlesPloted = 0
 
-    if os.path.isfile(ff.quicklook.level1detect) and skipExisting:
+    if os.path.isfile(ffOut) and skipExisting:
         if len(ff.listFiles("level0")) == 0:
-            print("SKIPPING - file exists and no level0 data", ff.quicklook.level1detect)
+            print("SKIPPING - file exists and no level0 data", ffOut)
             return None, None
-        if os.path.getmtime(ff.quicklook.level1detect) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
-            print("file exists but older than event file, redoing", ff.quicklook.level1detect)
+        if os.path.getmtime(ffOut) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
+            print("file exists but older than event file, redoing", ffOut)
         else:
-            print("SKIPPING - file exists", ff.quicklook.level1detect)
+            print("SKIPPING - file exists", ffOut)
             return None, None
     if site != "mosaic":
         if (len(ff.listFiles("level0")) == 0) and (len(ff.listFiles("level0status")) == 0):
-            print("NO DATA YET (TRANSFERRED?)", ff.quicklook.level1detect)
+            print("NO DATA YET (TRANSFERRED?)", ffOut)
             return None, None
 
     if len(ff.listFiles("metaFrames")) > len(ff.listFiles("level0")):
-        print("DATA TRANSFER INCOMPLETE ", ff.quicklook.level1detect)
+        print("DATA TRANSFER INCOMPLETE ", ffOut)
         print(len(ff.listFiles("level0")), "of", len(ff.listFiles("metaFrames")), "transmitted")
         return None, None
 
     if (len(ff.listFilesExt("level1detect")) == 0) and (len(ff.listFiles("level0")) > 0):
-        print("NO DATA YET ", ff.quicklook.level1detect)
+        print("NO DATA YET ", ffOut)
         return None, None
 
     if not ff.isCompleteL1detect:
         print("NOT COMPLETE YET %i of %i %s" %
-              (len(ff.listFilesExt("level1detect")), len(ff.listFiles("level0txt")),  ff.quicklook.level1detect))
+              (len(ff.listFilesExt("level1detect")), len(ff.listFiles("level0txt")),  ffOut))
 
 #         if (len(ff.listFilesExt("level1detect")) == len(ff.listFiles("level0"))):
 #             afshgsa
         return None, None
 
 #     else:
-    print("RUNNING ", ff.quicklook.level1detect)
+    print("RUNNING open files ", ffOut, len(ff.listFiles("metaFrames")))
 
     ff.createQuicklookDirs()
 
     dats2 = []
+    l1Files = ff.listFilesWithNeighbors("level1detect")
 
-    for fname1 in ff.listFiles("metaFrames"):
-        fname2 = fname1.replace('metaFrames', 'level1detect')
+    for fname2 in tqdm(l1Files):
+        fname1 = fname2.replace('level1detect','metaFrames')
         try:
             dat2 = xr.open_dataset(fname2)
         except FileNotFoundError:
@@ -222,11 +235,12 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
     else:
         limDat = xr.concat(dats2, dim='fpid')
+        limDat = limDat.isel(fpid=(limDat.record_time>=ff.datetime64)&(limDat.record_time<(ff.datetime64+timedelta)))
     #         limDat = dats2
         print("merged")
 
         if len(limDat.fpid) == 0:
-            print("TOO FEW DATA ", ff.quicklook.level1detect)
+            print("TOO FEW DATA ", ffOut)
 
             draw = ImageDraw.Draw(new_im)
             draw.text((total_width//3, max_height//3),
@@ -238,9 +252,15 @@ def createLevel1detectQuicklook(timestamp, camera, config,
             print('Total number of particles for plotting %i' %
                   len(limDat.fpid))
 
-            timeSteps = np.percentile(
+            if timeStep == "variable":
+                timeSteps = np.percentile(
                 limDat.record_time, np.linspace(0, 100, nTiles+1))
-
+            elif timeStep == "fixed":
+                timeSteps = np.array(
+                    pd.date_range(start=ff.datetime64, periods=nTiles+1, end=ff.datetime64+timedelta)
+                    )
+            else:
+                raise ValueError("do not understand timeStep")
             mosaics = []
 
             videos = {}
@@ -276,7 +296,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                     nParticlesNeeded = len(pids)
                 else:
                     try:
-                        nParticlesNeeded = np.where(thisDat.sel(fpid=pids).Droi.prod("dim2D").cumsum("fpid")/containerSize > 1)[0][0] + 1
+                        nParticlesNeeded = np.where((thisDat.sel(fpid=pids).Droi+1).prod("dim2D").cumsum("fpid")/containerSize > 0.95)[0][0] + 1
                     except IndexError:
                         nParticlesNeeded = nPids
 
@@ -339,12 +359,15 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                     # im = av.doubleDynamicRange(im, offset=2)
 
                     im = np.pad(im, [(0, 1), (0, 1)])
-                    fid = np.where(fname == np.array(ff.listFiles("metaFrames")))[0][0]
-
+                    try:
+                        fid = np.where(fname == np.array(ff.listFiles("metaFrames")))[0][0]
+                    except:
+                        fid = -1
                     text = np.full((100, 100), background, dtype=np.uint8)
-                    text = cv2.putText(text, '%i.%i' % (fid, pid),
-                                       (0, 50), cv2.FONT_HERSHEY_PLAIN, .75, 255, 1,)
 
+                    textStr = '%i.%i' % (fid, pid)
+                    text = cv2.putText(text, textStr,
+                                       (0, 50), cv2.FONT_HERSHEY_PLAIN, .75, 255, 1,)
                     text = crop(text)
 
                     y1, x1 = im.shape
@@ -370,23 +393,27 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                 # make tile
                 images = [Image.fromarray(im) for im in ims]
                 if len(images) == 0:
-                    continue
-                mosaic = Packer_patched(images).pack(
-                    container_width=container_width, container_height_max=container_height_max)
-                mosaic = np.array(mosaic)
+                    mosaic = np.ones((container_height_max, container_width, 3), dtype=np.uint8) * 0
+                else:
+                    mosaic = Packer_patched(images).pack(
+                        container_width=container_width, container_height_max=container_height_max)
+                    mosaic = np.array(mosaic)
 
-                if container_width > mosaic.shape[1]:
-                    mosaic = np.pad(
-                        mosaic, [(0, 0), (0, container_width-mosaic.shape[1]), (0, 0)])
+                    if container_width > mosaic.shape[1]:
+                        mosaic = np.pad(
+                            mosaic, [(0, 0), (0, container_width-mosaic.shape[1]), (0, 0)])
 
-                # sometimes container is too large...
-                mosaic = mosaic[:container_height_max, :container_width]
+                    # sometimes container is too large...
+                    mosaic = mosaic[:container_height_max, :container_width]
 
                 label = Image.fromarray(
                     np.ones((20, mosaic.shape[1], 3), dtype=np.uint8) * 255)
                 drawL = ImageDraw.Draw(label)
-                drawL.text((0, 0), '%s-%s' % (str(t1).split('.')[0].split('T')[1], str(
-                    t2).split('.')[0].split('T')[1]), (0, 0, 0), font=fontL)
+                textStr = '%s-%s' % (str(t1).split('.')[0].split('T')[1], str(
+                    t2).split('.')[0].split('T')[1])
+                if nParticlesNeeded != nPids:
+                    textStr += " (R)"
+                drawL.text((0, 0), textStr, (0, 0, 0), font=fontL)
 
                 mosaic = Image.fromarray(np.vstack((label, mosaic)))
     #             display(mosaic)
@@ -412,8 +439,12 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
     tenmm = 1e6/config["resolution"]/100
 
-    title = '%s-%s-%s %s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger detections plotted, 10 mm = %.1f px =' % (
+    if ff.hour =="":
+        title = '%s-%s-%s %s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger detections plotted, 10 mm = %.1f px =' % (
         ff.year, ff.month, ff.day, tools.nicerNames(camera), config["name"], minSize, minSize * config["resolution"] * 1e-6 * 1000, particlesPloted, nParticles, tenmm)
+    else:
+        title = '%s-%s-%sT%s %s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger detections plotted, 10 mm = %.1f px =' % (
+        ff.year, ff.month, ff.day, ff.hour, tools.nicerNames(camera), config["name"], minSize, minSize * config["resolution"] * 1e-6 * 1000, particlesPloted, nParticles, tenmm)
 
     # new_im = cv2.putText(np.array(new_im), title,
     #                      (0, 45), FONT, FONT_SCALE, (0, 0, 0), FONT_THICKNESS,)
@@ -427,10 +458,10 @@ def createLevel1detectQuicklook(timestamp, camera, config,
     draw.line((width + 15, 30, width +
                15+round(tenmm), 30), fill=0, width=5)
 
-    new_im.save(ff.quicklook.level1detect)
-    print("SAVED ", ff.quicklook.level1detect)
+    new_im.save(ffOut)
+    print("SAVED ", ffOut)
 
-    return ff.quicklook.level1detect, new_im
+    return ffOut, new_im
 
 
 class Packer_patched(packer.Packer):
@@ -827,21 +858,23 @@ def metaFramesQuicklook(
             queue=metaDats.queue_size
             ax1.plot(metaDats.capture_time, queue)
             ax1.set_ylabel('frames in queue', fontsize=20)
+            ax1.set_title(r"$\bf{" + str(camera_new) + "}$""\n""queue size", fontsize=20)
         else:
             delay=(metaDats.record_time-metaDats.capture_time).astype(int)/1e9
             ax1.plot(metaDats.capture_time, delay)
             ax1.set_ylabel('record delay [s]', fontsize=20)
+            ax1.set_title(r"$\bf{" + str(camera_new) + "}$""\n""record delay", fontsize=20)
 
     isBlocked = (events.blocking.dropna("file_starttime").sel(blockingThreshold=50) > 0.1)
     isBlocked = isBlocked.file_starttime.where(isBlocked).values
-
+    isBlocked = isBlocked[~ np.isnan(isBlocked)]
 
 
     ylim = ax1.get_ylim() 
     if isBlocked.any():
         ax1.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
-    ax1.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
-    ax1.set_title(r"$\bf{" + str(camera_new) + "}$""\n""queue size", fontsize=20)
+    if ts.notnull().sum() > 0:
+        ax1.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
     ax1.set_ylim(ylim)
     ax1.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
     ax1.tick_params(axis='both', labelsize=15)
@@ -854,7 +887,8 @@ def metaFramesQuicklook(
     ylim = [0,config.fps*5*60*1.05]
     if isBlocked.any():
         ax2.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
-    ax2.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
+    if ts.notnull().sum() > 0:
+        ax2.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
     ax2.set_ylim(ylim)
     ax2.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
     ax2.set_title('total frames / 5 min', fontsize=20)
@@ -869,7 +903,8 @@ def metaFramesQuicklook(
         ylim = [0,1]
         if isBlocked.any():
             ax3.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
-        ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5)
+        if ts.notnull().sum() > 0:
+            ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5)
         ax3.set_ylim(ylim)
         ax3.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
         ax3.set_title('blocking', fontsize=20)
@@ -883,7 +918,8 @@ def metaFramesQuicklook(
     else: 
         if isBlocked.any():
             ax3.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
-        ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5)
+        if ts.notnull().sum() > 0:
+            ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5)
         ax3.set_ylim(0,1)
         ax3.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
         ax3.set_title('blocking', fontsize=20)
@@ -972,7 +1008,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     assert len(fnames1DL)>0
     assert len(fnames1DF)>0
 
-    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position3D", "position_upperLeft","Droi", "theta", "phi", "Ofz"])        
+    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position_3D", "position_upperLeft","Droi", "camera_theta", "camera_phi", "camera_Ofz"])        
     datM = datMfull.isel(fpair_id=(datMfull.matchScore >= minMatchScore))
 
     datDL = tools.open_mflevel1detect(fnames1DL, config, skipFixes="all", datVars=["Dmax", "capture_time"])        
@@ -1005,7 +1041,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     _, _ = plot2dhist(matchScore, datMfull.capture_time, ax[2], cax[2], bins, ylabel="match score [-]", cbarlabel="%")
     ax[2].axhline(minMatchScore)
     
-    zDiff = datM.position3D.sel(position3D_elements=["z", "z_rotated"]).diff("position3D_elements").values.squeeze()
+    zDiff = datM.position_3D.sel(dim3D=["z", "z_rotated"]).diff("dim3D").values.squeeze()
     _, rs = plotVar(zDiff, datM.capture_time, ax[3], "z difference [px]", axhline=0, resample=resample)
     cax[3].axis('off')
     
@@ -1018,14 +1054,14 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     _, _ = plotVar(tDiff, datM.capture_time, ax[5], "t difference [s]", axhline=0, resample=resample)
     cax[5].axis('off')
 
-    defaultRotation = tools.getPrevRotationEstimate(ff.datetime64, "transformation", config)
+    defaultRotation, prevTime = tools.getPrevRotationEstimate(ff.datetime64, "transformation", config)
 
-    theta = datM.theta.sel(rotation="mean").values.squeeze()
-    _, _ = plotVar(theta, datM.capture_time.isel(camera=0), ax[6], "theta", axhline=defaultRotation.theta, resample=resample)
-    phi = datM.phi.sel(rotation="mean").values.squeeze()
-    _, _ = plotVar(phi, datM.capture_time.isel(camera=0), ax[7], "phi", axhline=defaultRotation.phi, resample=resample)
-    Ofz = datM.Ofz.sel(rotation="mean").values.squeeze()
-    _, _ = plotVar(Ofz, datM.capture_time.isel(camera=0), ax[8], "Ofz", axhline=defaultRotation.Ofz, resample=resample)
+    theta = datM.camera_theta.sel(camera_rotation="mean").values.squeeze()
+    _, _ = plotVar(theta, datM.capture_time.isel(camera=0), ax[6], "theta", axhline=defaultRotation.camera_theta, resample=resample)
+    phi = datM.camera_phi.sel(camera_rotation="mean").values.squeeze()
+    _, _ = plotVar(phi, datM.capture_time.isel(camera=0), ax[7], "phi", axhline=defaultRotation.camera_phi, resample=resample)
+    Ofz = datM.camera_Ofz.sel(camera_rotation="mean").values.squeeze()
+    _, _ = plotVar(Ofz, datM.capture_time.isel(camera=0), ax[8], "Ofz", axhline=defaultRotation.camera_Ofz, resample=resample)
 
     cax[6].axis('off')
     cax[7].axis('off')
@@ -1087,4 +1123,168 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     fig.savefig(fOut)
     
     return fOut, fig    
+
+
+
+def metaRotationQuicklook(
+                case, config, version=__version__, skipExisting=True):
+
+
+    if type(config) is str:
+        config = tools.readSettings(config)
+        
+        
+    
+    camera = config.leader
+
+
+    #get level 0 file names
+    ff = files.FindFiles(case, camera, config, version)
+    fOut = ff.quicklook.metaRotation
+
+
+    if skipExisting and os.path.isfile(fOut):
+        if os.path.getmtime(fOut) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
+            print("file exists but older than event file, redoing", fOut)
+        else:
+            print(case, camera, "skip exisiting")
+            return None, None
+
+
+    print(case, camera, fOut)
+
+    if len(ff.listFiles("level0txt")) == 0 and len(ff.listFiles("level0status")) == 0:
+        print(case, "no data")
+
+        return None, None
+
+    print("reading events")
+    if len(ff.listFiles("metaEvents")) == 0:
+        print(f'event data not found')
+        return None, None
+    try:
+        events = xr.open_dataset(ff.listFiles("metaEvents")[0])
+    except:
+        print(f'{ff.listFiles("metaEvents")[0]} broken')
+        return None, None
+
+    if len(events.data_vars) == 0:
+        print(f'{ff.listFiles("metaEvents")[0]} empty')
+        return None, None
+    
+    if len(ff.listFiles("metaRotation")) == 0:
+        print(f'mo metaRotation data yet')
+        return None, None
+
+    try:
+        rotDat = xr.open_dataset(ff.listFiles("metaRotation")[0])
+    except:
+        print(f'{ff.listFiles("metaRotation")[0]} broken')
+        return None, None
+
+    if len(rotDat.file_starttime) <= 1:
+        print(f'{ff.listFiles("metaRotation")[0]} empty')
+        return None, None
+
+    ts =  events.file_starttime.where((events.event == 'sleep-trigger') | (events.event == 'stop-trigger'))
+
+    print("plotting")
+    #plotting
+    fig, (ax1, ax2, ax3) = plt.subplots(3, figsize=(20,15), gridspec_kw={'hspace':0.}, sharex=True)
+    # plt.rcParams['text.usetex'] = False
+    # plt.rcParams['lines.linewidth'] = 1.5
+    mid = (fig.subplotpars.right + fig.subplotpars.left)/2
+    plt.suptitle('VISSS rotation \n'+f'{ff.year}-{ff.month}-{ff.day}'+', '+config["name"]+'', fontsize=25, y=0.995, fontweight='bold', x=mid)
+
+    
+    rotDat.camera_phi.sel(camera_rotation="mean").plot(ax=ax1, marker="x")
+    rotDat.camera_theta.sel(camera_rotation="mean").plot(ax=ax2, marker="x")
+    rotDat.camera_Ofz.sel(camera_rotation="mean").plot(ax=ax3, marker="x")
+
+    ax1.fill_between(
+        rotDat.file_starttime,
+        rotDat.camera_phi.sel(camera_rotation="mean")-rotDat.camera_phi.sel(camera_rotation="err"),
+        rotDat.camera_phi.sel(camera_rotation="mean")+rotDat.camera_phi.sel(camera_rotation="err"),
+        alpha=.5
+    )
+    
+    ax2.fill_between(
+        rotDat.file_starttime,
+        rotDat.camera_theta.sel(camera_rotation="mean")-rotDat.camera_theta.sel(camera_rotation="err"),
+        rotDat.camera_theta.sel(camera_rotation="mean")+rotDat.camera_theta.sel(camera_rotation="err"),
+        alpha=.5
+    )
+    ax3.fill_between(
+        rotDat.file_starttime,
+        rotDat.camera_Ofz.sel(camera_rotation="mean")-rotDat.camera_Ofz.sel(camera_rotation="err"),
+        rotDat.camera_Ofz.sel(camera_rotation="mean")+rotDat.camera_Ofz.sel(camera_rotation="err"),
+        alpha=.5
+    )
+    isBlocked = (events.blocking.dropna("file_starttime").sel(blockingThreshold=50) > 0.1)
+    isBlocked = isBlocked.file_starttime.where(isBlocked).values
+    isBlocked = isBlocked[~ np.isnan(isBlocked)]
+
+
+    ylim = ax1.get_ylim() 
+    if isBlocked.any():
+        ax1.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
+    if ts.notnull().sum() > 0:
+        ax1.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
+    ax1.set_ylim(ylim)
+
+    ax1.grid()
+    ax1.set_title(None)
+    ax1.set_ylabel('phi rotation [°]', fontsize=20)
+    ax1.set_xlabel(None)
+
+    ylim = ax2.get_ylim()
+    if isBlocked.any():
+        ax2.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
+    if ts.notnull().sum() > 0:
+        ax2.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
+    ax2.set_ylim(ylim)
+    ax2.set_title(None)
+    ax2.set_ylabel('theta rotation [°]', fontsize=20)
+
+    ax2.grid()
+    ax2.set_xlabel(None)
+
+    ylim = ax3.get_ylim()
+    if isBlocked.any():
+        ax3.fill_between(isBlocked, [ylim[0]]*len(isBlocked), [ylim[1]]*len(isBlocked), color="red", alpha=0.25, label="blocked")
+    if ts.notnull().sum() > 0:
+        ax3.fill_between(ts, [ylim[0]]*len(ts), [ylim[1]]*len(ts), color="orange", alpha=0.5, label="idle")
+    ax3.set_ylim(ylim)
+    ax3.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
+    ax3.set_title(None)
+    ax3.set_ylabel('z offset [px]', fontsize=20)
+    ax3.tick_params(axis='both', labelsize=15)
+    ax3.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+    ax3.grid()
+    ax3.set_xlabel("time")
+
+    firstEvent = True
+    for event in events.event:
+        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
+            for bx in [ax1,ax2,ax3]:
+                if firstEvent:
+                    label="restarted"
+                    firstEvent = False
+                else:
+                    label = None
+                bx.axvline(event.file_starttime.values, color="red", ls=":", label=label)
+
+    ax1.legend(fontsize=15, bbox_to_anchor=(1, 1.4))
+
+    ff.createQuicklookDirs()
+    fig.savefig(fOut)
+
+    if ff.datetime.date() == datetime.datetime.today().date():
+        shutil.copy(fOut, ff.quicklookCurrent.metaFrames)
+
+    rotDat.close()
+    events.close()
+    
+    return fOut, fig
+
 
