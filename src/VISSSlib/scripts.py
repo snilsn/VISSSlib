@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 import socket
 import datetime
 import multiprocessing
@@ -13,7 +14,6 @@ from functools import partial
 import numpy as np
 import pandas as pd
 import xarray as xr
-import tqdm
 
 from . import quicklooks
 from . import files
@@ -23,6 +23,10 @@ from . import matching
 from . import distributions
 
 from . import __version__
+
+log = logging.getLogger(__name__)
+
+
 
 def loopLevel0Quicklook(settings, version=__version__, skipExisting=True, nDays=0):
 
@@ -60,8 +64,11 @@ def loopMetaFramesQuicklooks(settings, version=__version__, skipExisting=True, n
         case = f"{year}{month}{day}"
         print(case)
         for computer, camera in zip(computers, instruments):
-            quicklooks.metaFramesQuicklook(case, camera, config, version=version, skipExisting=skipExisting)
-
+            fOut, fig = quicklooks.metaFramesQuicklook(case, camera, config, version=version, skipExisting=skipExisting)
+            try:
+                fig.close()
+            except AttributeError:
+                pass
 
 def loopMetaRotationQuicklooks(settings, version=__version__, skipExisting=True, nDays=0):
 
@@ -78,8 +85,11 @@ def loopMetaRotationQuicklooks(settings, version=__version__, skipExisting=True,
         day = "%02i" % dd.day
         case = f"{year}{month}{day}"
         print(case)
-        quicklooks.metaRotationQuicklook(case, config, version=version, skipExisting=skipExisting)
-
+        fOut, fig = quicklooks.metaRotationQuicklook(case, config, version=version, skipExisting=skipExisting)
+        try:
+            fig.close()
+        except AttributeError:
+            pass
 
 def loopLevel1detectQuicklooks(settings, version=__version__, nDays = 0, skipExisting=True):
 
@@ -141,6 +151,59 @@ def loopLevel1matchQuicklooks(settings, version=__version__, nDays = 0, skipExis
             pass
     return
 
+def loopLevel1matchParticlesQuicklooks(settings, version=__version__, nDays = 0, skipExisting=True):
+
+    config = tools.readSettings(settings)
+    days = tools.getDateRange(nDays, config, endYesterday=False)
+
+    for dd in days:
+
+        year = str(dd.year)
+        month = "%02i" % dd.month
+        day = "%02i" % dd.day
+        case = f"{year}{month}{day}"
+
+        #         print(case, computer, camera)
+
+        fname, fig = quicklooks.createLevel1matchParticlesQuicklook(
+            case, 
+            config, 
+            version=version, 
+            skipExisting=skipExisting,
+            )
+        try:
+            fig.close()
+        except AttributeError:
+            pass
+    return
+
+
+def loopLevel2matchQuicklooks(settings, version=__version__, nDays = 0, skipExisting=True):
+
+    config = tools.readSettings(settings)
+
+    days = tools.getDateRange(nDays, config, endYesterday=False)
+
+    for dd in days:
+
+        year = str(dd.year)
+        month = "%02i" % dd.month
+        day = "%02i" % dd.day
+        case = f"{year}{month}{day}"
+
+        #         print(case, computer, camera)
+
+        fname, fig = quicklooks.createLevel2matchQuicklook(
+            case, 
+            config, 
+            version=version, 
+            skipExisting=skipExisting,
+            )
+        try:
+            fig.close()
+        except AttributeError:
+            pass
+    return
 
 
 def loopMetaCoefQuicklooks(settings, version=__version__, skipExisting=True):
@@ -193,9 +256,9 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
         case = f"{year}{month}{day}"
 
         for camera in config.instruments:
-            metadata.createEvent(case, camera, config, skipExisting=True)
+            metadata.createEvent(case, camera, config, skipExisting=skipExisting)
 
-def loopCreateLevel2match(settings, skipExisting=True, nDays = 0):
+def loopCreateLevel2match(settings, skipExisting=True, nDays = 0, doPlot=True):
 
 
     config = tools.readSettings(settings)
@@ -211,10 +274,19 @@ def loopCreateLevel2match(settings, skipExisting=True, nDays = 0):
 
         distributions.createLevel2match(case, config, skipExisting=skipExisting)
 
+        if doPlot:
+            fname, fig = quicklooks.createLevel2matchQuicklook(
+                case, 
+                config, 
+                skipExisting=skipExisting,
+                )
+            try:
+                fig.close()
+            except AttributeError:
+                pass
 
 
-
-def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"):
+def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all", doPlot=True):
 
     config = tools.readSettings(settings)
 
@@ -232,40 +304,48 @@ def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all"
         for camera in cameras:
 
             metadata.createMetaFrames(case, camera, config, skipExisting=skipExisting)
-
+            if doPlot:
+                fOut, fig = quicklooks.metaFramesQuicklook(case, camera, config, skipExisting=skipExisting)
+                try:
+                    fig.close()
+                except AttributeError:
+                    pass
 
     return
 
-def loopCreateMetaRotation(settings, skipExisting=True, nDays = 0):
+def loopCreateMetaRotation(settings, skipExisting=True, nDays = 0, doPlot=True):
 
     config = tools.readSettings(settings)
 
     days = tools.getDateRange(nDays, config, endYesterday=False)
 
-
     for dd in days:
+
         year = str(dd.year)
         month = "%02i" % dd.month
         day = "%02i" % dd.day
         case = f"{year}{month}{day}"
 
         matching.createMetaRotation(case, config, skipExisting=skipExisting)
-
+        if doPlot:
+            fOut, fig = quicklooks.metaRotationQuicklook(case, config, skipExisting=skipExisting)
+            try:
+                fig.close()
+            except AttributeError:
+                pass
 
     return
 
 
 
 
-def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, stdout=subprocess.DEVNULL, nCPU=1):
+def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, nCPU=1):
 
     '''
     We need this worker function becuase  we want to do the detection by indipendent 
     processes in parallel
     '''
     config = tools.readSettings(settings)
-    logging.config.dictConfig(tools.get_logging_config(f'detectionWorker_{socket.gethostname()}_{os.getpid()}.log'))
-    log = logging.getLogger()
 
     errorlines = collections.deque([], 50)
     
@@ -298,58 +378,23 @@ def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, stdout=subp
     else:
         pass
 
-    # with statement extended to avoid race conditions
-    with open(tmpFile, 'w') as f:
-        f.write('%i %s' % (os.getpid(), socket.gethostname()))
-        f.flush()
-        print("written", tmpFile, "in", os.getcwd())
-        
-        BIN = os.path.join(sys.exec_prefix, "bin", "python")
+    BIN = os.path.join(sys.exec_prefix, "bin", "python")
+    if nCPU is None:
+        command = f"{BIN} -m VISSSlib detection.detectParticles  {fname} {settings}"
+    else:
+        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib detection.detectParticles  {fname} {settings}"
 
-        if nCPU is None:
-            command = f"{BIN} -m VISSSlib detection.detectParticles  {fname} {settings}"
-        else:
-            command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib detection.detectParticles  {fname} {settings}"
-
-        print(command)
-        with subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=stdout, universal_newlines=True) as proc:
-            try:
-                for line in proc.stdout:
-                    print(str(line),end='')
-            except TypeError:
-                pass
-            for line in proc.stderr:
-                print(str(line),end='')
-                errorlines.append(line)
-            proc.wait() # required, otherwise returncode can be none is process is too fast
-            if proc.returncode != 0:
-                with open('%s.broken.txt' % fn.fname.level1detect, 'w') as f:
-                    
-                    for errorline in list(errorlines):
-                        f.write(errorline)
-                    f.write("\r")
-                    f.write(command)
-                log.info(f"{fname} BROKEN {proc.returncode}")
-            else:
-                log.info(f"{fn.fname.level1detect} SUCCESS {proc.returncode}")
-    try:
-        os.remove(tmpFile)
-    except:
-        pass
-    
-    
+    success = _runCommand(command, tmpFile, fn.fname.level1detect)
     return 0
 
 
-def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, stdout=subprocess.DEVNULL, nCPU=1):
+def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, nCPU=1):
 
     '''
     We need this worker function becuase  we want to do the matching by indipendent 
     processes in parallel
     '''
     config = tools.readSettings(settings)
-    logging.config.dictConfig(tools.get_logging_config(f'matchWorker_{socket.gethostname()}_{os.getpid()}.log'))
-    log = logging.getLogger()
 
     errorlines = collections.deque([], 50)
     
@@ -385,54 +430,69 @@ def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, stdo
         log.info('output processing %s %s' % (fnameL1detect, ffl1.fname.fname1Match))
         return 0
 
+    BIN = os.path.join(sys.exec_prefix, "bin", "python")
+    if nCPU is None:
+        command = f"{BIN} -m VISSSlib matching.matchParticles  {fnameL1detect} {settings}"
+    else:
+        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib matching.matchParticles  {fnameL1detect} {settings}"
 
+    success = _runCommand(command, tmpFile, fname1Match)
+
+    return 0
+
+def _runCommand(command, tmpFile, fOut, stdout=subprocess.DEVNULL):
+    success = True
     # with statement extended to avoid race conditions
     with open(tmpFile, 'w') as f:
-        f.write('%i %s' % (os.getpid(), socket.gethostname()))
-        print("written", tmpFile, "in", os.getcwd())
-
-
-        BIN = os.path.join(sys.exec_prefix, "bin", "python")
-        if nCPU is None:
-            command = f"{BIN} -m VISSSlib matching.matchParticles  {fnameL1detect} {settings}"
-        else:
-            command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib matching.matchParticles  {fnameL1detect} {settings}"
-
+        f.write('PID & Host: %i %s\n' % (os.getpid(), socket.gethostname()))
+        f.write("Command: %s\n"%command)
+        f.write("Outfile: %s\n"%fOut)
+        f.write("#########################\n")
+        f.flush()
+        log.info(f"written {tmpFile} in {os.getcwd()}")
         log.info(command)
-        with subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=stdout, universal_newlines=True) as proc:
-            try:
-                for line in proc.stdout:
-                    print(str(line),end='')
-            except TypeError:
-                pass
-            for line in proc.stderr:
-                print(str(line),end='')
-                errorlines.append(line)
-            proc.wait() # required, otherwise returncode can be none is process is too fast
-            if proc.returncode != 0:
-                with open('%s.broken.txt' % ffl1.fname.level1match, 'w') as f:
-                    
-                    for errorline in list(errorlines):
-                        f.write(errorline)
-                        log.error(errorline)
-                    f.write("\r")
-                    f.write(command)
-                    log.error(command)
-                log.info(f"{fnameL1detect} BROKEN {proc.returncode}")
-            else:
-                log.info(f"{ffl1.fname.level1match} SUCCESS {proc.returncode}")
+
+        #proc = subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
+        proc = subprocess.Popen(command, shell=True, stdout=stdout, stderr=subprocess.PIPE)
+
+        # Poll process for new output until finished
+        if proc.stdout is not None:
+            for line in proc.stdout: 
+                line = line.decode()
+                log.info(line)
+                f.write(line)
+                f.flush()
+                output += line
+        for line in proc.stderr: 
+            line = line.decode()
+            log.error(line)
+            f.write(line)
+            f.flush()
+    
+        proc.wait()
+        exitCode = proc.returncode
+        if exitCode != 0:
+            success = False
+            log.error(f"{fOut} BROKEN {exitCode}")
+        else:
+            log.info(f"{fOut} SUCCESS {exitCode}")
+
+    if not success:
+        shutil.copy(tmpFile, '%s.broken.txt' % tmpFile)
+        try:
+            shutil.copy(tmpFile, '%s.broken.txt' % fOut)
+        except:
+            pass
     try:
         os.remove(tmpFile)
     except:
         pass
-    return 0
 
+    return success
 
 
 def loopCreateLevel1detect(settings, skipExisting=True, nDays = 0, cameras = "all", nCPU=None):
     config = tools.readSettings(settings)
-
-    logging.config.dictConfig(tools.get_logging_config(f'detection_{socket.gethostname()}_{os.getpid()}.log'))
     log = logging.getLogger()
 
 
@@ -470,22 +530,18 @@ def loopCreateLevel1detect(settings, skipExisting=True, nDays = 0, cameras = "al
         
         log.info(f"found {len(fnames)} files, lets do it:")
         
-
-        p = multiprocessing.Pool(nCPU)
-        doWork = partial(loopCreateLevel1detectWorker, settings=settings, skipExisting=skipExisting)
         #p.map(partial(loopCreateLevel1detectWorker, settings=settings, skipExisting=skipExisting), fnames)
-
-        for i, r in enumerate(p.imap(doWork, fnames)):
-            log.info(f'done {i} of {len(fnames)} files with result {r}')
+        doWork = partial(loopCreateLevel1detectWorker, settings=settings, skipExisting=skipExisting)
+        with multiprocessing.Pool(nCPU) as p:
+            for i, r in enumerate(p.imap(doWork, fnames)):
+                log.warning(f'done {i} of {len(fnames)} files with result {r}')
 
         log.info(f"processed all {len(fnames)} files")
-    return p
+    return
 
 
 def loopCreateLevel1match(settings, skipExisting=True, nDays = 0,  nCPU=None):
     config = tools.readSettings(settings)
-
-    logging.config.dictConfig(tools.get_logging_config(f'match_{socket.gethostname()}_{os.getpid()}.log'))
     log = logging.getLogger()
 
 
@@ -506,14 +562,12 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0,  nCPU=None):
             # find files
         ff = files.FindFiles(case, config.leader, config)
         if len(ff.listFiles("metaRotation")) == 0:
-            print("SKIPPING", dd, "no rotation file yet")
+            log.error(tools.concat("SKIPPING", dd, "no rotation file yet"))
             continue
 
         fname0s =  ff.listFilesExt("level1detect")
         fnames += filter( os.path.isfile,
                                 fname0s )
-
-
 
         # Sort list of files in directory by size 
         fnames = sorted( fnames, key =  lambda x: os.stat(x).st_size)[::-1]
@@ -522,14 +576,15 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0,  nCPU=None):
         log.error('no files to process %s' % "level1detect")
         # print('no files %s' % fnamesPattern)
     else:
-        print(f"found {len(fnames)} files, lets do it:")
-        p = multiprocessing.Pool(nCPU)
-        p.map(partial(loopCreateLevel1matchWorker, settings=settings, skipExisting=skipExisting), fnames)
+        log.info(f"found {len(fnames)} files, lets do it:")
 
-        p.close()
-        p.join()
+        doWork = partial(loopCreateLevel1matchWorker, settings=settings, skipExisting=skipExisting)
+        #p.map(partial(loopCreateLevel1matchWorker, settings=settings, skipExisting=skipExisting), fnames)
+        with multiprocessing.Pool(nCPU) as p:
+            for i, r in enumerate(p.imap(doWork, fnames)):
+                log.warning(f'done {i} of {len(fnames)} files with result {r}')
 
-    return p
+    return
 
 
 # def loopCreateLevel1match(settings, skipExisting=True, nDays = 0, version=__version__, useWorker=False, nCPU=None, completeDaysOnly=True):
@@ -566,8 +621,7 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0,  nCPU=None):
 
 
 
-# def loopCreateLevel1matchWorker(day, settings=None, skipExisting=True, nCPU=1, stdout=subprocess.DEVNULL, completeDaysOnly=True):
-#     logging.config.dictConfig(tools.get_logging_config('match_run.log'))
+# def loopCreateLevel1matchWorker(day, settings=None, skipExisting=True, nCPU=1, completeDaysOnly=True):
 #     log = logging.getLogger()
 
 #     BIN = os.path.join(sys.exec_prefix, "bin", "python")

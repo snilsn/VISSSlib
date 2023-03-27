@@ -10,6 +10,7 @@ import sys
 import os
 import itertools
 import subprocess
+import warnings
 
 # import matplotlib.pyplot as plt
 import IPython.display
@@ -27,9 +28,7 @@ import skimage
 import zipfile
 
 import logging
-import logging.config
-log = logging.getLogger("dtection")
-
+log = logging.getLogger(__name__)
 
 # class movementDetection(object):
 #     def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
@@ -717,8 +716,12 @@ class singleParticle(object):
         self.pixPercentiles = np.percentile(
             particleBoxData, range(10, 100, 10))  # , interpolation='nearest'
         self.pixStd = np.std(particleBoxData, ddof=1)
-        self.pixSkew = scipy.stats.skew(particleBoxData)
-        self.pixKurtosis = scipy.stats.kurtosis(particleBoxData)
+
+        #disabel soem warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            self.pixSkew = scipy.stats.skew(particleBoxData)
+            self.pixKurtosis = scipy.stats.kurtosis(particleBoxData)
         self.particleContrast = parent.brightnessBackground - self.pixMin
 
         # figure out whether particle was properly detected
@@ -1030,8 +1033,8 @@ def detectParticles(fname,
                     version=__version__
                     ):
 
-    logging.config.dictConfig(tools.get_logging_config('detection_run.log'))
-    log = logging.getLogger()
+    #logging.config.dictConfig(tools.get_logging_config('detection_run.log'))
+    #log = logging.getLogger("detection")
 
     assert os.path.isfile(fname)
 
@@ -1058,7 +1061,7 @@ def detectParticles(fname,
     minDmax4write = config["level1detect"]["minSize"]
 
     fn = files.Filenames(fname, config, version=version)
-    print("running", fn.fname.level1detect)
+    log.info(f"running {fn.fname.level1detect}")
     camera = fn.camera
 
     Dbins = np.arange(0, 201, 10).tolist()
@@ -1077,14 +1080,30 @@ def detectParticles(fname,
     goodFile = goodFilesDict[camera]
 
     fnamesV = fn.fnameMovAllThreads
-    asfgh
+    fnamesT = fn.fnameTxtAllThreads
     
-    if len(fnamesV) == 0:
+
+    # txt data is transmitted first
+    if len(fnamesT) == 0:
         with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
             f.write('no data in %s' % fn.fname.metaFrames)
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data in %s' % fn.fname.metaFrames)
         log.warning('no movie files: ' + fname)
+        return 0
+
+    # mov data is sometimes transmtted later, so do not write nodata files in 
+    # case data is missing yet
+    if len(fnamesV) < int(config.nThreads):
+        if config.end == "today": 
+            log.warning('movie files not found (yet?) ' + fname)
+        else:
+            log.warning('movie files not found, no data ' + fname)
+            with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
+                f.write('no data')
+            with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+                f.write('no data')
+        return 0
 
     # fnameM = [f.replace(config["movieExtension"], "txt") for f in fnamesV.values()]
 
@@ -1113,18 +1132,6 @@ def detectParticles(fname,
         with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data')
         return 0
-
-    for t, fna in fnamesV.items():
-        if not os.path.isfile(fna):
-            if config.end == "today": 
-                log.info('movie file not found (yet?) ' + fna)
-            else:
-                log.info('movie file not found, no data ' + fna)
-                with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
-                    f.write('no data')
-                with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
-                    f.write('no data')
-            return 0
 
     if testMovieFile and (goodFile is not None) and (goodFile != "None"):
         for fnameV in fnamesV.values():
@@ -1203,7 +1210,7 @@ def detectParticles(fname,
         fnamesV1 = files.Filenames(
             fname11, config, version=version).fnameMovAllThreads
         trainingFrames1 = _getTrainingFrames(fnamesV1, trainingSize, config)
-        log.warning(f"added {len(trainingFrames1)} from {ii} previous file {fname11}.")
+        log.info(f"added {len(trainingFrames1)} from {ii} previous file {fname11}.")
         trainingFrames = trainingFrames1 + trainingFrames
 
         fname1 = fname11
@@ -1270,12 +1277,12 @@ def detectParticles(fname,
     # test motion
     # nMovingPixel missing in some mosaic data
     if np.all(metaData.nMovingPixel.values == -9999):
-        print(f"nMovingPixel not found")
+        log.info(f"nMovingPixel not found")
         motionChecked = False
     else:
         nChangedPixel = metaData.nMovingPixel.values
         passesThreshold = nChangedPixel >= minMovingPixels
-        print(f"{passesThreshold.any(1).sum()/len(metaData.capture_time)*100}% frames are moving")
+        log.info(f"{passesThreshold.any(1).sum()/len(metaData.capture_time)*100}% frames are moving")
         metaData = metaData.isel(capture_time=passesThreshold.any(1))
         motionChecked = True
 
@@ -1354,10 +1361,10 @@ def detectParticles(fname,
             nChangedPixel = checkMotion(frame, oldFrame, config.threshs)
             passesThreshold = nChangedPixel >= minMovingPixels
             if not passesThreshold.any():
-                print(metaData1.capture_time.values, 'NOT moving %i' % pp)
+                log.debug('%s NOT moving %i' % str(metaData1.capture_time.values), (pp))
                 continue
             else:
-                print(metaData1.capture_time.values, 'IS moving %i' % pp)
+                log.debug('%s IS moving %i' % (str(metaData1.capture_time.values), pp))
 
         res = snowParticles.update(frame,
                                    pp,
@@ -1421,7 +1428,7 @@ def detectParticles(fname,
     if writeImg:
         nFiles = len(imagesL1detect.namelist())
         imagesL1detect.close()
-        print("closing", fn.fname.imagesL1detect)
+        log.info("closing %s"%fn.fname.imagesL1detect)
         if nFiles == 0:
             os.remove(fn.fname.imagesL1detect)
 
@@ -1454,13 +1461,13 @@ def detectParticles(fname,
             snowParticlesXR = tools.finishNc(snowParticlesXR)
 
             snowParticlesXR.to_netcdf(fn.fname.level1detect, engine="netcdf4")
-            print("written", fn.fname.level1detect)
+            log.info("written %s"%fn.fname.level1detect)
             snowParticlesXR.close()
             return snowParticlesXR
         else:
             with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
                 f.write('no data')
-            print("no data", fn.fname.level1detect)
+            log.info("no data %s"%fn.fname.level1detect)
             return None
     else:
         return None

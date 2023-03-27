@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pn
 
 import logging
-log = logging.getLogger()
+log = logging.getLogger(__name__)
 
 from .tools import nicerNames, otherCamera
 from . import __version__
@@ -22,7 +22,7 @@ from . import __version__
 
 dailyLevels = ["metaEvents", "metaRotation", "level2match"]
 fileLevels = ["level1detect", "level1match", "level1track", "metaFrames", "metaDetection", "imagesL1detect"]#, "metaFixedCaptureId"]
-quicklookLevelsSep = ["level0", "metaFrames", "metaEvents", "level1detect", "level1match", "metaRotation"]
+quicklookLevelsSep = ["level0", "metaFrames", "metaEvents", "level1detect", "level1match", "level1matchParticles", "metaRotation"]
 quicklookLevelsComb = [ "level2match"]
 imageLevels = ["imagesL1detect"]
 
@@ -71,10 +71,13 @@ class FindFiles(object):
         self.logpath = "%s/%s_%s_%s/" % (config.path.format(level="logs"), self.computer, config.visssGen, self.camera)
         
         outpath = "%s/%s/%s/%s" % (config["pathOut"], self.year, self.month, self.day)
+        outpathDaily = "%s/%s" % (config["pathOut"], self.year)
 
         self.outpath = Dict({})
-        for dL in fileLevels + dailyLevels:
+        for dL in fileLevels:
             self.outpath[dL] = outpath.format(site=config.site, level=dL, version=self.version)
+        for dL in dailyLevels:
+            self.outpath[dL] = outpathDaily.format(site=config.site, level=dL, version=self.version)
         self.outpath["level0"] = config["path"].format(site=config["site"], level='level0')+f'/{self.computer}_{config["visssGen"]}_{camera}/{self.year}/{self.month}/{self.day}'
 
         # for iL in imageLevels:
@@ -214,16 +217,11 @@ class FindFiles(object):
     #     return (len(self.listFiles("level2")) == len(self.listFilesExt("level3Ext")))
 
 
-    def createQuicklookDirs(self):
-        res = []
-        for qL in quicklookLevelsSep + quicklookLevelsComb:
-            res.append(os.system('mkdir -p %s' %
-                  self.quicklookPath[qL]))
-        return res
-
     def createDirs(self):
         res = []
         for fL in dailyLevels + fileLevels:
+            #print('mkdir -p %s' %
+            #      self.outpath[fL])
             res.append(os.system('mkdir -p %s' %
                   self.outpath[fL]))
         return res
@@ -291,6 +289,7 @@ class Filenames(object):
         self.basenameShort = "_".join((self.computer, self.visssGen, self.camera, f"{self.year}{self.month}{self.day}"))
 
         self.outpath = "%s/%s/%s/%s" % (config["pathOut"], self.year, self.month, self.day)
+        self.outpathDaily = "%s/%s" % (config["pathOut"], self.year)
         self.logpath = "%s/%s_%s_%s/" % (config.path.format(level="logs"), self.computer, self.visssGen, self.camera)
 
         for fL in fileLevels:
@@ -299,7 +298,7 @@ class Filenames(object):
             self.fname[fL] = self.fname[fL].replace("//", "/")
         for fL in dailyLevels:
             self.fname[fL] = '%s/%s_V%s_%s_%s.nc' % (
-            self.outpath.format(version=self.version, site=config["site"], level=fL), fL, version, config["site"], self.basenameShort)
+            self.outpathDaily.format(version=self.version, site=config["site"], level=fL), fL, version, config["site"], self.basenameShort)
             self.fname[fL] = self.fname[fL].replace("//", "/")
 
         self.fname["imagesL1detect"] = self.fname["imagesL1detect"].replace(".nc", ".zip")
@@ -320,6 +319,8 @@ class Filenames(object):
     def createDirs(self):
         res = []
         for fL in dailyLevels + fileLevels:
+            #print('mkdir -p %s' %
+            #      self.outpath.format(version=self.version, site=self.config["site"], level=fL))
             res.append(os.system('mkdir -p %s' %
                   self.outpath.format(version=self.version, site=self.config["site"], level=fL)))
         return res
@@ -372,7 +373,10 @@ class Filenames(object):
             ts = np.array([f.split("_")[-2] for f in fnames])
         else:
             ts = np.array([f.split("_")[-1].split(".")[0] for f in fnames])
-        ts = pn.to_datetime(ts, format="%Y%m%d-%H%M%S")
+        try:
+            ts = pn.to_datetime(ts, format="%Y%m%d-%H%M%S")
+        except ValueError:
+            ts = pn.to_datetime(ts, format="%Y%m%d")
 
         plusDelta = np.timedelta64(self.config["newFileInt"] + graceInterval, "s")
         # grace interval not needed as long as grave less than new file interval
@@ -447,8 +451,8 @@ class Filenames(object):
             fname = v.replace('.txt', f".{self.config.movieExtension}")
             if os.path.isfile(fname):
                 fname0AllMov[k] = fname
-            else:
-                print(f"{fname} not found - most likely no data recorded")
+            # else:
+            #     print(f"{fname} not found - most likely no data recorded")
         return fname0AllMov
 
 
@@ -478,21 +482,28 @@ class Filenames(object):
         #neighbor is on a different day
         if (neighborFileI >= len(allFiles) or (neighborFileI < 0)):
             if debug: print("neighbor is on a different day")
-            dirParts = dirname.split("/")
-            dirParts[-3:] = ["*", "*", "*"]
-            allDayFolders = sorted(glob.glob("/".join(dirParts)))
-            if debug: print("glob", "/".join(dirParts))
-            if debug: print("allDayFolders", allDayFolders)
-            neighborDayFolderI = allDayFolders.index(dirname) + offset
-            if (neighborDayFolderI >= len(allDayFolders)) or (neighborDayFolderI < 0):
-                if debug: print("no neighbor file on a different day")
-                return None
-            neighborDayFolder = allDayFolders[neighborDayFolderI]
-            year, month, day = neighborDayFolder.split("/")[-3:]
-            neighborCase = "".join([year, month, day])
-            if debug: print("neighborCase", neighborCase)
-            allNeighborFiles = FindFiles(neighborCase, self.camera, self.config, self.version)
-            allNeighborFiles = allNeighborFiles.listFiles(level)
+            if level in dailyLevels:
+                neighborCase = (self.datetime + datetime.timedelta(days=offset)).strftime("%Y%m%d")
+                if debug: print("neighborCase", neighborCase)
+                allNeighborFiles = FindFiles(neighborCase, self.camera, self.config, self.version)
+                allNeighborFiles = allNeighborFiles.listFiles(level)
+
+            else:
+                dirParts = dirname.split("/")
+                dirParts[-3:] = ["*", "*", "*"]
+                allDayFolders = sorted(glob.glob("/".join(dirParts)))
+                if debug: print("glob", "/".join(dirParts))
+                if debug: print("allDayFolders", allDayFolders)
+                neighborDayFolderI = allDayFolders.index(dirname) + offset
+                if (neighborDayFolderI >= len(allDayFolders)) or (neighborDayFolderI < 0):
+                    if debug: print("no neighbor file on a different day")
+                    return None
+                neighborDayFolder = allDayFolders[neighborDayFolderI]
+                year, month, day = neighborDayFolder.split("/")[-3:]
+                neighborCase = "".join([year, month, day])
+                if debug: print("neighborCase", neighborCase)
+                allNeighborFiles = FindFiles(neighborCase, self.camera, self.config, self.version)
+                allNeighborFiles = allNeighborFiles.listFiles(level)
             assert offset in [1, -1], "other offsets than 1, -1 not implemented yet!"
             if offset > 0:
                 try:
@@ -513,29 +524,38 @@ class Filenames(object):
     def _getOffsets(self, level, maxOffset, direction):
         # helper function nextFile2 and prevFile2
 
-        assert maxOffset < np.timedelta64(1,"D"), "not supported yet"
+        assert maxOffset <= np.timedelta64(1,"D"), "not supported yet"
         case = self.case.split("-")[0]
         caseClose = "".join(str(self.datetime64 + (maxOffset*direction)).split("T")[0].split("-"))
-
         maxOffsetNs = maxOffset/np.timedelta64(1,"ns")
-
-
         cases = sorted(set([case, caseClose]))
         allFiles = []
         for case1 in cases:
-            ff1 = FindFiles(case, self.camera, self.config)
+            ff1 = FindFiles(case1, self.camera, self.config)
             allFiles += ff1.listFiles(level)
-        allTimes = np.array([np.datetime64(datetime.datetime.strptime(a.split("_")[-1].split(".")[0], "%Y%m%d-%H%M%S")) for a in allFiles])
+        try: 
+            allTimes = np.array([np.datetime64(datetime.datetime.strptime(a.split("_")[-1].split(".")[0], "%Y%m%d-%H%M%S")) for a in allFiles])
+        except ValueError:
+            allTimes = np.array([np.datetime64(datetime.datetime.strptime(a.split("_")[-1].split(".")[0], "%Y%m%d")) for a in allFiles])
+
+        #take care of daily levels
+        if level in ["metaRotation", "level2"]:
+            refTime = self.datetime64.astype('datetime64[D]')
+        else:
+            refTime = self.datetime64
+
         if len(allTimes) > 0:
-            allOffsets = allTimes-(self.datetime64) 
+            allOffsets = allTimes-(refTime) 
         else:
             allOffsets = np.array([])
+
         return allOffsets
         
     @functools.cache
     def nextFile2(self, level="level0", maxOffset=np.timedelta64(2,"h")):
         # alternative implementation based on timestamp. works also when reference file does not exist yet
         allOffsets = _getOffsets(self, level, maxOffset, +1)
+
         if len(allOffsets) == 0:
             return None
         else:
@@ -552,6 +572,7 @@ class Filenames(object):
     def prevFile2(self, level="level0", maxOffset=np.timedelta64(2,"h")):
         # alternative implementation based on timestamp. works also when reference file does not exist yet
         allOffsets = self._getOffsets(level, maxOffset, -1)
+
         if len(allOffsets) == 0:
             return None
         else:

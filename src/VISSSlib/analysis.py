@@ -23,6 +23,10 @@ import skimage
 from . import __version__
 from . import *
 
+import logging
+log = logging.getLogger(__name__)
+
+
 # def imshow(img):
 #     import cv2
 #     import IPython

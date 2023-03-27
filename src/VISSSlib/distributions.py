@@ -11,7 +11,15 @@ from tqdm import tqdm
 
 import functools
 import logging
-log = logging.getLogger()
+log = logging.getLogger(__name__)
+
+def _preprocess(dat):
+    del dat["pair_id"]
+    # we do not need all variables
+    dat = dat[["capture_time","Dmax", "area","matchScore",
+                            "aspectRatio", "angle", "perimeter", "position_3D", 
+                            "camera_phi", "camera_theta", "camera_Ofz"]]
+    return dat
 
 
 def createLevel2match(
@@ -63,18 +71,11 @@ def createLevel2match(
     timeIndex1 = pd.date_range(start=case, end=fL.datetime64 +
                               endTime, freq=freq, inclusive="both")
 
-    def preprocess(dat):
-        del dat["pair_id"]
-        # we do not need all variables
-        dat = dat[["capture_time","Dmax", "area","matchScore",
-                                "aspectRatio", "angle", "perimeter", "position_3D", 
-                                "camera_phi", "camera_theta", "camera_Ofz"]]
-        return dat
 
-    print("open level1match files")
+    log.info(f"open level1match files {case}")
     with dask.config.set(**{'array.slicing.split_large_chunks': True}):
         matchDat = xr.open_mfdataset(
-            matchFiles, preprocess=preprocess, combine="nested", concat_dim="pair_id")
+            matchFiles, preprocess=_preprocess, combine="nested", concat_dim="pair_id")
 
     # limit to period of interest
     matchDat = matchDat.isel(pair_id=(matchDat.capture_time.isel(camera=0) >= fL.datetime64).values & (
@@ -84,9 +85,22 @@ def createLevel2match(
     matchDat = matchDat.chunk(pair_id=10000)
 
     # apply matchScore threshold
-    matchCond = (matchDat.matchScore >= minMatchScore)
-    print("matchCond applies to", (matchCond.sum()/len(matchCond)).values*100, "% of data")
+    matchCond = (matchDat.matchScore >= minMatchScore).values
+    log.info(tools.concat("matchCond applies to", (matchCond.sum()/len(matchCond))*100, "% of data"))
     matchDat = matchDat.isel(pair_id=matchCond)
+
+    if len(matchDat.matchScore) == 0:
+        log.warning("no data remians after matchScore filtering %s" %
+              lv2File)
+        return None, None   
+
+    sizeCond = (matchDat.Dmax < max(DbinsPixel)).all("camera").values
+    matchDat = matchDat.isel(pair_id=sizeCond)
+    if len(matchDat.matchScore) == 0:
+        log.warning("no data remians after size filtering %s" %
+              lv2File)
+        return None, None   
+
 
     # switch to time coordinate
     matchDatT = matchDat.assign_coords(time=xr.DataArray(
@@ -117,10 +131,18 @@ def createLevel2match(
         (config.frame_height -
          matchDatTJ.position_3D.sel(dim3D="z", drop=True) >= DmaxHalf)
     )
-    print("farEnoughFromBorder applies to",
+    log.info(tools.concat("farEnoughFromBorder applies to",
           (farEnoughFromBorder.sum()/len(farEnoughFromBorder)).values*100, 
-          "% of data")
+          "% of data"))
+
+    log.info(tools.concat("farEnoughFromBorder applies to",
+          (farEnoughFromBorder.sum()/len(farEnoughFromBorder)).values*100, 
+          "% of data"))
     matchDatTJ = matchDatTJ.isel(pair_id=farEnoughFromBorder)
+    if len(matchDatTJ.pair_id) == 0:
+        log.warning("no data remians after farEnoughFromBorder filtering %s" %
+              lv2File)
+        return None, None   
 
     matchDatTJ = addPerParticleVariables(matchDatTJ)
 
@@ -177,6 +199,7 @@ def createLevel2match(
     dist = dist.reindex(time=timeIndex)
     dist["N"] = dist["N"].fillna(0)
 
+    log.info("do mean values")
     # estimate mean values
     meanValues = matchDatG.mean()
     meanValues = meanValues.rename({k: f"{k}_mean" for k in meanValues.data_vars})
@@ -184,12 +207,19 @@ def createLevel2match(
     # we want tiem stamps not intervals
     meanValues["time"] = [a.left for a in meanValues["time"].values]
 
+    log.info("merge and load data")
     level2dat = xr.merge((dist, meanValues))
+    level2dat.load()
 
     calibDat = calibrateData(level2dat, matchDatT, config, DbinsPixel, timeIndex1)
     calibDat = addVariables(calibDat, case, config, timeIndex, timeIndex1, 
         blockedPixThresh=blockedPixThresh, blowingSnowFrameThresh=blowingSnowFrameThresh)
 
+    #clean up!
+    matchDat.close()
+    del matchDat, matchDatG, matchDatTJ, matchDatT, tmpXr, tmp, tmpXr1
+
+    fL.createDirs()
     calibDat = tools.finishNc(calibDat)
     calibDat.to_netcdf(lv2File)
     print("DONE", lv2File)
@@ -231,21 +261,18 @@ def addVariables(calibDat, case, config, timeIndex, timeIndex1, blockedPixThresh
         case, config, timeIndex, timeIndex1)
     assert np.all(blockedPixels.time == calibDat.time)
 
-
-
-
     cameraBlocked = blockedPixels.max("camera") > blockedPixThresh
     blowingSnow = blowingSnowRatio.max("camera") > blowingSnowFrameThresh
 
     #apply quality
-    print("apply quality filters...")
-    print("recordingFailed filter removed", recordingFailed.values.sum()/len(recordingFailed)*100, "% of data")
-    print("processingFailed filter removed", processingFailed.values.sum()/len(processingFailed)*100, "% of data")
-    print("cameraBlocked filter removed", cameraBlocked.values.sum()/len(cameraBlocked)*100, "% of data")
-    print("blowingSnow filter removed", blowingSnow.values.sum()/len(blowingSnow)*100, "% of data")
+    log.info("apply quality filters...")
+    log.info(tools.concat("recordingFailed filter removed", recordingFailed.values.sum()/len(recordingFailed)*100, "% of data"))
+    log.info(tools.concat("processingFailed filter removed", processingFailed.values.sum()/len(processingFailed)*100, "% of data"))
+    log.info(tools.concat("cameraBlocked filter removed", cameraBlocked.values.sum()/len(cameraBlocked)*100, "% of data"))
+    log.info(tools.concat("blowingSnow filter removed", blowingSnow.values.sum()/len(blowingSnow)*100, "% of data"))
 
     allFilter = recordingFailed | processingFailed | cameraBlocked | blowingSnow
-    print("all filter together removed", allFilter.values.sum()/len(allFilter)*100, "% of data")
+    log.info(tools.concat("all filter together removed", allFilter.values.sum()/len(allFilter)*100, "% of data"))
 
     assert (allFilter.time == calibDat.time).all()
 
@@ -296,8 +323,8 @@ def estimateObservationVolume(matchDatT, config, DbinsPixel, timeIndex1):
                                      rotDat.camera_phi.values[ii],
                                      rotDat.camera_theta.values[ii],
                                      rotDat.camera_Ofz.values[ii],
-                                     minDistance=min(DbinsPixel),
-                                     maxDistance=max(DbinsPixel),)
+                                     sizeBins=DbinsPixel)
+
         volumes.append(volume[1:])
     return volumes
 
@@ -542,11 +569,13 @@ def estimateVolume(width, height, camera_phi, camera_theta, camera_Ofz, delta=0)
     follower = createFollowerBox(width, height, camera_phi, camera_theta, camera_Ofz, delta=delta)
     leader = createLeaderBox(width, height, delta=delta)
 
-    return leader.intersection(follower).volume
 
+    volume = leader.intersection(follower).volume
+
+    return volume
 
 @functools.cache
-def estimateVolumes(width, height, camera_phi, camera_theta, camera_Ofz, minDistance, maxDistance, nSteps=5, interpolate=True):
+def estimateVolumes(width, height, camera_phi, camera_theta, camera_Ofz, sizeBins, nSteps=5, interpolate=True):
     '''estimate intersecting volume of leader and follower for different distances to 
     the edge of the volume
 
@@ -562,12 +591,12 @@ def estimateVolumes(width, height, camera_phi, camera_theta, camera_Ofz, minDist
         pitch of follower camera
     camera_Ofz : float
         offset in z direction
-    minDistance : int
-        minimum distance to consider
-    maxDistance : int
-        maximum distance to conside
+    minSize : int
+        minimum size to consider for distamce to the edge
+    maxSize : int
+        maximum size to consider for distamce to the edge
     nSteps : int, optional
-        nuimbe rof points were the colume is estimated (the default is 5)
+        number of points were the colume is estimated (the default is 5)
 
     Returns
     -------
@@ -577,33 +606,35 @@ def estimateVolumes(width, height, camera_phi, camera_theta, camera_Ofz, minDist
         volumes of corresponding distances
     '''
 
-    volumes = []
-    Ds = np.linspace(minDistance, maxDistance, nSteps, dtype=int)
+
+    # distance to the edge is only half of the particle size!
+    Ds = np.ceil(np.array(sizeBins)/2).astype(int)
+
 
     if np.any(np.isnan((camera_phi, camera_theta, camera_Ofz))):
-        volumes = np.full(Ds.shape, np.nan)
+        volumes = np.full(len(sizeBins), np.nan)
     else:
-        for d in Ds:
+        volumes = []
+        # select only nStep distances and interpolate rest
+        iiInter = np.linspace(0,len(sizeBins)-1,nSteps, endpoint=True, dtype=int)
+        for ii in iiInter:
             volumes.append(estimateVolume(
-                width, height, camera_phi, camera_theta, camera_Ofz, delta=d))
+                width, height, camera_phi, camera_theta, camera_Ofz, delta=Ds[ii]))
 
-    if interpolate:
-        Ds, volumes = interpolateVolumes(minDistance, maxDistance, Ds, volumes)
-
+        if interpolate:
+            Ds_inter, volumes = interpolateVolumes(Ds, Ds[iiInter], volumes)
+            assert np.all(Ds_inter==Ds)
     return Ds, np.array(volumes)
 
-
-def interpolateVolumes(minDistance, maxDistance, D1, volumes1):
+def interpolateVolumes(Dfull, Dstep, volumes1):
     '''interpolate volumes considering the cube dependency
 
     Parameters
     ----------
-    minDistance : int
-        minimum distance to consider
-    maxDistance : int
-        maximum distance to consider
-    D1 : array
-        list of distances
+    Dfull : array
+        list of distances wanted
+    Dstep : array
+        list of calculates distances
     volumes1 : array
         list of volumes
 
@@ -615,6 +646,5 @@ def interpolateVolumes(minDistance, maxDistance, D1, volumes1):
         volumes of corresponding interpolated distances
     '''
 
-    Ds = np.arange(minDistance, maxDistance+1, 1)
-    volumes = np.interp(Ds, D1, np.array(volumes1)**(1/3.))**3
-    return Ds, volumes
+    volumes = np.interp(Dfull, Dstep, np.array(volumes1)**(1/3.))**3
+    return Dfull, volumes

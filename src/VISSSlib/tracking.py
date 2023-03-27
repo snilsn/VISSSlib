@@ -15,3 +15,6 @@ import warnings
 
 
 from . import __version__
+
+import logging
+log = logging.getLogger(__name__)

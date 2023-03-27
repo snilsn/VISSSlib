@@ -21,13 +21,16 @@ except ImportError:
     warnings.warn("opencv not available!")
 
 import logging
-import logging.config
+log = logging.getLogger(__name__)
+
 
 from . import __version__
 from . import fixes
 from . import files
 from . import detection
 from . import tools
+
+
 
 '''
 Mosaic problems with metadata:

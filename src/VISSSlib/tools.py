@@ -29,35 +29,8 @@ from . import files
 from . import fixes
 from . import __version__, __versionFull__
 
-LOGGING_CONFIG = { 
-    'version': 1,
-    'disable_existing_loggers': True,
-    'formatters': { 
-        'standard': { 
-        'format': "'%(asctime)s: %(levelname)s: %(name)s.%(funcName)s: %(message)s'"
-        },
-    },
-    'handlers': { 
-        'stream': { 
-            'level': 'INFO',
-            'formatter': 'standard',
-            'class': 'logging.StreamHandler',
-            'stream': 'ext://sys.stdout',  # stream is stderr
-        },
-        'file': { 
-            'level': 'WARNING',
-            'formatter': 'standard',
-            'class': 'logging.FileHandler',
-            'filename': None,  # stream is stderr
-        },    },
-    'loggers': { 
-        '': {  # root logger
-            'handlers': ['stream', 'file'],
-            'level': 'DEBUG',
-            'propagate': False
-        },
-    } 
-}
+import logging
+log = logging.getLogger(__name__)
 
 
 #settings that stay mostly constant
@@ -80,12 +53,6 @@ DEFAULT_SETTINGS = {
     },
 }
 
-
-def get_logging_config(fname):
-    lc = deepcopy(LOGGING_CONFIG)
-    lc['handlers']['file']['filename'] = fname
-
-    return lc
 
     
 niceNames= (
@@ -257,6 +224,7 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
     def preprocess(dat):
         # keep trqack of file start time
         fname = dat.encoding["source"]
+        print("open_mflevel1detect",fname)
         ffl1 = files.FilenamesFromLevel(fname, config)
         dat["file_starttime"] = xr.DataArray([ffl1.datetime64]*len(dat.pid), coords=[dat.pid])
         if "nThread" not in dat.keys():
@@ -265,7 +233,7 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
         if datVars != "all":
             dat = dat[datVars]
         return dat
-
+    print("open_mflevel1detect 1")
     if type(fnamesExt) is not list:
         fnamesExt = [fnamesExt]
 
@@ -281,8 +249,10 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
             fnames.append(fname)
     if len(fnames) == 0:
         return None
+    print("open_mflevel1detect 2")
 
     dat = xr.open_mfdataset(fnames, combine="nested", concat_dim="pid", preprocess=preprocess).load()
+    print("open_mflevel1detect 3")
 
     if start is not None:
         dat = dat.isel(pid=(dat.capture_time >= start))
@@ -311,6 +281,7 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
         #         #make sure follower and leader data are consistent
         #         dat["capture_time_orig"] = dat["capture_time"]
     
+    print("open_mflevel1detect 4")
     # replace pid by empty dimesnion to allow concatenating files without jumps in dimension pid
     dat = dat.swap_dims({"pid": "fpid"})
         
@@ -319,7 +290,8 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
         
     if len(dat.fpid) == 0:
         return None
-        
+    print("open_mflevel1detect 5")
+
     dat.load()
     return dat
 
@@ -637,6 +609,10 @@ def finishNc(dat, extra={}):
         if dat[k].dtype == np.float64:
             dat[k] = dat[k].astype(np.float32)
 
+        # #newest netcdf4 version doe snot like strings or objects:
+        # if (dat[k].dtype == object) or (dat[k].dtype == str):
+        #     dat[k] = dat[k].astype("U")
+
         dat[k].encoding = {}
         dat[k].encoding["zlib"] = True
         dat[k].encoding["complevel"] = 5
@@ -664,11 +640,11 @@ def rotXr2dict(dat, config=None):
     if config is None:
         config = {}
         config["rotate"] = {}
-    for tt in dat.file_starttime:
+    for ii, tt in enumerate(dat.file_starttime):
         t1 = pd.to_datetime(str(tt.values)).strftime('%Y%m%d-%H%M%S')
         config["rotate"][t1] = {
-            "transformation": dat.sel(file_starttime=tt, camera_rotation="mean").to_pandas().to_dict(), 
-            "transformation_err": dat.sel(file_starttime=tt, camera_rotation="err").to_pandas().to_dict()
+            "transformation": dat.isel(file_starttime=ii).sel(camera_rotation="mean").to_pandas().to_dict(), 
+            "transformation_err": dat.isel(file_starttime=ii).sel(camera_rotation="err").to_pandas().to_dict()
             }
 
     return config
@@ -696,3 +672,11 @@ def execute_stdout(command):
     exitCode = process.returncode
 
     return exitCode, output
+
+
+def concat(*strs):
+    '''
+    helper function to make transition from print to logging easier
+    '''
+    concat = " ".join([str(s) for s in strs])
+    return concat

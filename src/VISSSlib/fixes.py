@@ -12,7 +12,8 @@ import bottleneck as bn
 
 import warnings
 import logging
-log = logging.getLogger()
+log = logging.getLogger(__name__)
+
 
 
 # various tools to fix bugs in the data

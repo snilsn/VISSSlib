@@ -13,13 +13,16 @@ from . import tracking
 from . import fixes
 from . import scripts
 
+import logging
+log = logging.getLogger(__name__)
+
 
 
 def main():
 
-    print(sys.executable, file=sys.stderr)
-    print(sys.version, file=sys.stderr)
-    print('%i %s\r' % (os.getpid(), socket.gethostname()), file=sys.stderr)
+    #we dont wan't verbosity here
+
+    print('%s %s %i %s' % (sys.executable, sys.version, os.getpid(), socket.gethostname()))#, file=sys.stderr)
 
 
     if sys.argv[1] == "scripts.loopCreateEvents":
@@ -163,6 +166,15 @@ def main():
 
         scripts.loopLevel1matchQuicklooks(settings, nDays=nDays, skipExisting=skipExisting)
 
+    elif sys.argv[1] == "scripts.loopLevel2matchQuicklooks":
+        settings = sys.argv[2]
+        nDays = sys.argv[3]
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+
+        scripts.loopLevel2matchQuicklooks(settings, nDays=nDays, skipExisting=skipExisting)
 
 
     elif sys.argv[1] == "scripts.loopCreateMetaRotation":

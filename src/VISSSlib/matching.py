@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-
+import datetime
+import os
 
 import matplotlib.pyplot as plt
-import os
 import numpy as np
 import xarray as xr
 import scipy.stats
@@ -11,8 +11,7 @@ import pandas as pd
 import bottleneck as bn
 import pyOptimalEstimation as pyOE
 
-import logging
-log = logging.getLogger()
+from tqdm import tqdm
 
 from copy import deepcopy
 
@@ -20,6 +19,10 @@ from . import __version__
 from . import tools
 from . import fixes
 from . import files
+
+import logging
+log = logging.getLogger(__name__)
+
 
 deltaY = deltaH = deltaI = 1.
 
@@ -426,7 +429,7 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
     '''
     
     # print("using", sigma, mu, delta)  
-    print("doMatch", len(leader1D.fpid), len(follower1D.fpid))
+    #print("doMatch", len(leader1D.fpid), len(follower1D.fpid))
     prop = {}
     
 
@@ -685,7 +688,7 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
         new_sigma["I"] = bn.nanstd(di)
         new_mu["I"] = bn.nanmedian(di)
 
-        print(f"{len(matchedDat.pair_id)} matches found. ")
+        #print(f"{len(matchedDat.pair_id)} matches found. ")
         # print(" match coefficients, ",new_mu)
     else:
         print(f"{len(matchedDat.pair_id)} matches found. Setting match coefficients to NAN")
@@ -763,7 +766,7 @@ def doMatchSlicer(leader1D, follower1D, sigma, mu, delta, config, rotate, minPro
     JJs = np.linspace(0, len(leader1D.fpid), len(leader1D.fpid)//chunckSize+1, dtype=int)
 
     print(f"slicing data into {len(JJs)-1} pieces")
-    for ii, jj in zip(JJs[:-1], JJs[1:]):
+    for ii, jj in tqdm(zip(JJs[:-1], JJs[1:]), total=len(JJs)-1):
 
         leader1DSlice = leader1D.isel(fpid=slice(ii,jj))
         follower1DSlice = tools.cutFollowerToLeader(leader1DSlice, follower1D)
@@ -784,8 +787,9 @@ def doMatchSlicer(leader1D, follower1D, sigma, mu, delta, config, rotate, minPro
             new_mu.append(new_mu1)
 
     if len(matchedDat) > 0:
-        new_sigma = np.mean(new_sigma)
-        new_mu = np.mean(new_mu)
+
+        new_sigma = pd.concat(new_sigma, axis=1).mean(axis=1)
+        new_mu = pd.concat(new_mu, axis=1).mean(axis=1)
         matchedDat = xr.concat(matchedDat, dim="pair_id")
         return matchedDat, disputedPairs, new_sigma, new_mu
     else:
@@ -808,27 +812,32 @@ def matchParticles(fnameLv1Detect, config,
         doRot = False,
     ):
 
+    print("C")
     if type(config) is str:
         config = tools.readSettings(config)
 
     ffl1 = files.FilenamesFromLevel(fnameLv1Detect, config)
     fname1Match = ffl1.fname["level1match"]
+    print("CC")
 
     ffl1.createDirs()
-
-    if not doRot:
-        # get rotation estimates instead of etimating them
-        fnameMetaRotation = ffl1.fname["metaRotation"]
-        metaRotationDat = xr.open_dataset(fnameMetaRotation)
-        config = tools.rotXr2dict(metaRotationDat, config)
 
     matchedDat = None
     matchedDat4Rot = None
     rotate_time = None
+    print("CCC")
+
+    if not doRot:
+        # get rotation estimates and add to config instead of etimating them
+        fnameMetaRotation = ffl1.fname["metaRotation"]
+        metaRotationDat = xr.open_dataset(fnameMetaRotation)
+        config = tools.rotXr2dict(metaRotationDat, config)
+    print("CCCC")
+
     if np.any(rotate == "config"):
         rotate, rotate_time = tools.getPrevRotationEstimate(ffl1.datetime64, "transformation", config)
     assert len(rotate) != 0
-
+    print("CCCCC")
     if np.any(rotate_err == "config"):
         rotate_err, rotate_time = tools.getPrevRotationEstimate(ffl1.datetime64, "transformation_err", config)
     assert len(rotate_err) != 0
@@ -841,20 +850,42 @@ def matchParticles(fnameLv1Detect, config,
         error = str(e)
         print(error)
 
-        with open('%s.broken.txt' % fname1Match, 'w') as f:
-            f.write("tools.open_mflevel1detect(fnameLv1Detect, config)")
-            f.write("\n")
-            f.write(error)
+        if not rotationOnly:
+            with open('%s.broken.txt' % fname1Match, 'w') as f:
+                f.write("tools.open_mflevel1detect(fnameLv1Detect, config)")
+                f.write("\n")
+                f.write(error)
         return fname1Match, np.nan, None, None
+    print("B")
 
     if leader1D is None:
-        with open('%s.nodata' % fname1Match, 'w') as f:
-            f.write(f"no leader data in {fnameLv1Detect}")
+        if not rotationOnly:
+            with open('%s.nodata' % fname1Match, 'w') as f:
+                f.write(f"no leader data in {fnameLv1Detect}")
         print(f"no leader data in {fnameLv1Detect}")
         return fname1Match, None, None, None
 
+    print(len(leader1D.pid))
+
+    if (leader1D is None):
+        if not rotationOnly:
+            with open('%s.nodata' % fname1Match, 'w') as f:
+                f.write(f"no leader data in {fnameLv1Detect}")
+        print(f"no leader data in {fnameLv1Detect}")
+        return fname1Match, None, None, None
+
+    print("BB")
+    if (len(leader1D.pid)<=1):
+        if not rotationOnly:
+            with open('%s.nodata' % fname1Match, 'w') as f:
+                f.write(f"only one particle in  {fnameLv1Detect}")
+        print(f"only one particle in {fnameLv1Detect}")
+        return fname1Match, None, None, None
+
+
     file_starttime = leader1D.file_starttime[0].values
-    
+    print("BBB")
+
     #prevFile = ffl1.prevFile2("level1match")
     #if prevFile is not None:
         #prevFile = prevFile.replace("level1detect","level1match")
@@ -864,7 +895,7 @@ def matchParticles(fnameLv1Detect, config,
     #     print(f"opening prevFile for previous rotation {prevFile}")
     #     prevDat3 = xr.open_dataset(prevFile)
 
-    #     rotate = prevDat3.isel(pair_id=0, camera_rotation=0)[["camera_phi", "camera_theta", "camera_Ofz"]].to_pandas()
+    #     rotate = prevDat3.isel(pair_id=0, =0)[["camera_phi", "camera_theta", "camera_Ofz"]].to_pandas()
     #     rotate_err = prevDat3.isel(pair_id=0, camera_rotation=1)[["camera_phi", "camera_theta", "camera_Ofz"]].to_pandas()
     #     prevDat3.close()
     # else:
@@ -872,6 +903,7 @@ def matchParticles(fnameLv1Detect, config,
     #     print(rotate_default)
     # rotate = pd.Series(rotate_default)
     # rotate_err = pd.Series(rotate_err_default)
+    print("BBBB")
 
     fnames1F = ffl1.filenamesOtherCamera(graceInterval=-1, level="level1detect")
     fnames1FRAW = ffl1.filenamesOtherCamera(graceInterval=-1, level="level0txt")
@@ -880,57 +912,63 @@ def matchParticles(fnameLv1Detect, config,
         print(fnames1F)
         print(fnames1FRAW)
         return fname1Match, None, None, None
+    print("BBBBB")
     if len(fnames1F) == 0:
-        with open('%s.nodata' % fname1Match, 'w') as f:
-            f.write(f"no follower data for {fnameLv1Detect}")
+        if not rotationOnly:
+            with open('%s.nodata' % fname1Match, 'w') as f:
+                f.write(f"no follower data for {fnameLv1Detect}")
         print(f"no follower data for {fnameLv1Detect}")
         return fname1Match, None, None, None
 
+    print("A")
 
     lEvents = ffl1.fname.metaEvents
     fEvents= np.unique([files.FilenamesFromLevel(f, config).fname.metaEvents for f in fnames1F])
+    print("A1")
 
     lEvents = xr.open_dataset(lEvents)
     fEvents = xr.open_mfdataset(fEvents).load()
 
+    print("A2")
 
     start = leader1D.capture_time[0].values - np.timedelta64(2,"s")
     end = leader1D.capture_time[-1].values + np.timedelta64(2,"s")
     print(f"opening {fnames1F}")
+    print("A3")
     try:
         follower1DAll = tools.open_mflevel1detect(fnames1F, config, start=start, end=end) #with foxes
     except Exception as e:
-        print("tools.open_mflevel1detect follower FAILED")
+        log.error(tools.concat("tools.open_mflevel1detect follower FAILED"))
         error = str(e)
         print(error)
 
-        with open('%s.broken.txt' % fname1Match, 'w') as f:
-            f.write("tools.open_mflevel1detect(fnames1F, config)")
-            f.write("\n")
-            f.write(error)
+        if not rotationOnly:
+            with open('%s.broken.txt' % fname1Match, 'w') as f:
+                f.write("tools.open_mflevel1detect(fnames1F, config)")
+                f.write("\n")
+                f.write(error)
         return fname1Match, np.nan, None, None
+    print("AA")
 
     leader1D = tools.removeBlockedData(leader1D, lEvents)
     follower1DAll = tools.removeBlockedData(follower1DAll, fEvents)
 
     if follower1DAll is None:
-        with open('%s.nodata' % fname1Match, 'w') as f:
-            f.write(f"no follower data after removal of blocked data {fname1Match}")
+        if not rotationOnly:
+            with open('%s.nodata' % fname1Match, 'w') as f:
+                f.write(f"no follower data after removal of blocked data {fname1Match}")
         print(f"no follower data after removal of blocked data {fname1Match}")
-        with open(f"{fname1Match}.nodata", "w") as f:
-                f.write("NOT ENOUGH DATA FOLLOWER BLOCKED")
-                print("NOT ENOUGH DATA FOLLOWER BLOCKED", fname1Match)
+
         return fname1Match, None, None, None
 
     if leader1D is None:
-        with open('%s.nodata' % fname1Match, 'w') as f:
-            f.write(f"no leader data after removal of blocked data {fname1Match}")
+        if not rotationOnly:
+            with open('%s.nodata' % fname1Match, 'w') as f:
+                f.write(f"no leader data after removal of blocked data {fname1Match}")
         print(f"no leader data after removal of blocked data {fname1Match}")
-        with open(f"{fname1Match}.nodata", "w") as f:
-                f.write("NOT ENOUGH DATA LEADER BLOCKED")
-                print("NOT ENOUGH DATA LEADER BLOCKED", fname1Match)
         return fname1Match, None, None, None
 
+    print("AAA")
 
     #try to figure out when follower was restarted in leader time period
     followerRestartedII = np.where(
@@ -950,20 +988,22 @@ def matchParticles(fnameLv1Detect, config,
     leaderMaxTime = max(leader1D.capture_time.max(), leader1D.record_time.max()) + np.timedelta64(1,"s")
 
     matchedDats = []
+    print("AAAA")
+
     # lopp over all follower segments seperated by camera restarts
     for tt, (FR1, FR2) in enumerate(zip(timeBlocks[:-1], timeBlocks[1:])):
         print(tt+1, "of", len(timeBlocks) - 1, "slice for follower restart",FR1, FR2)
         if (FR1 < leaderMinTime) and (FR2 < leaderMinTime):
-            print("CONTINUE, slice for follower restart",tt, FR1, FR2, "before leader time range", leaderMinTime)
+            log.info(tools.concat("CONTINUE, slice for follower restart",tt, FR1, FR2, "before leader time range", leaderMinTime.values))
             continue
         if (FR1 > leaderMaxTime) and (FR2 > leaderMaxTime):
-            print("CONTINUE, slice for follower restart",tt, FR1, FR2, "after leader time range", leaderMaxTime)
+            log.info(tools.concat("CONTINUE, slice for follower restart",tt, FR1, FR2, "after leader time range", leaderMaxTime.values))
             continue
         
         # the 2nd <= is on purpose because it is required if there is no restart. if there is a restart, there is anaway nod ata exactly at that time
         TIMES = (FR1 <= follower1DAll.capture_time.values) & (follower1DAll.capture_time.values  <= FR2)
         if np.sum(TIMES) == 0:
-            print("CONTINUE, no follower data")
+            log.warning(tools.concat("CONTINUE, no follower data"))
             continue
 
         # TIMES = REGEX nach  file_starttime
@@ -982,11 +1022,13 @@ def matchParticles(fnameLv1Detect, config,
                         print(f"so little data {np.sum(TIMES)} ignore it!")
                         continue
                     else:
-                        with open('%s.broken.txt' % fname1Match, 'w') as f:
-                            f.write("fixes.makeCaptureTimeEven FAILED")
-                            f.write("\n")
-                            f.write(str(e))
-                            return fname1Match, None, None, None
+                        if not rotationOnly:
+                            with open('%s.broken.txt' % fname1Match, 'w') as f:
+                                f.write("fixes.makeCaptureTimeEven FAILED")
+                                f.write("\n")
+                                f.write(str(e))
+                        print("fixes.makeCaptureTimeEven FAILED")
+                        return fname1Match, None, None, None
 
                 else:
                     continue
@@ -1017,13 +1059,14 @@ def matchParticles(fnameLv1Detect, config,
                     f.write("\n")
                     f.write(error1)
                     f.write(error2)
-                continue
+            continue
 
-        # if (nMatched2 <= 1) and (nMatched1 <= 1):
-        #     with open(f"{fname1Match}.nodata", "w") as f:
-        #         f.write("NOT ENOUGH DATA")
-        #         print("NOT ENOUGH DATA", fname1Match)
-        #     continue
+        if (nMatched2 <= 1) and (nMatched1 <= 1):
+            # if not rotationOnly:
+            #     with open(f"{fname1Match}.nodata", "w") as f:
+            #         f.write("NOT ENOUGH DATA")
+            print("NOT ENOUGH DATA", fname1Match, tt, FR1, FR2)
+            continue
 
 
         # In theory, capture time is much better, but there are cases were it is off. Try to identify them by chgecking whether record_time yielded more matches.
@@ -1198,7 +1241,14 @@ def matchParticles(fnameLv1Detect, config,
         matchedDats["pair_id"] = range(len(matchedDats["pair_id"]))
 
     matchedDats = tools.finishNc(matchedDats)
+
+    matchedDats["fitMethod"] = matchedDats.fitMethod.astype("U30")
+    matchedDats["dim2D"] = matchedDats.dim2D.astype("U2")
+    matchedDats["dim3D"] = matchedDats.dim3D.astype("U2")
+    matchedDats["camera"] = matchedDats.camera.astype("U30")
+    matchedDats["camera_rotation"] = matchedDats.camera_rotation.astype("U30")
     matchedDats.to_netcdf(fname1Match)
+
     print("DONE", fname1Match, "with", len(matchedDats.pair_id), "particles")
 
     return fname1Match, matchedDats, rotate, rotate_err
@@ -1244,7 +1294,7 @@ def createLevel1match(case, config, skipExisting=True, version=__version__ ,
             ffl1.createDirs()
             with open(f"{fname1Match}.nodata", "w") as f:
                 f.write("no leader data")
-            print("NO leader DATA", fname1Match)
+            print("NO leader DATA", fname1L)
             continue
 
         if os.path.isfile(fname1Match) and skipExisting:
@@ -1309,8 +1359,23 @@ def createMetaRotation(case,
     # find files
     fl = files.FindFiles(case, config.leader, config, version)
 
+    if len(fl.listFiles("metaEvents")) == 0:
+        print("No event files", case, config.leader , fl.fnamesPattern.metaEvents)
+        return None, None
+
+    eventFile = fl.listFiles("metaEvents")[0]
+    fflM  = files.FilenamesFromLevel(eventFile, config)
+    fnameMetaRotation = fflM.fname["metaRotation"]
+
+    if os.path.isfile(fnameMetaRotation) and skipExisting:
+        print("SKIPPING", fnameMetaRotation)
+        return None, None
+
+    eventDat = xr.open_dataset(eventFile)
+    nRecordedFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
+
     fnames1L = fl.listFilesExt("level1detect")
-    if len(fnames1L) == 0:
+    if (len(fnames1L) == 0) and (nRecordedFiles > 0):
         print("No leader files", case, config.leader , fl.fnamesPatternExt.level1detect)
         return None, None
 
@@ -1319,21 +1384,20 @@ def createMetaRotation(case,
               (len(fl.listFilesExt("level1detect")), len(fl.listFiles("level0txt"))))
         return None, None
 
-    assert len(fnames1L) > 1
 
-    fflM  = files.FilenamesFromLevel(fnames1L[0], config)
-
-    fnameMetaRotation = fflM.fname["metaRotation"]
-    if os.path.isfile(fnameMetaRotation) and skipExisting:
-        print("SKIPPING", fnameMetaRotation)
-        return None, None
-
-
-
+    fl.createDirs()
     metaRotation = []
 
     # add previous rotations to config file so that most recent result can be used
-    prevFile = fflM.prevFile("metaRotation")
+    prevFile = fflM.prevFile2("metaRotation", maxOffset=np.timedelta64(24,"h"))
+
+    if (datetime.datetime.strptime(config.start,"%Y-%m-%d") != fl.datetime.date()) and (prevFile is None):
+        _, prevTime = tools.getPrevRotationEstimate(fflM.datetime64, "transformation", config)
+        deltaT = (fflM.datetime64- prevTime)
+        if deltaT > np.timedelta64(2,"D"):
+            print(f"Skipping, no previous data found! data in config file {round(deltaT/np.timedelta64(1,'h'))}h old which is more than 48h", fnameMetaRotation)
+            return None, None
+
     if prevFile is not None:
         prevDat = xr.open_dataset(prevFile)
         config = tools.rotXr2dict(prevDat, config)
@@ -1364,10 +1428,11 @@ def createMetaRotation(case,
 
         if fname1L.endswith("broken.txt") or fname1L.endswith("nodata") or fname1L.endswith("notenoughframes"):
             ffl1.createDirs()
-            print("NO leader DATA", fnameMetaRotation)
+            print("NO leader DATA", fname1L)
             continue
 
         try:
+            print("D")
             _, _, rot, rot_err = matchParticles(fname1L,
                                                     config,
                                                     y_cov_diag=y_cov_diag,

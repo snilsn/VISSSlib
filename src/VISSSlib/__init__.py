@@ -17,9 +17,6 @@
 # __version__ = '20230106' # Dmax bugfix, clean up of variables, position_centroid missing until jan 31st!!
 
 # Version is pulled from git tag!!
-
-
-
 from importlib.metadata import version, PackageNotFoundError
 try:
     __version__ = ".".join(version("VISSSlib").split(".")[:3])
@@ -29,6 +26,54 @@ except PackageNotFoundError:
     __version__ = "NotAvailable"
     __versionFull__ = "NotAvailable"
     pass
+
+import socket
+import os
+from copy import deepcopy
+import logging
+import logging.config
+
+LOGGING_CONFIG = {
+    'version': 1,
+    'disable_existing_loggers': True,
+    'formatters': {
+        'standard': {
+            'format': "%(asctime)s: %(levelname)s: %(name)s.%(funcName)s: %(message)s"
+        },
+    },
+    'handlers': {
+        'stream': {
+            'level': 'INFO',
+            'formatter': 'standard',
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stdout',  # stream is stderr
+        },
+        # 'file': {
+        #     'level': 'WARNING',
+        #     'formatter': 'standard',
+        #     'class': 'logging.FileHandler',
+        #     'filename': None,  # stream is stderr
+        # },
+    },
+    'loggers': {
+        '': {  # root logger
+            'handlers': ['stream'],#, 'file'
+            'level': 'DEBUG',
+            'propagate': False
+        },
+    }
+}
+
+
+def get_logging_config(fname):
+    lc = deepcopy(LOGGING_CONFIG)
+    #lc['handlers']['file']['filename'] = fname
+    return lc
+
+
+#logging.config.dictConfig(get_logging_config(f'VISSS_{socket.gethostname()}_{os.getpid()}.log'))
+logging.config.dictConfig(get_logging_config(f'VISSS_{socket.gethostname()}.log'))
+log = logging.getLogger(__name__)
 
 
 from . import files
@@ -43,4 +88,5 @@ from . import fixes
 from . import scripts
 from . import analysis
 from . import distributions
+
 
