@@ -4,6 +4,7 @@ from .matching import *
 from . import __version__
 from copy import deepcopy
 import numpy as np
+import scipy.special
 import xarray as xr
 import trimesh
 import dask
@@ -55,8 +56,6 @@ def createLevel2match(
               (len(fL.listFilesExt("level1match")), len(fL.listFiles("level0txt")),  lv2File))
         print("look at ", fL.fnamesPatternExt["level1match"])
         return None, None
-
-
 
     matchFiles = fL.listFilesWithNeighbors("level1match")
 
@@ -172,6 +171,9 @@ def createLevel2match(
                     sizeDefinition, DbinsPixel).count().fillna(0)
                 tmpXr1 = tmpXr1.rename({sizeDefinition: "N"})
                 tmpXr1 = tmpXr1.rename({f"{sizeDefinition}_bins": "D_bins"})
+
+                #import pdb;pdb.set_trace()
+
                 # estimate mean values for "area", "angle", "aspectRatio", "perimeter"
                 # Dmax is only for technical resaons and is removed afterwards
                 otherVars1 = matchDatG1[["area", "angle", "aspectRatio", "perimeter", sizeDefinition]].sel(
@@ -201,6 +203,7 @@ def createLevel2match(
 
     log.info("do mean values")
     # estimate mean values
+    # to do: data is weighted with number of obs not considering the smalle robservation volume for larger particles
     meanValues = matchDatG.mean()
     meanValues = meanValues.rename({k: f"{k}_mean" for k in meanValues.data_vars})
     meanValues = meanValues.rename(time_bins="time")
@@ -249,12 +252,14 @@ def addVariables(calibDat, case, config, timeIndex, timeIndex1, blockedPixThresh
     calibDat["Ntot"] = (calibDat["counts"] / deltaT /
                         calibDat["obs_volume"]).sum("D_bins")
 
-    M2 = (calibDat.PSD.fillna(0)*deltaD*calibDat.D_bins**2).sum("D_bins")
-    M3 = (calibDat.PSD.fillna(0)*deltaD*calibDat.D_bins**3).sum("D_bins")
-    M4 = (calibDat.PSD.fillna(0)*deltaD*calibDat.D_bins**4).sum("D_bins")
+    M = {}
+    for mm in [1,2,3,4,6]:
+        M[mm] = (calibDat.PSD.fillna(0)*deltaD*calibDat.D_bins**mm).sum("D_bins")
+        calibDat[f"M{mm}"] = M[mm]
 
-    calibDat["D23"] = M3/M2
-    calibDat["D34"] = M4/M3
+    for b in [2,3]:
+        calibDat[f"D{b}{b+1}"] = M[b+1]/M[b]
+        calibDat[f"N0_star_{b}{b+1}"] = (M[b]**(b+2)/M[b+1]**(b+1)) * ((b+1)**(b+1))/scipy.special.gamma(b+1)
 
     # quality variables
     recordingFailed, processingFailed, blockedPixels, blowingSnowRatio = getDataQuality(

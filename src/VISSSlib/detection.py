@@ -1201,11 +1201,11 @@ def detectParticles(fname,
 
         if (ii > 20) or (fname11 is None):
             with open('%s.notenoughframes' % fn.fname.level1detect, 'w') as f:
-                f.write('too few frames %i ' %
-                        (nFrames))
+                f.write('too few frames %i %i %s' %
+                        (len(trainingFrames), ii, fname11))
             log.error('%s too few frames %i ' %
-                      (fn.fname.level1detect, nFrames))
-            sys.exit(0)
+                      (fn.fname.level1detect, len(trainingFrames)))
+            return None
 
         fnamesV1 = files.Filenames(
             fname11, config, version=version).fnameMovAllThreads

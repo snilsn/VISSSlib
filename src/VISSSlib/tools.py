@@ -233,7 +233,6 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
         if datVars != "all":
             dat = dat[datVars]
         return dat
-    print("open_mflevel1detect 1")
     if type(fnamesExt) is not list:
         fnamesExt = [fnamesExt]
 
@@ -249,10 +248,8 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
             fnames.append(fname)
     if len(fnames) == 0:
         return None
-    print("open_mflevel1detect 2")
 
     dat = xr.open_mfdataset(fnames, combine="nested", concat_dim="pid", preprocess=preprocess).load()
-    print("open_mflevel1detect 3")
 
     if start is not None:
         dat = dat.isel(pid=(dat.capture_time >= start))
@@ -281,7 +278,6 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
         #         #make sure follower and leader data are consistent
         #         dat["capture_time_orig"] = dat["capture_time"]
     
-    print("open_mflevel1detect 4")
     # replace pid by empty dimesnion to allow concatenating files without jumps in dimension pid
     dat = dat.swap_dims({"pid": "fpid"})
         
@@ -290,7 +286,6 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
         
     if len(dat.fpid) == 0:
         return None
-    print("open_mflevel1detect 5")
 
     dat.load()
     return dat

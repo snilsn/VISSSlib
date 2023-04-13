@@ -258,23 +258,68 @@ def loopCreateEvents(settings, skipExisting=True, nDays = 0):
         for camera in config.instruments:
             metadata.createEvent(case, camera, config, skipExisting=skipExisting)
 
-def loopCreateLevel2match(settings, skipExisting=True, nDays = 0, doPlot=True):
+# def loopCreateLevel2match(settings, skipExisting=True, nDays = 0, doPlot=True):
 
+
+#     config = tools.readSettings(settings)
+
+#     days = tools.getDateRange(nDays, config, endYesterday=False)
+
+#     for dd in days:
+
+#         year = str(dd.year)
+#         month = "%02i" % dd.month
+#         day = "%02i" % dd.day
+#         case = f"{year}{month}{day}"
+
+#         distributions.createLevel2match(case, config, skipExisting=skipExisting)
+
+#         if doPlot:
+#             fname, fig = quicklooks.createLevel2matchQuicklook(
+#                 case, 
+#                 config, 
+#                 skipExisting=skipExisting,
+#                 )
+#             try:
+#                 fig.close()
+#             except AttributeError:
+#                 pass
+
+
+def loopCreateLevel2match(settings, skipExisting=True, nDays = 0, useWorker=True, nCPU=None, doPlot=True):
 
     config = tools.readSettings(settings)
 
     days = tools.getDateRange(nDays, config, endYesterday=False)
+    leader = config["leader"]
+    follower = config["follower"]
+    
+    if useWorker and len(days)>1:
+        if nCPU is None:
+            nCPU = os.cpu_count()//2
+        days = [str(day).split(" ")[0].replace("-","") for day in days]
 
-    for dd in days:
+        doWork = partial(loopCreateLevel2matchWorker, settings=settings, skipExisting=skipExisting)
+        with multiprocessing.Pool(nCPU) as p:
+            for i, r in enumerate(p.imap(doWork, days)):
+                log.warning(f'done {i} of {len(days)} files with result {r}')
 
-        year = str(dd.year)
-        month = "%02i" % dd.month
-        day = "%02i" % dd.day
-        case = f"{year}{month}{day}"
+    else:
+        for dd in days:
 
-        distributions.createLevel2match(case, config, skipExisting=skipExisting)
+            year = str(dd.year)
+            month = "%02i" % dd.month
+            day = "%02i" % dd.day
+            case = f"{year}{month}{day}"
 
-        if doPlot:
+            distributions.createLevel2match(case, config, skipExisting=skipExisting)
+
+    if doPlot:
+        for dd in days:
+            year = str(dd.year)
+            month = "%02i" % dd.month
+            day = "%02i" % dd.day
+            case = f"{year}{month}{day}"
             fname, fig = quicklooks.createLevel2matchQuicklook(
                 case, 
                 config, 
@@ -284,6 +329,48 @@ def loopCreateLevel2match(settings, skipExisting=True, nDays = 0, doPlot=True):
                 fig.close()
             except AttributeError:
                 pass
+        return
+
+
+
+def loopCreateLevel2matchWorker(day, settings=None, skipExisting=True, nCPU=1):
+    log = logging.getLogger()
+
+    BIN = os.path.join(sys.exec_prefix, "bin", "python")
+
+    if nCPU is None:
+        command = f"{BIN} -m VISSSlib scripts.loopCreateLevel2match {settings} {day} {int(skipExisting)}"
+    else:
+        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib scripts.loopCreateLevel2match   {settings} {day} {int(skipExisting)} 0"
+
+    log.info(command)
+
+    config = tools.readSettings(settings)
+    fL = files.FindFiles(day, config.leader, config)
+    fL.createDirs()
+    lv2File = fL.fnamesDaily.level2match
+    tmpFile = os.path.basename('%s.processing.txt' % lv2File)
+
+    if skipExisting and ( os.path.isfile(tmpFile)):
+            log.info(f'output processing {lv2File}')
+            return 0
+    if skipExisting and ( os.path.isfile('%s' % lv2File)):
+        # log.info('output exists %s %s' % (fname, lv2File))
+        return 0
+    elif skipExisting and ( os.path.isfile('%s.nodata' % lv2File)):
+        # log.info('output exists %s %s' % (fname, lv2File))
+        return 0
+    elif skipExisting and (os.path.isfile('%s.broken.txt' % lv2File)):
+        log.error('output already broken %s.broken.txt' % (lv2File))
+        return 1
+    elif skipExisting and ( os.path.isfile(tmpFile)):
+        log.info('output processing %s' % (lv2File))
+        return 0
+    else:
+        pass
+
+    success = _runCommand(command, tmpFile, lv2File)
+    return success
 
 
 def loopCreateMetaFrames(settings, skipExisting=True, nDays = 0, cameras = "all", doPlot=True):
@@ -587,70 +674,7 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0,  nCPU=None):
     return
 
 
-# def loopCreateLevel1match(settings, skipExisting=True, nDays = 0, version=__version__, useWorker=False, nCPU=None, completeDaysOnly=True):
 
-#     config = tools.readSettings(settings)
-
-#     days = tools.getDateRange(nDays, config, endYesterday=False)
-#     leader = config["leader"]
-#     follower = config["follower"]
-    
-#     if useWorker:
-#         assert version == __version__
-#         if nCPU is None:
-#             nCPU = os.cpu_count()
-#         p = multiprocessing.Pool(nCPU)
-#         days = [str(day).split(" ")[0].replace("-","") for day in days]
-#         p.map(partial(loopCreateLevel1matchWorker, settings=settings, skipExisting=skipExisting, completeDaysOnly=completeDaysOnly), days)
-#         p.close()
-#         p.join()
-
-
-#     else:
-#         for dd in days:
-#             year = str(dd.year)
-#             month = "%02i" % dd.month
-#             day = "%02i" % dd.day
-#             case = f"{year}{month}{day}"
-
-#             matching.createLevel1match(case, config, skipExisting=skipExisting, version=version, completeDaysOnly=completeDaysOnly)
-
-#         return
-
-
-
-
-
-# def loopCreateLevel1matchWorker(day, settings=None, skipExisting=True, nCPU=1, completeDaysOnly=True):
-#     log = logging.getLogger()
-
-#     BIN = os.path.join(sys.exec_prefix, "bin", "python")
-
-#     if nCPU is None:
-#         command = f"{BIN} -m VISSSlib scripts.loopCreateLevel1match   {settings} {day} {int(skipExisting)} {int(completeDaysOnly)}"
-#     else:
-#         command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib scripts.loopCreateLevel1match   {settings} {day} {int(skipExisting)} 0"
-
-#     log.info(command)
-#     errorlines = collections.deque([], 50)
-
-#     with subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=stdout, universal_newlines=True) as proc:
-#         try:
-#             for line in proc.stdout:
-#                 print(str(line),end='')
-#         except TypeError:
-#             pass
-#         for line in proc.stderr:
-#             print(str(line),end='')
-#             errorlines.append(line)
-#         proc.wait() # required, otherwise returncode can be none is process is too fast
-#         if proc.returncode != 0:
-
-#             log.info(f"{day} BROKEN {proc.returncode}")
-#         else:
-#             log.info(f"{day} SUCCESS {proc.returncode}")
-
-#         log.info(errorlines)
 
 def loopCheckCompleteness(settings, nDays = 0, cameras = "all", listDuplicates=True, listMissing=False, products = ["metaFrames", "level1detect", 'metaRotation',"level1match", "level2match"]):
 
@@ -713,3 +737,68 @@ def loopCheckCompleteness(settings, nDays = 0, cameras = "all", listDuplicates=T
                     for missingTime in missingTimes:
                         print(camera, firstMiss, missingTime)
     return
+
+
+def reportLastFiles(settings, writeFile=True, products = ["level0txt","level0", "metaFrames", "level1detect", 'metaRotation',"level1match", "level2match"]):
+
+    config = tools.readSettings(settings)
+    days = tools.getDateRange(0, config, endYesterday=False)[::-1]
+
+    cameras = [config.follower, config.leader]
+    output = ""
+
+    output += "#"*80
+    output += "\n"
+    output += f"Last available files for {config.site} at {datetime.datetime.utcnow()} UTC\n"
+    output += "#"*80
+    output += "\n"
+
+    for prod in products:
+        for camera in cameras:
+            if camera == config.follower and ((prod in ["level1match",'metaRotation']) or prod.startswith("level2")):
+                continue
+
+            foundLastFile = False
+            foundComplete = False
+            completeCase = "nan"
+            lastFile = "nan"
+            
+            for dd in days:
+                year = str(dd.year)
+                month = "%02i" % dd.month
+                day = "%02i" % dd.day
+                case = f"{year}{month}{day}"
+
+                # find files
+                ff = files.FindFiles(case, camera, config)
+                if not foundLastFile:
+                    fnames = ff.listFilesExt(prod)
+                    if len(fnames) > 0:
+                        try:
+                            f1 = files.FilenamesFromLevel(fnames[-1], config)
+                        except ValueError:
+                            f1 = files.Filenames(fnames[-1], config)
+                        foundLastFile = True
+                        lastFile = f1.datetime
+                        
+                if not foundComplete:
+                    foundComplete = ff.isComplete(prod) 
+                    completeCase = case
+                        
+                
+                if foundComplete and foundLastFile:
+                    output += f"{prod.ljust(14)} {(camera.split('_')[0]).ljust(8)} last full day:'{completeCase}' last file:'{lastFile}'\n"
+                    break
+                
+                    
+    output += "#"*80
+    output += "\n"
+
+    if writeFile:
+        fOut = f"{config['pathQuicklooks'].format(version=f1.version,site=config['site'], level='')}/{'productReport'}_{config['site']}.html"
+        with open(fOut, "w") as f:
+            f.write("<html><pre>\n")
+            f.write(output)
+            f.write("</pre></html>\n")
+
+    return output

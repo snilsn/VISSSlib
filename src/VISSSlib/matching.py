@@ -812,32 +812,27 @@ def matchParticles(fnameLv1Detect, config,
         doRot = False,
     ):
 
-    print("C")
     if type(config) is str:
         config = tools.readSettings(config)
 
     ffl1 = files.FilenamesFromLevel(fnameLv1Detect, config)
     fname1Match = ffl1.fname["level1match"]
-    print("CC")
 
     ffl1.createDirs()
 
     matchedDat = None
     matchedDat4Rot = None
     rotate_time = None
-    print("CCC")
 
     if not doRot:
         # get rotation estimates and add to config instead of etimating them
         fnameMetaRotation = ffl1.fname["metaRotation"]
         metaRotationDat = xr.open_dataset(fnameMetaRotation)
         config = tools.rotXr2dict(metaRotationDat, config)
-    print("CCCC")
 
     if np.any(rotate == "config"):
         rotate, rotate_time = tools.getPrevRotationEstimate(ffl1.datetime64, "transformation", config)
     assert len(rotate) != 0
-    print("CCCCC")
     if np.any(rotate_err == "config"):
         rotate_err, rotate_time = tools.getPrevRotationEstimate(ffl1.datetime64, "transformation_err", config)
     assert len(rotate_err) != 0
@@ -856,7 +851,6 @@ def matchParticles(fnameLv1Detect, config,
                 f.write("\n")
                 f.write(error)
         return fname1Match, np.nan, None, None
-    print("B")
 
     if leader1D is None:
         if not rotationOnly:
@@ -874,7 +868,6 @@ def matchParticles(fnameLv1Detect, config,
         print(f"no leader data in {fnameLv1Detect}")
         return fname1Match, None, None, None
 
-    print("BB")
     if (len(leader1D.pid)<=1):
         if not rotationOnly:
             with open('%s.nodata' % fname1Match, 'w') as f:
@@ -884,7 +877,6 @@ def matchParticles(fnameLv1Detect, config,
 
 
     file_starttime = leader1D.file_starttime[0].values
-    print("BBB")
 
     #prevFile = ffl1.prevFile2("level1match")
     #if prevFile is not None:
@@ -903,7 +895,6 @@ def matchParticles(fnameLv1Detect, config,
     #     print(rotate_default)
     # rotate = pd.Series(rotate_default)
     # rotate_err = pd.Series(rotate_err_default)
-    print("BBBB")
 
     fnames1F = ffl1.filenamesOtherCamera(graceInterval=-1, level="level1detect")
     fnames1FRAW = ffl1.filenamesOtherCamera(graceInterval=-1, level="level0txt")
@@ -912,7 +903,6 @@ def matchParticles(fnameLv1Detect, config,
         print(fnames1F)
         print(fnames1FRAW)
         return fname1Match, None, None, None
-    print("BBBBB")
     if len(fnames1F) == 0:
         if not rotationOnly:
             with open('%s.nodata' % fname1Match, 'w') as f:
@@ -920,21 +910,18 @@ def matchParticles(fnameLv1Detect, config,
         print(f"no follower data for {fnameLv1Detect}")
         return fname1Match, None, None, None
 
-    print("A")
 
     lEvents = ffl1.fname.metaEvents
     fEvents= np.unique([files.FilenamesFromLevel(f, config).fname.metaEvents for f in fnames1F])
-    print("A1")
 
-    lEvents = xr.open_dataset(lEvents)
     fEvents = xr.open_mfdataset(fEvents).load()
 
-    print("A2")
+    lEvents = xr.open_dataset(lEvents)
+
 
     start = leader1D.capture_time[0].values - np.timedelta64(2,"s")
     end = leader1D.capture_time[-1].values + np.timedelta64(2,"s")
     print(f"opening {fnames1F}")
-    print("A3")
     try:
         follower1DAll = tools.open_mflevel1detect(fnames1F, config, start=start, end=end) #with foxes
     except Exception as e:
@@ -948,7 +935,6 @@ def matchParticles(fnameLv1Detect, config,
                 f.write("\n")
                 f.write(error)
         return fname1Match, np.nan, None, None
-    print("AA")
 
     leader1D = tools.removeBlockedData(leader1D, lEvents)
     follower1DAll = tools.removeBlockedData(follower1DAll, fEvents)
@@ -968,8 +954,6 @@ def matchParticles(fnameLv1Detect, config,
         print(f"no leader data after removal of blocked data {fname1Match}")
         return fname1Match, None, None, None
 
-    print("AAA")
-
     #try to figure out when follower was restarted in leader time period
     followerRestartedII = np.where(
         [(str(e).startswith("start") or str(e).startswith("launch")) for e in fEvents.event.values]
@@ -988,7 +972,6 @@ def matchParticles(fnameLv1Detect, config,
     leaderMaxTime = max(leader1D.capture_time.max(), leader1D.record_time.max()) + np.timedelta64(1,"s")
 
     matchedDats = []
-    print("AAAA")
 
     # lopp over all follower segments seperated by camera restarts
     for tt, (FR1, FR2) in enumerate(zip(timeBlocks[:-1], timeBlocks[1:])):
@@ -1373,6 +1356,8 @@ def createMetaRotation(case,
 
     eventDat = xr.open_dataset(eventFile)
     nRecordedFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
+    #if not closed here, weired segfoults happen later when opend a 2nd times
+    eventDat.close()
 
     fnames1L = fl.listFilesExt("level1detect")
     if (len(fnames1L) == 0) and (nRecordedFiles > 0):
@@ -1432,7 +1417,6 @@ def createMetaRotation(case,
             continue
 
         try:
-            print("D")
             _, _, rot, rot_err = matchParticles(fname1L,
                                                     config,
                                                     y_cov_diag=y_cov_diag,

@@ -1749,7 +1749,7 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
 
                     # im = av.doubleDynamicRange(im, offset=2)
 
-                    im = np.pad(im, [(1, 1), (1, 1)], constant_values=255)
+                    im = np.pad(im, [(0, 1), (0, 1)], constant_values=0)
                     try:
                         fid = np.where(fname2 == np.array(ff.listFiles("metaFrames")))[0][0]
                     except:
@@ -1765,7 +1765,7 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
                     y2, x2 = text.shape
 
                     # only add label if large enough
-                    if omitLabel4small and (x1 < x2):
+                    if (omitLabel4small =="all") or ((omitLabel4small == True) and (x1 < x2)):
                         imT = im
                     else:
                         imT = concatImgY(im, text)
@@ -1827,10 +1827,10 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
     tenmm = 1e6/config["resolution"]/100
 
     if ff.hour =="":
-        title = '%s-%s-%s %s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger matched particles plotted, 10 mm = %.1f px =' % (
+        title = '%s-%s-%s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger matched particles plotted, 10 mm = %.1f px =' % (
         ff.year, ff.month, ff.day, config["name"], minSize, minSize * config["resolution"] * 1e-6 * 1000, particlesPloted, nParticles, tenmm)
     else:
-        title = '%s-%s-%sT%s %s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger matched particles plotted, 10 mm = %.1f px =' % (
+        title = '%s-%s-%sT%s %s, size threshold for plotting: %i px (%.2f mm), %i of %i larger matched particles plotted, 10 mm = %.1f px =' % (
         ff.year, ff.month, ff.day, ff.hour, config["name"], minSize, minSize * config["resolution"] * 1e-6 * 1000, particlesPloted, nParticles, tenmm)
 
     # new_im = cv2.putText(np.array(new_im), title,
