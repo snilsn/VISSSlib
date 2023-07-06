@@ -441,9 +441,12 @@ class Filenames(object):
         find level 0 fnames of other threads
         '''
 
+        #shortcut
         if (self.config["nThreads"] is None) or (self.config["nThreads"]==1):
-            return {0: self.fname.level0}
-
+            fname0AllMov = {}
+            if os.path.isfile(self.fname.level0):
+                fname0AllMov[0] = self.fname.level0
+            return fname0AllMov
 
         fname0AllTxt = self.fnameTxtAllThreads
         fname0AllMov = {}

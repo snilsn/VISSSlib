@@ -130,6 +130,8 @@ def createLevel2match(
         (config.frame_height -
          matchDatTJ.position_3D.sel(dim3D="z", drop=True) >= DmaxHalf)
     )
+    farEnoughFromBorder = farEnoughFromBorder.compute()
+
     log.info(tools.concat("farEnoughFromBorder applies to",
           (farEnoughFromBorder.sum()/len(farEnoughFromBorder)).values*100, 
           "% of data"))

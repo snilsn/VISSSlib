@@ -83,11 +83,16 @@ class VideoReaderMeta(object):
             raise ValurError("provide level1match as Dataset with data selected for corresponding camera")
 
         if imagesL1detect is not None:
-            self.tarFile = tools.imageTarFile.open(imagesL1detect, "r:bz2")
-            self.tarRoot = imagesL1detect.split("/")[-1].replace(".tar.bz2","")
+            #self.tarFile = tools.imageTarFile.open(imagesL1detect, "r:bz2")
+            try:
+                self.tarFile = tools.imageZipFile(imagesL1detect, "r")
+            except FileNotFoundError:
+                self.tarFile = None
+                log.warning(f"did not fine {imagesL1detect}")
+            #self.tarRoot = imagesL1detect.split("/")[-1].replace(".tar.bz2","")
         else:
             self.tarFile = None
-            self.tarRoot = None
+            #self.tarRoot = None
 
         self.saveMode = saveMode
         self.config = config
@@ -262,8 +267,9 @@ class VideoReaderMeta(object):
 
                 if self.tarFile is not None:
                     try:
-                        imfname = '%s/%s/%s' % (self.tarRoot, pidStr[:4], imName)
-                        particles[pid] = self.tarFile.extractimage(imfname)
+                        # imfname = '%s/%s/%s' % (self.tarRoot, pidStr[:4], imName)
+                        # particles[pid] = self.tarFile.extractimage(imfname)
+                        particles[pid] = self.tarFile.extractnpy(pidStr)
                     except KeyError:
                         # print(f"{pid} not found")
                         continue
@@ -282,12 +288,12 @@ class VideoReaderMeta(object):
         '''
    
         if ii < 0:
-            return False, None, None, None, None
+            return False, None, None, None, None, None
         
         try:
             captureTime = self.metaFrames.capture_time[ii].values
         except IndexError:
-            return False, None, None, None, None
+            return False, None, None, None, None, None
 
         return self.getFrameByCaptureTimeWithParticles(captureTime, markParticles=markParticles, highlightPid=highlightPid, increaseContrast=increaseContrast)
 

@@ -46,7 +46,13 @@ LOGGING_CONFIG = {
             'level': 'INFO',
             'formatter': 'standard',
             'class': 'logging.StreamHandler',
-            'stream': 'ext://sys.stdout',  # stream is stderr
+            'stream': 'ext://sys.stdout',  # stream is stdout
+        },
+        'err': {
+            'level': 'ERROR',
+            'formatter': 'standard',
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stderr',  # stream is stderr
         },
         # 'file': {
         #     'level': 'WARNING',
@@ -57,7 +63,7 @@ LOGGING_CONFIG = {
     },
     'loggers': {
         '': {  # root logger
-            'handlers': ['stream'],#, 'file'
+            'handlers': ['stream', 'err'],#, 'file'
             'level': 'DEBUG',
             'propagate': False
         },

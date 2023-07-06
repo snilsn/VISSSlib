@@ -212,11 +212,26 @@ def main():
 
         scripts.loopMetaRotationQuicklooks(settings, nDays=nDays, skipExisting=skipExisting)
 
+
+    elif sys.argv[1] == "scripts.loopCreateBatch":
+        settings = sys.argv[2]
+        nDays = sys.argv[3]
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+        scripts.loopCreateBatch(settings, nDays=nDays, skipExisting=skipExisting)
+
+
     elif sys.argv[1] == "scripts.reportLastFiles":
         settings = sys.argv[2]
         output = scripts.reportLastFiles(settings)
         print(output)
 
+    elif sys.argv[1] == "quicklooks.metaRotationYearlyQuicklook":
+        settings = sys.argv[2]
+        year = sys.argv[3]
+        quicklooks.metaRotationYearlyQuicklook(year, settings)
 
 
     else:

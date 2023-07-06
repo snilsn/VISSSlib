@@ -236,14 +236,14 @@ class _stereoViewMatch(object):
         newrr = self.rr+1
         if newrr >= len(self.uniqueCaptureIds):
             print("end of movie file")
-            return None, None, None, None
+            return None, None, None, None, None
         return self.get(newrr)
     
     def previous(self):
         newrr = self.rr-1
         if newrr < 0:
             print("beginning of movie file")
-            return None, None, None, None
+            return None, None, None, None, None
         return self.get(newrr)
 
     def nextCommon(self):
@@ -336,6 +336,8 @@ class matchGUI():
 
             if particles is not None:
                 for k in particles:
+                    if len(particles[k]) == 0:
+                        continue
                     for pid, part in particles[k].items():
                         print(k, pid)
                         tools.displayImage(part, rescale=4)
@@ -351,7 +353,7 @@ class matchGUI():
             
             print("leader:", c0,i0, "follower:", c1,i1)
             if lv1match is not None:
-                Zdiff = lv1match.position3D.isel(position3D_elements=[2,3], drop=True).diff("position3D_elements").values.flatten()
+                Zdiff = lv1match.position_3D.isel(dim3D=[2,3], drop=True).diff("dim3D").values.flatten()
                 print(
                     lv1match.pair_id.values.flatten(),
                     ["%.7f score"%(l) for l in lv1match.matchScore.values],
@@ -477,7 +479,7 @@ class _stereoViewDetect(object):
             fnamesMF = fnamesMF[:1]
         fnames1F = fL1.filenamesOtherCamera(graceInterval=-1, level="level1detect")
         if len(fnames1F)>1:
-            print("Cannot handle camera restarts yet, taking only first file, omitting", fnames[1:])
+            print("Cannot handle camera restarts yet, taking only first file, omitting", fnames1F[1:])
             fnames1F = fnames1F[:1]
 
         self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config)
@@ -512,8 +514,7 @@ class _stereoViewDetect(object):
 #                 captureTime = 0
                 # print(f"found record {rr} in {camera} data at {captureTime}")
     
-    
-                res, self.frame1, meta1, meta2, _ = self.videos[camera].getFrameByIndexWithParticles(rr, markParticles=self.markParticles)
+                res, self.frame1, meta1, meta2, _, _ = self.videos[camera].getFrameByIndexWithParticles(rr, markParticles=self.markParticles)
                 if self.frame1 is not None:
                     frame.append(self.frame1)
                 else:

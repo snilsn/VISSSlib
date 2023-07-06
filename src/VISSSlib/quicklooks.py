@@ -144,6 +144,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                        minSize="config",
                        omitLabel4small="config",
                        timedelta=np.timedelta64(1,"D"),
+                       returnFig=True,
                        ):
 
 
@@ -487,8 +488,10 @@ def createLevel1detectQuicklook(timestamp, camera, config,
     new_im.save(ffOut)
     print("SAVED ", ffOut)
 
-    return ffOut, new_im
-
+    if returnFig:
+        return ffOut, new_im
+    else:
+        return ffOut
 
 class Packer_patched(packer.Packer):
     """
@@ -983,7 +986,7 @@ def metaFramesQuicklook(
 
 
 
-def createLevel1matchQuicklook(case, config, skipExisting = True, version=__version__, plotCompleteOnly=True, minMatchScore=1e-3):
+def createLevel1matchQuicklook(case, config, skipExisting = True, version=__version__, plotCompleteOnly=True, minMatchScore=1e-3, returnFig=True):
 
     resample = "5T" # 5 mins
 
@@ -1168,9 +1171,83 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     print("DONE", fOut)
     fig.savefig(fOut)
     
-    return fOut, fig    
+    if returnFig:
+        return fOut, fig    
+    else:
+        return fOut
 
+def metaRotationYearlyQuicklook(
+                year, config, version=__version__, skipExisting=True):
+    if type(config) is str:
+        config = tools.readSettings(config)
 
+    ff = files.FindFiles(f"{year}0101", config.leader, config, version)
+    fOut = ff.quicklook.metaRotation
+    fOut = fOut.replace("0101.png",".png")
+    
+    if skipExisting and (int(year)  != int(datetime.datetime.utcnow().year)):
+        print(year, "skip exisiting")
+        return None, None
+
+    rotFiles = ff.fnamesPattern.metaRotation.replace("0101.nc", "*.nc")
+    rotDat = xr.open_mfdataset(rotFiles, combine='nested')
+    
+    fig, (ax1, ax2, ax3) = plt.subplots(3, figsize=(20,15), gridspec_kw={'hspace':0.}, sharex=True)
+    # plt.rcParams['text.usetex'] = False
+    # plt.rcParams['lines.linewidth'] = 1.5
+    mid = (fig.subplotpars.right + fig.subplotpars.left)/2
+    plt.suptitle('VISSS rotation \n'+f'{year}'+', '+config["name"]+'', fontsize=25, y=0.995, fontweight='bold', x=mid)
+
+    
+    rotDat.camera_phi.sel(camera_rotation="mean").plot(ax=ax1)
+    rotDat.camera_theta.sel(camera_rotation="mean").plot(ax=ax2)
+    rotDat.camera_Ofz.sel(camera_rotation="mean").plot(ax=ax3)
+
+    ax1.fill_between(
+        rotDat.file_starttime,
+        rotDat.camera_phi.sel(camera_rotation="mean")-rotDat.camera_phi.sel(camera_rotation="err"),
+        rotDat.camera_phi.sel(camera_rotation="mean")+rotDat.camera_phi.sel(camera_rotation="err"),
+        alpha=.5
+    )
+    
+    ax2.fill_between(
+        rotDat.file_starttime,
+        rotDat.camera_theta.sel(camera_rotation="mean")-rotDat.camera_theta.sel(camera_rotation="err"),
+        rotDat.camera_theta.sel(camera_rotation="mean")+rotDat.camera_theta.sel(camera_rotation="err"),
+        alpha=.5
+    )
+    ax3.fill_between(
+        rotDat.file_starttime,
+        rotDat.camera_Ofz.sel(camera_rotation="mean")-rotDat.camera_Ofz.sel(camera_rotation="err"),
+        rotDat.camera_Ofz.sel(camera_rotation="mean")+rotDat.camera_Ofz.sel(camera_rotation="err"),
+        alpha=.5
+    )
+
+    ax1.grid()
+    ax1.set_title(None)
+    ax1.set_ylabel('phi rotation [°]', fontsize=20)
+    ax1.set_xlabel(None)
+    
+    ax2.set_title(None)
+    ax2.set_ylabel('theta rotation [°]', fontsize=20)
+    ax2.grid()
+    ax2.set_xlabel(None)
+    
+    ax3.set_title(None)
+    ax3.set_ylabel('z offset [px]', fontsize=20)
+    ax3.tick_params(axis='both', labelsize=15)
+    #ax3.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+    ax3.grid()
+    ax3.set_xlabel("time")
+
+    fig.savefig(fOut)
+    rotDat.close()
+    
+    if year == str(datetime.datetime.today().year):
+        shutil.copy(fOut, shutil.copy(fOut, ff.quicklookCurrent.metaRotation))
+
+    fOut = fOut.replace("0101.png",".png")
+    return fOut, fig
 
 def metaRotationQuicklook(
                 case, config, version=__version__, skipExisting=True):
@@ -1193,7 +1270,7 @@ def metaRotationQuicklook(
         if os.path.getmtime(fOut) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
             print("file exists but older than event file, redoing", fOut)
         else:
-            print(case, camera, "skip exisiting")
+            print(case, "skip exisiting")
             return None, None
 
 
@@ -1327,16 +1404,13 @@ def metaRotationQuicklook(
     ff.createQuicklookDirs()
     fig.savefig(fOut)
 
-    if ff.datetime.date() == datetime.datetime.today().date():
-        shutil.copy(fOut, ff.quicklookCurrent.metaFrames)
-
     rotDat.close()
     events.close()
     
     return fOut, fig
 
 def createLevel2matchQuicklook(
-                    case, config, version=__version__, skipExisting=True):
+                    case, config, version=__version__, skipExisting=True, returnFig=True):
 
     if type(config) is str:
         config = tools.readSettings(config)
@@ -1468,7 +1542,10 @@ def createLevel2matchQuicklook(
     fig.tight_layout()
     fig.savefig(fOut)
     
-    return fOut, fig 
+    if returnFig:
+        return fOut, fig 
+    else:
+        return fOut
 
 
 def concatImgY(im1, im2, background=0):
@@ -1516,6 +1593,7 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
                        omitLabel4small="config",
                        timedelta=np.timedelta64(1,"D"),
                                minMatchScore=1e-3,
+                               returnFig=True,
                        ):
     
     camera = config.leader
@@ -1848,6 +1926,8 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
     new_im.save(ffOut)
     print("SAVED ", ffOut)
 
-    return ffOut, new_im
-
+    if returnFig:
+        return ffOut, new_im
+    else:
+        return ffOut
 

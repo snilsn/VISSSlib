@@ -10,6 +10,7 @@ import logging
 import time
 import shlex
 from functools import partial
+from itertools import chain
 
 import numpy as np
 import pandas as pd
@@ -78,9 +79,10 @@ def loopMetaRotationQuicklooks(settings, version=__version__, skipExisting=True,
     
     days = tools.getDateRange(nDays, config, endYesterday=False)
 
-
+    years = []
     for dd in days:
         year = str(dd.year)
+        years.append(year)
         month = "%02i" % dd.month
         day = "%02i" % dd.day
         case = f"{year}{month}{day}"
@@ -90,6 +92,10 @@ def loopMetaRotationQuicklooks(settings, version=__version__, skipExisting=True,
             fig.close()
         except AttributeError:
             pass
+
+    for year in set(years):
+        fOut, fig = quicklooks.metaRotationYearlyQuicklook(year, config, version=version, skipExisting=skipExisting)
+
 
 def loopLevel1detectQuicklooks(settings, version=__version__, nDays = 0, skipExisting=True):
 
@@ -297,21 +303,19 @@ def loopCreateLevel2match(settings, skipExisting=True, nDays = 0, useWorker=True
     if useWorker and len(days)>1:
         if nCPU is None:
             nCPU = os.cpu_count()//2
-        days = [str(day).split(" ")[0].replace("-","") for day in days]
+        daysStr = [str(day).split(" ")[0].replace("-","") for day in days]
 
         doWork = partial(loopCreateLevel2matchWorker, settings=settings, skipExisting=skipExisting)
-        with multiprocessing.Pool(nCPU) as p:
-            for i, r in enumerate(p.imap(doWork, days)):
-                log.warning(f'done {i} of {len(days)} files with result {r}')
 
+        with multiprocessing.Pool(nCPU) as p:
+            for i, r in enumerate(p.imap(doWork, daysStr)):
+                log.info(f'done {i} of {len(daysStr)} files with result {r}')
     else:
         for dd in days:
-
             year = str(dd.year)
             month = "%02i" % dd.month
             day = "%02i" % dd.day
             case = f"{year}{month}{day}"
-
             distributions.createLevel2match(case, config, skipExisting=skipExisting)
 
     if doPlot:
@@ -406,9 +410,12 @@ def loopCreateMetaRotation(settings, skipExisting=True, nDays = 0, doPlot=True):
 
     days = tools.getDateRange(nDays, config, endYesterday=False)
 
+    years = []
+
     for dd in days:
 
         year = str(dd.year)
+        years.append(year)
         month = "%02i" % dd.month
         day = "%02i" % dd.day
         case = f"{year}{month}{day}"
@@ -420,6 +427,10 @@ def loopCreateMetaRotation(settings, skipExisting=True, nDays = 0, doPlot=True):
                 fig.close()
             except AttributeError:
                 pass
+
+    if doPlot:
+        for year in set(years):
+            fOut, fig = quicklooks.metaRotationYearlyQuicklook(year, config, version=version, skipExisting=skipExisting)
 
     return
 
@@ -621,7 +632,7 @@ def loopCreateLevel1detect(settings, skipExisting=True, nDays = 0, cameras = "al
         doWork = partial(loopCreateLevel1detectWorker, settings=settings, skipExisting=skipExisting)
         with multiprocessing.Pool(nCPU) as p:
             for i, r in enumerate(p.imap(doWork, fnames)):
-                log.warning(f'done {i} of {len(fnames)} files with result {r}')
+                log.info(f'done {i} of {len(fnames)} files with result {r}')
 
         log.info(f"processed all {len(fnames)} files")
     return
@@ -669,7 +680,7 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0,  nCPU=None):
         #p.map(partial(loopCreateLevel1matchWorker, settings=settings, skipExisting=skipExisting), fnames)
         with multiprocessing.Pool(nCPU) as p:
             for i, r in enumerate(p.imap(doWork, fnames)):
-                log.warning(f'done {i} of {len(fnames)} files with result {r}')
+                log.info(f'done {i} of {len(fnames)} files with result {r}')
 
     return
 
@@ -739,7 +750,7 @@ def loopCheckCompleteness(settings, nDays = 0, cameras = "all", listDuplicates=T
     return
 
 
-def reportLastFiles(settings, writeFile=True, products = ["level0txt","level0", "metaFrames", "level1detect", 'metaRotation',"level1match", "level2match"]):
+def reportLastFiles(settings, writeFile=True, nameFile=False, products = ["level0txt","level0", "metaFrames", "level1detect", 'metaRotation',"level1match", "level2match"]):
 
     config = tools.readSettings(settings)
     days = tools.getDateRange(0, config, endYesterday=False)[::-1]
@@ -760,9 +771,9 @@ def reportLastFiles(settings, writeFile=True, products = ["level0txt","level0", 
 
             foundLastFile = False
             foundComplete = False
-            completeCase = "nan"
-            lastFile = "nan"
-            
+            completeCase = "n/a"
+            lastFileTime = "n/a"
+            lastFile = "n/a"
             for dd in days:
                 year = str(dd.year)
                 month = "%02i" % dd.month
@@ -774,12 +785,13 @@ def reportLastFiles(settings, writeFile=True, products = ["level0txt","level0", 
                 if not foundLastFile:
                     fnames = ff.listFilesExt(prod)
                     if len(fnames) > 0:
+                        lastFile = fnames[-1]
                         try:
                             f1 = files.FilenamesFromLevel(fnames[-1], config)
                         except ValueError:
                             f1 = files.Filenames(fnames[-1], config)
                         foundLastFile = True
-                        lastFile = f1.datetime
+                        lastFileTime = f1.datetime
                         
                 if not foundComplete:
                     foundComplete = ff.isComplete(prod) 
@@ -787,7 +799,11 @@ def reportLastFiles(settings, writeFile=True, products = ["level0txt","level0", 
                         
                 
                 if foundComplete and foundLastFile:
-                    output += f"{prod.ljust(14)} {(camera.split('_')[0]).ljust(8)} last full day:'{completeCase}' last file:'{lastFile}'\n"
+                    output += f"{prod.ljust(14)} {(camera.split('_')[0]).ljust(8)} last full day:'{completeCase}' last file:'{lastFileTime}'"
+                    if nameFile:
+                        output += f" {lastFile}"
+                    output += "\n"
+
                     break
                 
                     
@@ -802,3 +818,139 @@ def reportLastFiles(settings, writeFile=True, products = ["level0txt","level0", 
             f.write("</pre></html>\n")
 
     return output
+
+
+
+def loopCreateBatch(settings, skipExisting=True, nDays = 0, cameras = "all", nCPU=None, products = ["level1detect", "level1match", "level2match"], doPlot=True):
+    config = tools.readSettings(settings)
+    log = logging.getLogger()
+
+
+    days = tools.getDateRange(nDays, config, endYesterday=False)
+    daysStr = [str(day).split(" ")[0].replace("-","") for day in days]
+    if len(daysStr) == 0:
+        log.error('no days to process')
+        return
+
+    if cameras == "all":
+        cameras = [config.follower, config.leader]
+
+    if nCPU is None:
+        nCPU = os.cpu_count()
+        
+    with multiprocessing.Pool(nCPU) as p:
+
+        iL1D = []
+        iL1M = []
+        iL2M = []
+        iL1DQ1 = []
+        iL1DQ2 = []
+        iL1MQ1 = []
+        iL1MQ2 = []
+        iL2MQ = []
+        nJobs = 0
+        
+        if "level1detect" in products:
+            fnamesL1D = []
+
+            for dd in days:
+                # create list of files
+                year  =str(dd.year)
+                month  ="%02i"%(dd.month)
+                day  ="%02i"%(dd.day)      
+                case = f"{year}{month}{day}"
+                for camera in cameras:
+                    # find files
+                    ff = files.FindFiles(case, camera, config)
+                    fname0s =  ff.listFiles("level0txt")
+                    fnamesL1D += filter( os.path.isfile,
+                                            fname0s )
+
+            # Sort list of files in directory by size 
+            fnamesL1D = sorted( fnamesL1D,
+                                    key =  lambda x: os.stat(x).st_size)[::-1]
+            nJobs += len(fnamesL1D)
+
+            if len(fnamesL1D) == 0:
+                log.error('no files to process %s' % "level0txt")
+                # print('no files %s' % fnamesPattern)
+
+            else:
+                log.info(f"found {len(fnamesL1D)} files for level1detect, lets do it:")
+                doWorkL1D = partial(loopCreateLevel1detectWorker, settings=settings, skipExisting=skipExisting)
+                iL1D = p.imap(doWorkL1D, fnamesL1D)
+            
+        if "level1match" in products:
+            fnamesL1M = []
+            for dd in days:
+                # create list of files
+                year  =str(dd.year)
+                month  ="%02i"%(dd.month)
+                day  ="%02i"%(dd.day)      
+                case = f"{year}{month}{day}"
+                    # find files
+                ff = files.FindFiles(case, config.leader, config)
+                if len(ff.listFiles("metaRotation")) == 0:
+                    log.error(tools.concat("SKIPPING", dd, "no rotation file yet"))
+                    continue
+
+                fname0s =  ff.listFilesExt("level1detect")
+                fnamesL1M += filter( os.path.isfile,
+                                        fname0s )
+            nJobs += len(fnamesL1M)
+
+            # Sort list of files in directory by size 
+            fnamesL1M = sorted( fnamesL1M, key =  lambda x: os.stat(x).st_size)[::-1]
+            if len(fnamesL1M) == 0:
+                log.error('no files to process %s' % "level1detect")
+                # print('no files %s' % fnamesPattern)
+            else:
+                log.info(f"found {len(fnamesL1M)} files for level1match, lets do it:")
+
+                doWorkL1M = partial(loopCreateLevel1matchWorker, settings=settings, skipExisting=skipExisting)
+                iL1M = p.imap(doWorkL1M, fnamesL1M)
+            
+        if "level2match" in products:
+            nJobs += len(daysStr)
+            doWorkL2M = partial(loopCreateLevel2matchWorker, settings=settings, skipExisting=skipExisting)
+            iL2M = p.imap(doWorkL2M, daysStr)
+
+        if doPlot:
+            # doesnt work becuase further subprocesses are spawn
+#            if "level1detect" in products:
+#                nJobs += len(daysStr)
+#                doWork= partial(quicklooks.createLevel1detectQuicklook, camera=config.leader, config=config, skipExisting=skipExisting, returnFig = False)
+#                iL1DQ1 = p.imap(doWork, daysStr)
+
+#                nJobs += len(daysStr)
+#                doWork = partial(quicklooks.createLevel1detectQuicklook, camera=config.follower, config=config, skipExisting=skipExisting, returnFig = False)
+#                iL1DQ2 = p.imap(doWork, daysStr)
+
+            if "level1match" in products:
+        # doesnt work becuase further subprocesses are spawn
+#                nJobs += len(daysStr)
+#                doWork= partial(quicklooks.createLevel1matchParticlesQuicklook, config=config, skipExisting=skipExisting, returnFig = False)
+#                iL1MQ1 = p.imap(doWork, daysStr)
+
+                nJobs += len(daysStr)
+                doWork= partial(quicklooks.createLevel1matchQuicklook, config=config, skipExisting=skipExisting, returnFig = False)
+                iL1MQ2 = p.imap(doWork, daysStr)
+                    
+            if "level2match" in products:
+                nJobs += len(daysStr)
+                doWork = partial(quicklooks.createLevel2matchQuicklook, config=config, skipExisting=skipExisting, returnFig = False)
+                iL2MQ = p.imap(doWork, daysStr)
+
+                    
+        nFinished = 0
+        for i, r in enumerate(chain(iL1D, iL1M, iL2M, iL1DQ1, iL1DQ2, iL1MQ1, iL1MQ2, iL2MQ)):
+            nFinished += 1
+            log.info(f'done {nFinished} of {nJobs} files with result {r}')
+        log.info(f"processed all {nJobs} jobs")
+        
+
+    return iL1D, iL1M, iL2M, iL1DQ1, iL1DQ2, iL1MQ1, iL1MQ2, iL2MQ
+
+
+
+    

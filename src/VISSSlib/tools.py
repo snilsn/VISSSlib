@@ -494,7 +494,7 @@ def displayImage(frame, doDisplay=True, rescale = None):
 
 
     if rescale is not None:
-        if (len(frame.shape) == 3):
+        if (len(frame1.shape) == 3):
             newShape = np.array((frame1.shape[0]*rescale, frame1.shape[1]*rescale, frame1.shape[2]))
         else:
             newShape = np.array(frame1.shape)*rescale
@@ -675,3 +675,22 @@ def concat(*strs):
     '''
     concat = " ".join([str(s) for s in strs])
     return concat
+
+def open2(file, mode="r", **kwargs):
+    '''
+    like standard open, but creating directories if needed
+    '''
+    dirname = os.path.dirname(file)
+    if (dirname != "") and (not os.path.exists(dirname)):
+        os.makedirs(dirname)
+    return open(file, mode, **kwargs)
+
+
+def to_netcdf2(dat, file, **kwargs):
+    '''
+    like xarray netcdf open, but creating directories if needed
+    '''
+    dirname = os.path.dirname(file)
+    if (dirname != "") and (not os.path.exists(dirname)):
+        os.makedirs(dirname)
+    return dat.to_netcdf(file, **kwargs)

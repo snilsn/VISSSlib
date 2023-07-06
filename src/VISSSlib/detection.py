@@ -1082,7 +1082,6 @@ def detectParticles(fname,
     fnamesV = fn.fnameMovAllThreads
     fnamesT = fn.fnameTxtAllThreads
     
-
     # txt data is transmitted first
     if len(fnamesT) == 0:
         with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
@@ -1201,8 +1200,10 @@ def detectParticles(fname,
 
         if (ii > 20) or (fname11 is None):
             with open('%s.notenoughframes' % fn.fname.level1detect, 'w') as f:
-                f.write('too few frames %i %i %s' %
+                f.write('too few frames %i %i %s \r' %
                         (len(trainingFrames), ii, fname11))
+                f.write(str(fnamesV))
+                f.write(str(fnamesT))
             log.error('%s too few frames %i ' %
                       (fn.fname.level1detect, len(trainingFrames)))
             return None
