@@ -180,6 +180,17 @@ def main():
 
         scripts.loopLevel1matchQuicklooks(settings, nDays=nDays, skipExisting=skipExisting)
 
+    elif sys.argv[1] == "scripts.loopLevel1matchParticlesQuicklooks":
+        settings = sys.argv[2]
+        nDays = sys.argv[3]
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+
+        scripts.loopLevel1matchParticlesQuicklooks(settings, nDays=nDays, skipExisting=skipExisting)
+
+
     elif sys.argv[1] == "scripts.loopLevel2matchQuicklooks":
         settings = sys.argv[2]
         nDays = sys.argv[3]

@@ -15,11 +15,17 @@ import logging
 log = logging.getLogger(__name__)
 
 def _preprocess(dat):
-    del dat["pair_id"]
-    # we do not need all variables
-    dat = dat[["capture_time","Dmax", "area","matchScore",
-                            "aspectRatio", "angle", "perimeter", "position_3D", 
-                            "camera_phi", "camera_theta", "camera_Ofz"]]
+
+    try:
+        del dat["pair_id"]
+
+        # we do not need all variables
+        dat = dat[["capture_time","Dmax", "area","matchScore",
+                                "aspectRatio", "angle", "perimeter", "position_3D", 
+                                "camera_phi", "camera_theta", "camera_Ofz"]]
+    except:
+         log.error(dat.encoding["source"])
+         raise KeyError
     return dat
 
 

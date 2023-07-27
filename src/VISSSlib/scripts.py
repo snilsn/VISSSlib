@@ -430,7 +430,7 @@ def loopCreateMetaRotation(settings, skipExisting=True, nDays = 0, doPlot=True):
 
     if doPlot:
         for year in set(years):
-            fOut, fig = quicklooks.metaRotationYearlyQuicklook(year, config, version=version, skipExisting=skipExisting)
+            fOut, fig = quicklooks.metaRotationYearlyQuicklook(year, config, skipExisting=skipExisting)
 
     return
 
@@ -505,6 +505,7 @@ def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, nCPU
     ffl1.createDirs()
 
     fname1Match = ffl1.fname["level1match"]
+    #print(ffl1.fname["level1match"])
     ffl1.createDirs()
     tmpFile = os.path.basename('%s.processing.txt' % fname1Match)
 
@@ -525,7 +526,7 @@ def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, nCPU
         log.info(f"SKIPPING nodata {fname1Match}")
         return 0
     elif skipExisting and ( os.path.isfile(tmpFile)):
-        log.info('output processing %s %s' % (fnameL1detect, ffl1.fname.fname1Match))
+        log.info('output already processing, skipping %s %s' % (fnameL1detect, ffl1.fname["level1match"]))
         return 0
 
     BIN = os.path.join(sys.exec_prefix, "bin", "python")
@@ -533,7 +534,6 @@ def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, nCPU
         command = f"{BIN} -m VISSSlib matching.matchParticles  {fnameL1detect} {settings}"
     else:
         command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib matching.matchParticles  {fnameL1detect} {settings}"
-
     success = _runCommand(command, tmpFile, fname1Match)
 
     return 0
