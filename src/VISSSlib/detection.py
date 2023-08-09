@@ -209,7 +209,7 @@ class detectedParticles(object):
                  applyCanny2Frame=False,
                  applyCanny2Particle=True,  # much faster than 2 whole Frame!
                  dilateIterations=1,
-                 blurSigma=1.5,
+                 blurSigma=1.0,
                  minAspectRatio=None,  # testing only
                  ):
 
@@ -398,6 +398,7 @@ class detectedParticles(object):
         else:
 
             # blur image, required to make algoprithm stable
+            print("self.blurSigma", self.blurSigma)
             if self.blurSigma != 0:
                 frame = cv2.GaussianBlur(frame, (0, 0), self.blurSigma)
             # frame = cv2.bilateralFilter(frame, 5,70,2)
@@ -1018,13 +1019,12 @@ def detectParticles(fname,
                     writeNc=True,
                     trainingSize=100,
                     testMovieFile=True,
-                    backSubKW={"dist2Threshold": 400,
-                               "detectShadows": False, "history": 100},
-                    backSub=cv2.createBackgroundSubtractorKNN,
+                    backSubKW={"minPixelStability": 10, "maxPixelStability": 100},
+                    backSub=cv2.bgsegm.createBackgroundSubtractorCNT,
                     applyCanny2Frame=False,
                     applyCanny2Particle=True,
                     dilateIterations=1,
-                    blurSigma=1.5,
+                    blurSigma=1.0,
                     minBlur=10,
                     erosionTestThreshold=0.06,
                     minArea=1,
@@ -1093,7 +1093,7 @@ def detectParticles(fname,
 
     # mov data is sometimes transmtted later, so do not write nodata files in 
     # case data is missing yet
-    if len(fnamesV) < int(config.nThreads):
+    if len(fnamesV) < int(nThreads2):
         if config.end == "today": 
             log.warning('movie files not found (yet?) ' + fname)
         else:

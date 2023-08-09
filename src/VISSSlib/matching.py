@@ -1238,7 +1238,7 @@ def matchParticles(fnameLv1Detect, config,
 
     matchedDats["fitMethod"] = matchedDats.fitMethod.astype("U30")
     matchedDats["dim2D"] = matchedDats.dim2D.astype("U2")
-    matchedDats["dim3D"] = matchedDats.dim3D.astype("U2")
+    matchedDats["dim3D"] = matchedDats.dim3D.astype("U9")
     matchedDats["camera"] = matchedDats.camera.astype("U30")
     matchedDats["camera_rotation"] = matchedDats.camera_rotation.astype("U30")
     tools.to_netcdf2(matchedDats, fname1Match)

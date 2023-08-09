@@ -538,6 +538,58 @@ def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, nCPU
 
     return 0
 
+def loopCreateLevel1trackWorker(fnameL1match, settings, skipExisting=True, nCPU=1):
+
+    '''
+    We need this worker function becuase  we want to do the matching by indipendent 
+    processes in parallel
+    '''
+    config = tools.readSettings(settings)
+
+    errorlines = collections.deque([], 50)
+    
+
+    #avoid tmp file race condition
+    time.sleep(np.random.random())
+            
+
+    ffl1  = files.FilenamesFromLevel(fnameL1match, config)
+
+    fnameL1track = ffl1.fname["level1track"]
+    #print(ffl1.fname["level1match"])
+    ffl1.createDirs()
+    tmpFile = os.path.basename('%s.processing.txt' % fnameL1track)
+
+    if fnameL1match.endswith("broken.txt") or fnameL1match.endswith("nodata") or fnameL1match.endswith("notenoughframes"):
+        ffl1.createDirs()
+        with open(f"{fname1Match}.nodata", "w") as f:
+            f.write("no leader data")
+        log.info(f"NO leader DATA {fname1Match}")
+        return 0
+
+    elif os.path.isfile(fnameL1track) and skipExisting:
+        log.info(f"SKIPPING {fnameL1track}")
+        return 0
+    elif os.path.isfile('%s.broken.txt' % fnameL1track) and skipExisting:
+        log.info(f"SKIPPING BROKEN {fnameL1track}")
+        return 0
+    elif os.path.isfile('%s.nodata' % fnameL1track) and skipExisting:
+        log.info(f"SKIPPING nodata {fnameL1track}")
+        return 0
+    elif skipExisting and ( os.path.isfile(tmpFile)):
+        log.info('output already processing, skipping %s %s' % (fnameL1match, ffl1.fname["level1match"]))
+        return 0
+
+    BIN = os.path.join(sys.exec_prefix, "bin", "python")
+    if nCPU is None:
+        command = f"{BIN} -m VISSSlib tracking.trackParticles  {fnameL1match} {settings}"
+    else:
+        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib tracking.trackParticles  {fnameL1match} {settings}"
+    success = _runCommand(command, tmpFile, fnameL1track)
+
+    return 0
+
+
 def _runCommand(command, tmpFile, fOut, stdout=subprocess.DEVNULL):
     success = True
     # with statement extended to avoid race conditions
@@ -684,6 +736,51 @@ def loopCreateLevel1match(settings, skipExisting=True, nDays = 0,  nCPU=None):
 
     return
 
+def loopCreateLevel1track(settings, skipExisting=True, nDays = 0,  nCPU=None):
+    config = tools.readSettings(settings)
+    log = logging.getLogger()
+
+
+    days = tools.getDateRange(nDays, config, endYesterday=False)
+
+    if nCPU is None:
+        nCPU = os.cpu_count()
+
+    fnames = []
+    p = None
+
+    for dd in days:
+        # create list of files
+        year  =str(dd.year)
+        month  ="%02i"%(dd.month)
+        day  ="%02i"%(dd.day)      
+        case = f"{year}{month}{day}"
+            # find files
+        ff = files.FindFiles(case, config.leader, config)
+        if len(ff.listFiles("metaRotation")) == 0:
+            log.error(tools.concat("SKIPPING", dd, "no rotation file yet"))
+            continue
+
+        fname0s =  ff.listFilesExt("level1match")
+        fnames += filter( os.path.isfile,
+                                fname0s )
+
+        # Sort list of files in directory by size 
+        fnames = sorted( fnames, key =  lambda x: os.stat(x).st_size)[::-1]
+    
+    if len(fnames) == 0:
+        log.error('no files to process %s' % "level1match")
+        # print('no files %s' % fnamesPattern)
+    else:
+        log.info(f"found {len(fnames)} files, lets do it:")
+
+        doWork = partial(loopCreateLevel1trackWorker, settings=settings, skipExisting=skipExisting)
+        #p.map(partial(loopCreateLevel1trackWorker, settings=settings, skipExisting=skipExisting), fnames)
+        with multiprocessing.Pool(nCPU) as p:
+            for i, r in enumerate(p.imap(doWork, fnames)):
+                log.info(f'done {i} of {len(fnames)} files with result {r}')
+
+    return
 
 
 

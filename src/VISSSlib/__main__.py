@@ -130,6 +130,12 @@ def main():
 
         matching.matchParticles(fname, settings)
 
+    elif sys.argv[1] == "tracking.trackParticles":
+
+        fname = sys.argv[2]
+        settings = sys.argv[3]
+
+        tracking.trackParticles(fname, settings)
 
     elif sys.argv[1] == "scripts.loopCreateLevel1detect":
 
@@ -155,6 +161,19 @@ def main():
             skipExisting = True
 
         scripts.loopCreateLevel1match(settings, skipExisting=skipExisting, nDays = nDays, nCPU=None)
+
+    elif sys.argv[1] == "scripts.loopCreateLevel1track":
+
+        settings = sys.argv[2]
+        nDays = sys.argv[3]
+
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+
+        scripts.loopCreateLevel1track(settings, skipExisting=skipExisting, nDays = nDays, nCPU=None)
+
 
     elif sys.argv[1] == "scripts.loopCreateLevel2match":
 
