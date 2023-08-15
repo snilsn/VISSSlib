@@ -40,10 +40,11 @@ def createLevel2match(
     blockedPixThresh=0.1, 
     blowingSnowFrameThresh=0.05,
     skipExisting = True, 
+    sublevel = "match"
     ):
 
     fL = files.FindFiles(case, config.leader, config)
-    lv2File = fL.fnamesDaily.level2match
+    lv2File = fL.fnamesDaily[f"level2{sublevel}"]
 
     if os.path.isfile(lv2File) and skipExisting:
         if os.path.getmtime(lv2File) < os.path.getmtime(fL.listFiles("metaEvents")[0]):
@@ -57,18 +58,27 @@ def createLevel2match(
 #        print(len(fL.listFiles("level0")), "of", len(fL.listFiles("metaFrames")), "transmitted")
 #        return None, None
 
-    if not fL.isCompleteL1match:
-        print("level1match NOT COMPLETE YET %i of %i %s" %
-              (len(fL.listFilesExt("level1match")), len(fL.listFiles("level0txt")),  lv2File))
-        print("look at ", fL.fnamesPatternExt["level1match"])
-        return None, None
+    if sublevel == "match":
+        if not fL.isCompleteL1match:
+            print("level1match NOT COMPLETE YET %i of %i %s" %
+                  (len(fL.listFilesExt("level1match")), len(fL.listFiles("level0txt")),  lv2File))
+            print("look at ", fL.fnamesPatternExt["level1match"])
+            return None, None
+    elif sublevel == "track":
+        if not fL.isCompleteL1track:
+            print("level1track NOT COMPLETE YET %i of %i %s" %
+                  (len(fL.listFilesExt("level1track")), len(fL.listFiles("level0txt")),  lv2File))
+            print("look at ", fL.fnamesPatternExt["level1track"])
+            return None, None
+    else:
+        raise ValueError
 
-    matchFiles = fL.listFilesWithNeighbors("level1match")
+    lv1Files = fL.listFilesWithNeighbors(f"level1{sublevel}")
 
-    if len(matchFiles) == 0:
+    if len(lv1Files) == 0:
         print("level1match NOT AVAILABLE %s" %
               lv2File)
-        print("look at ", fL.fnamesPatternExt["level1match"])
+        print("look at ", fL.fnamesPatternExt[f"level1{sublevel}"])
         return None, None
 
     timeIndex = pd.date_range(start=case, end=fL.datetime64 +
@@ -79,62 +89,62 @@ def createLevel2match(
 
     log.info(f"open level1match files {case}")
     with dask.config.set(**{'array.slicing.split_large_chunks': True}):
-        matchDat = xr.open_mfdataset(
-            matchFiles, preprocess=_preprocess, combine="nested", concat_dim="pair_id")
+        level1dat = xr.open_mfdataset(
+            lv1Files, preprocess=_preprocess, combine="nested", concat_dim="pair_id")
 
     # limit to period of interest
-    matchDat = matchDat.isel(pair_id=(matchDat.capture_time.isel(camera=0) >= fL.datetime64).values & (
-        matchDat.capture_time.isel(camera=0) < (fL.datetime64 + endTime)).values)
+    level1dat = level1dat.isel(pair_id=(level1dat.capture_time.isel(camera=0) >= fL.datetime64).values & (
+        level1dat.capture_time.isel(camera=0) < (fL.datetime64 + endTime)).values)
 
     # make chunks more regular
-    matchDat = matchDat.chunk(pair_id=10000)
+    level1dat = level1dat.chunk(pair_id=10000)
 
     # apply matchScore threshold
-    matchCond = (matchDat.matchScore >= minMatchScore).values
+    matchCond = (level1dat.matchScore >= minMatchScore).values
     log.info(tools.concat("matchCond applies to", (matchCond.sum()/len(matchCond))*100, "% of data"))
-    matchDat = matchDat.isel(pair_id=matchCond)
+    level1dat = level1dat.isel(pair_id=matchCond)
 
-    if len(matchDat.matchScore) == 0:
+    if len(level1dat.matchScore) == 0:
         log.warning("no data remians after matchScore filtering %s" %
               lv2File)
         return None, None   
 
-    sizeCond = (matchDat.Dmax < max(DbinsPixel)).all("camera").values
-    matchDat = matchDat.isel(pair_id=sizeCond)
-    if len(matchDat.matchScore) == 0:
+    sizeCond = (level1dat.Dmax < max(DbinsPixel)).all("camera").values
+    level1dat = level1dat.isel(pair_id=sizeCond)
+    if len(level1dat.matchScore) == 0:
         log.warning("no data remians after size filtering %s" %
               lv2File)
         return None, None   
 
 
     # switch to time coordinate
-    matchDatT = matchDat.assign_coords(time=xr.DataArray(
-        matchDat.capture_time.isel(camera=0).values, coords=[matchDat.pair_id]))
-    del matchDatT["pid"]
-    del matchDatT["capture_time"]
+    level1datT = level1dat.assign_coords(time=xr.DataArray(
+        level1dat.capture_time.isel(camera=0).values, coords=[level1dat.pair_id]))
+    del level1datT["pid"]
+    del level1datT["capture_time"]
 
     # estimate max, mean and min for both cameras
-    matchDatTJ = (matchDatT.max("camera"), matchDatT.mean("camera"), matchDatT.min("camera"), matchDatT.sel(
-        camera=config.leader, drop=True), matchDatT.sel(camera=config.follower, drop=True))
-    matchDatTJ = xr.concat(matchDatTJ, dim="camera")
-    matchDatTJ["camera"] = ["max", "mean", "min", "leader", "follower"]
+    level1datTJ = (level1datT.max("camera"), level1datT.mean("camera"), level1datT.min("camera"), level1datT.sel(
+        camera=config.leader, drop=True), level1datT.sel(camera=config.follower, drop=True))
+    level1datTJ = xr.concat(level1datTJ, dim="camera")
+    level1datTJ["camera"] = ["max", "mean", "min", "leader", "follower"]
     # position_3D is the same for all
-    matchDatTJ["position_3D"] = matchDatTJ["position_3D"].sel(
+    level1datTJ["position_3D"] = level1datTJ["position_3D"].sel(
         camera="max", drop=True)
 
-    del matchDatTJ["camera_phi"]
-    del matchDatTJ["camera_theta"]
-    del matchDatTJ["camera_Ofz"]
+    del level1datTJ["camera_phi"]
+    del level1datTJ["camera_theta"]
+    del level1datTJ["camera_Ofz"]
 
 
     # remove particles too close to the edge
     # this is possible for non symmetrical particles
-    DmaxHalf = matchDatTJ.Dmax.sel(camera="max", drop=True)/2
+    DmaxHalf = level1datTJ.Dmax.sel(camera="max", drop=True)/2
     farEnoughFromBorder = (
-        (matchDatTJ.position_3D.sel(dim3D=["x", "y", "z"]) >= DmaxHalf).all("dim3D") &
-        (config.frame_width - matchDatTJ.position_3D.sel(dim3D=["x", "y"]) >= DmaxHalf).all("dim3D") &
+        (level1datTJ.position_3D.sel(dim3D=["x", "y", "z"]) >= DmaxHalf).all("dim3D") &
+        (config.frame_width - level1datTJ.position_3D.sel(dim3D=["x", "y"]) >= DmaxHalf).all("dim3D") &
         (config.frame_height -
-         matchDatTJ.position_3D.sel(dim3D="z", drop=True) >= DmaxHalf)
+         level1datTJ.position_3D.sel(dim3D="z", drop=True) >= DmaxHalf)
     )
     farEnoughFromBorder = farEnoughFromBorder.compute()
 
@@ -145,37 +155,37 @@ def createLevel2match(
     log.info(tools.concat("farEnoughFromBorder applies to",
           (farEnoughFromBorder.sum()/len(farEnoughFromBorder)).values*100, 
           "% of data"))
-    matchDatTJ = matchDatTJ.isel(pair_id=farEnoughFromBorder)
-    if len(matchDatTJ.pair_id) == 0:
+    level1datTJ = level1datTJ.isel(pair_id=farEnoughFromBorder)
+    if len(level1datTJ.pair_id) == 0:
         log.warning("no data remians after farEnoughFromBorder filtering %s" %
               lv2File)
         return None, None   
 
-    matchDatTJ = addPerParticleVariables(matchDatTJ)
+    level1datTJ = addPerParticleVariables(level1datTJ)
 
     #position is not needed nay more
-    del matchDatTJ["position_3D"]
+    del level1datTJ["position_3D"]
 
     # now load data
-    matchDatTJ.load()
+    level1datTJ.load()
 
     # split data in 1 min chunks
-    matchDatG = matchDatTJ.groupby_bins("time", timeIndex1, squeeze=False)
+    level1datG = level1datTJ.groupby_bins("time", timeIndex1, squeeze=False)
 
     sizeDefinitions = ["Dmax", "Dequiv"]
     # process each 1 min chunks
 
     # iterate through every 1 min piece
     res = {}
-    for interv, matchDatG1 in tqdm(matchDatG):
+    for interv, level1datG1 in tqdm(level1datG):
         #print(interv)
         tmp = []
         # for each camera/min/max/mean seperately
-        for cam in matchDatG1.camera:
+        for cam in level1datG1.camera:
             # estimate counts
             tmpXr = []
             for sizeDefinition in sizeDefinitions:
-                tmpXr1 = matchDatG1[[sizeDefinition]].sel(camera=cam).groupby_bins(
+                tmpXr1 = level1datG1[[sizeDefinition]].sel(camera=cam).groupby_bins(
                     sizeDefinition, DbinsPixel).count().fillna(0)
                 tmpXr1 = tmpXr1.rename({sizeDefinition: "N"})
                 tmpXr1 = tmpXr1.rename({f"{sizeDefinition}_bins": "D_bins"})
@@ -184,7 +194,7 @@ def createLevel2match(
 
                 # estimate mean values for "area", "angle", "aspectRatio", "perimeter"
                 # Dmax is only for technical resaons and is removed afterwards
-                otherVars1 = matchDatG1[["area", "angle", "aspectRatio", "perimeter", sizeDefinition]].sel(
+                otherVars1 = level1datG1[["area", "angle", "aspectRatio", "perimeter", sizeDefinition]].sel(
                     camera=cam).groupby_bins(sizeDefinition, DbinsPixel).mean()
                 del otherVars1[sizeDefinition]
                 otherVars1 = otherVars1.rename({k: f"{k}_dist" for k in otherVars1.data_vars})
@@ -199,7 +209,7 @@ def createLevel2match(
         # merge camera/min/max/mean reults
         res[interv.left] = xr.concat(tmp, dim="camera")
         # add camera/min/max/mean information
-        res[interv.left]["camera"] = matchDatG1.camera
+        res[interv.left]["camera"] = level1datG1.camera
 
 
     dist = xr.concat(res.values(), dim="time")
@@ -212,7 +222,7 @@ def createLevel2match(
     log.info("do mean values")
     # estimate mean values
     # to do: data is weighted with number of obs not considering the smalle robservation volume for larger particles
-    meanValues = matchDatG.mean()
+    meanValues = level1datG.mean()
     meanValues = meanValues.rename({k: f"{k}_mean" for k in meanValues.data_vars})
     meanValues = meanValues.rename(time_bins="time")
     # we want tiem stamps not intervals
@@ -222,13 +232,13 @@ def createLevel2match(
     level2dat = xr.merge((dist, meanValues))
     level2dat.load()
 
-    calibDat = calibrateData(level2dat, matchDatT, config, DbinsPixel, timeIndex1)
+    calibDat = calibrateData(level2dat, level1datT, config, DbinsPixel, timeIndex1)
     calibDat = addVariables(calibDat, case, config, timeIndex, timeIndex1, 
         blockedPixThresh=blockedPixThresh, blowingSnowFrameThresh=blowingSnowFrameThresh)
 
     #clean up!
-    matchDat.close()
-    del matchDat, matchDatG, matchDatTJ, matchDatT, tmpXr, tmp, tmpXr1
+    level1dat.close()
+    del level1dat, level1datG, level1datTJ, level1datT, tmpXr, tmp, tmpXr1
 
     fL.createDirs()
     calibDat = tools.finishNc(calibDat)
@@ -237,15 +247,15 @@ def createLevel2match(
 
     return calibDat, lv2File
 
-def addPerParticleVariables(matchDatTJ):
+def addPerParticleVariables(level1datTJ):
     # add area equivalent radius
-    matchDatTJ["Dequiv"] = np.sqrt(4*matchDatTJ["area"]/np.pi)
+    level1datTJ["Dequiv"] = np.sqrt(4*level1datTJ["area"]/np.pi)
 
     #based on Garrett, T. J., and S. E. Yuter, 2014: Observed influence of riming, temperature, and turbulence on the fallspeed of solid precipitation. Geophys. Res. Lett., 41, 6515–6522, doi:10.1002/2014GL061016.
-    matchDatTJ["complexityBW"] = matchDatTJ["perimeter"]/(np.pi * matchDatTJ["Dequiv"])
-    # matchDatTJ["complexity"] = matchDatTJ["complexityBW"] * 
+    level1datTJ["complexityBW"] = level1datTJ["perimeter"]/(np.pi * level1datTJ["Dequiv"])
+    # level1datTJ["complexity"] = level1datTJ["complexityBW"] * 
 
-    return matchDatTJ
+    return level1datTJ
 
 def addVariables(calibDat, case, config, timeIndex, timeIndex1, blockedPixThresh=0.1, blowingSnowFrameThresh=0.05):
 
@@ -313,14 +323,14 @@ def addVariables(calibDat, case, config, timeIndex, timeIndex1, blockedPixThresh
     return calibDatFilt
 
 
-def estimateObservationVolume(matchDatT, config, DbinsPixel, timeIndex1):
+def estimateObservationVolume(level1datT, config, DbinsPixel, timeIndex1):
 
     '''
     in pixel
 
     '''
 
-    rotDat = matchDatT[["camera_phi", "camera_theta", "camera_Ofz"]].sel(
+    rotDat = level1datT[["camera_phi", "camera_theta", "camera_Ofz"]].sel(
         camera_rotation="mean").groupby_bins("time", timeIndex1, squeeze=False).mean()
     rotDat = rotDat.rename(time_bins="time")
     # we want time stamps not intervals
@@ -342,7 +352,7 @@ def estimateObservationVolume(matchDatT, config, DbinsPixel, timeIndex1):
     return volumes
 
 
-def calibrateData(level2dat, matchDatT, config, DbinsPixel, timeIndex1):
+def calibrateData(level2dat, level1datT, config, DbinsPixel, timeIndex1):
     '''go from pixel to SI units'''
 
     assert "intercept" in config.calibration.keys()
@@ -353,7 +363,7 @@ def calibrateData(level2dat, matchDatT, config, DbinsPixel, timeIndex1):
 
     calibDat = level2dat.rename(N="counts").copy()
 
-    volumes = estimateObservationVolume(matchDatT, config, DbinsPixel, timeIndex1)
+    volumes = estimateObservationVolume(level1datT, config, DbinsPixel, timeIndex1)
     calibDat["obs_volume"] = xr.DataArray(
         volumes, coords=[level2dat.time, level2dat.D_bins])
 
@@ -402,7 +412,7 @@ def getDataQuality(case, config, timeIndex, timeIndex1):
     eventL = xr.open_mfdataset(fnameL).load()
     eventF = xr.open_mfdataset(fnameF).load()
 
-    matchFilesAll = fL.listFilesExt("level1match")
+    matchFilesAll = fL.listFilesExt(f"level1{sublevel}")
     matchFilesBroken = [f for f in matchFilesAll if f.endswith("broken.txt")]
     brokenTimes = [files.FilenamesFromLevel(
         f, config).datetime64 for f in matchFilesBroken]
