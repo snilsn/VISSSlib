@@ -1093,7 +1093,7 @@ def detectParticles(fname,
 
     # mov data is sometimes transmtted later, so do not write nodata files in 
     # case data is missing yet
-    if len(fnamesV) < int(config.nThreads):
+    if len(fnamesV) < int(nThreads2):
         if config.end == "today": 
             log.warning('movie files not found (yet?) ' + fname)
         else:
