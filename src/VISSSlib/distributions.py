@@ -76,7 +76,7 @@ def createLevel2match(
     lv1Files = fL.listFilesWithNeighbors(f"level1{sublevel}")
 
     if len(lv1Files) == 0:
-        print("level1match NOT AVAILABLE %s" %
+        print("level1 NOT AVAILABLE %s" %
               lv2File)
         print("look at ", fL.fnamesPatternExt[f"level1{sublevel}"])
         return None, None
@@ -87,7 +87,7 @@ def createLevel2match(
                               endTime, freq=freq, inclusive="both")
 
 
-    log.info(f"open level1match files {case}")
+    log.info(f"open level1 files {case}")
     with dask.config.set(**{'array.slicing.split_large_chunks': True}):
         level1dat = xr.open_mfdataset(
             lv1Files, preprocess=_preprocess, combine="nested", concat_dim="pair_id")
@@ -671,3 +671,76 @@ def interpolateVolumes(Dfull, Dstep, volumes1):
 
     volumes = np.interp(Dfull, Dstep, np.array(volumes1)**(1/3.))**3
     return Dfull, volumes
+
+
+
+def velocity(dat):
+    coords = ["max", "mean", "min", "std"]#, "median"]
+    diffs = dat.position_3D.diff("pair_id")
+    if diffs.shape[1] == 0:
+        datJoint = xr.DataArray(np.zeros((len(coords), len(dat.dim3D.values)))*np.nan, coords=[coords, dat.dim3D.values], dims=["track", "dim3D"])
+        return datJoint
+    maxs = diffs.max("pair_id")
+    mins = diffs.min("pair_id")
+    means = diffs.mean("pair_id")
+#     medians = diffs.median("pair_id")
+    stds = diffs.std("pair_id")
+    datJoint = xr.concat([maxs,means,mins,stds],#,medians], 
+                         dim="track")
+    datJoint["track"] = coords
+    return datJoint
+
+
+
+def trackProperties(dat):
+    print("props")
+    coords = ["max", "mean", "min", "std"]#, "median"]
+    maxs = dat.max("pair_id")
+    mins = dat.min("pair_id")
+    means = dat.mean("pair_id")
+#     medians = dat.median("pair_id")
+    stds = dat.std("pair_id")
+    datJoint = xr.concat([maxs,means,mins,stds],#,medians], 
+                         dim="track")
+    datJoint["track"] = coords
+    return datJoint
+
+def averageTracks(lv1track):
+    
+    lv1track["Dequiv"] = np.sqrt(4*lv1track["area"]/np.pi)
+    #based on Garrett, T. J., and S. E. Yuter, 2014: Observed influence of riming, temperature, and turbulence on the fallspeed of solid precipitation. Geophys. Res. Lett., 41, 6515–6522, doi:10.1002/2014GL061016.
+    lv1track["complexityBW"] = lv1track["perimeter"]/(np.pi * lv1track["Dequiv"])
+
+    gp = lv1track.groupby("track_id")
+    lv1trackJoint = []
+    print(f"calculating max")
+    lv1trackJoint.append(gp.max())
+    print(f"calculating mean")
+    lv1trackJoint.append(gp.mean())
+    print(f"calculating min")
+    lv1trackJoint.append(gp.min())
+    print(f"calculating std")
+    lv1trackJoint.append(gp.std())
+    print(f"calculating median")
+    lv1trackJoint.append(gp.median())
+    
+    print(f"joining data")
+    lv1trackJoint = xr.concat(lv1trackJoint, dim="track")
+    lv1trackJoint["track"] = ["max", "mean", "min", "std", "median"]
+
+#     print(f"estimate min/max/mean")
+#     lv1trackJoint = lv1track.groupby("track_id").map(trackProperties)
+    
+    print(f"calculate counts")
+    # use matchscore as arbitrary variable with only one dimension
+    counts = lv1track[["matchScore","track_id"]].groupby("track_id").count()["matchScore"]
+
+    print(f"calculate velocity")
+    lv1trackJoint["track_length"] = counts
+    lv1trackJoint["velocity"] = lv1track[["position_3D", "track_id"]].groupby("track_id").map(velocity)
+    #lv1trackJoint["absVelocity"] = lv1track[["position_3D", "track_id"]].groupby("track_id").map(absVelocity)
+
+    #fix order
+    lv1trackJoint = lv1trackJoint.transpose(*["track_id", "track", "camera" , "dim3D","dim2D","fitMethod","camera_rotation"])#,"percentiles"
+
+    return lv1trackJoint
