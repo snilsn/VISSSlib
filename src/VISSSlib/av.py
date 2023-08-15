@@ -68,7 +68,7 @@ class VideoReader(cv2.VideoCapture):
 # can cause segfaults!
 
 class VideoReaderMeta(object):
-    def __init__(self, movFilePattern, metaFrames, lv1detect=None, lv1match=None, imagesL1detect=None, saveMode=False, config=None):
+    def __init__(self, movFilePattern, metaFrames, lv1detect=None, lv1match=None, imagesL1detect=None, saveMode=False, config=None, skipNonMatched=False):
         if type(metaFrames) is xr.Dataset:
             self.metaFrames = metaFrames
         else:
@@ -96,6 +96,7 @@ class VideoReaderMeta(object):
 
         self.saveMode = saveMode
         self.config = config
+        self.skipNonMatched = skipNonMatched
 
         self.movFilePattern = movFilePattern
         self.threads = np.unique(self.metaFrames.nThread)
@@ -180,7 +181,7 @@ class VideoReaderMeta(object):
         return self.res, self.curentFrame, self.currentMetaFrames
 
     @functools.lru_cache(maxsize=100, typed=False)
-    def getFrameByCaptureTimeWithParticles(self, captureTime, pad = 4, markParticles=False, highlightPid=None, increaseContrast=False):
+    def getFrameByCaptureTimeWithParticles(self, captureTime, pad = 4, markParticles=False, highlightPid=None, increaseContrast=False, showTracks=False):
 
         assert self.lv1detect is not None
         
@@ -226,14 +227,33 @@ class VideoReaderMeta(object):
                 if (self.lv1match is not None) and (highlightPid == "meta") and pid in self.lv1match.pid:
                     thisMatch = self.lv1match.isel(fpair_id = self.lv1match.pid == pid)
                     matchedDats.append(thisMatch)
-                    color = (0,0,0)
+                    np.random.seed(int(thisMatch.pair_id))
+                    color = (np.random.randint(0,170),np.random.randint(0,170),np.random.randint(0,170))
                     extraInfo = "%.2g"%thisMatch.matchScore.values
+
+                    if showTracks:
+                        track_id = thisMatch.track_id.values[0]
+                        trackDat = self.lv1match.position_centroid.isel(fpair_id = (self.lv1match.track_id == track_id))
+                        trackDat[:,1] += self.config['height_offset']
+                        np.random.seed(int(100000 + track_id))
+                        colorT = (np.random.randint(0,170),np.random.randint(0,170),np.random.randint(0,170))
+                        cv2.polylines(self.curentFrameC, 
+                              np.int32([trackDat.values]), 
+                              isClosed = False,
+                              color = colorT,
+                              thickness = 2, 
+                              )
+                        cv2.putText(self.curentFrameC, 'T%i' % (track_id),
+                            trackDat.values[0]+np.array([10,10]), cv2.FONT_HERSHEY_SIMPLEX, 0.75, colorT, 2)
+
                 elif highlightPid == pid:
-                    color = (0,0,0)
+                    color = (255,255,255)
                     extraInfo = ""
                 else:
-                    color = colors[jj]
+                    color = (0,0,0)
                     extraInfo = ""
+                    if self.skipNonMatched:
+                        continue
 
                 x1, y1, x2, y2 = x - pad, y - pad, x + w + pad, y + h+ pad
 
@@ -273,6 +293,12 @@ class VideoReaderMeta(object):
                     except KeyError:
                         # print(f"{pid} not found")
                         continue
+
+
+                    #np.random.seed(int(thisMatch.fpair_id))
+                    #color = (np.random.randint(0,256),np.random.randint(0,256),np.random.randint(0,256))
+
+
 
             if len(matchedDats) > 0:
                 matchedDats = xr.concat(matchedDats, dim="fpair_id")

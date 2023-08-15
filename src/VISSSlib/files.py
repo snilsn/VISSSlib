@@ -175,6 +175,9 @@ class FindFiles(object):
     @property
     def isCompleteL1match(self):
         return self.nMissingL1match == 0
+    @property
+    def isCompleteL1track(self):
+        return self.nMissingL1track == 0
 
     def isComplete(self, level):
         return self.nMissing(level) == 0
@@ -196,6 +199,9 @@ class FindFiles(object):
     @property
     def nMissingL1match(self):
         return self.nMissing("level1match") 
+    @property
+    def nMissingL1track(self):
+        return self.nMissing("level1track") 
 
     def nMissing(self, level):
         if level in dailyLevels:

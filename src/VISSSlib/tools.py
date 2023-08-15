@@ -224,7 +224,7 @@ def open_mflevel1detect(fnamesExt, config, start=None, end=None, skipFixes=[], d
     def preprocess(dat):
         # keep trqack of file start time
         fname = dat.encoding["source"]
-        print("open_mflevel1detect",fname)
+        #print("open_mflevel1detect",fname)
         ffl1 = files.FilenamesFromLevel(fname, config)
         dat["file_starttime"] = xr.DataArray([ffl1.datetime64]*len(dat.pid), coords=[dat.pid])
         if "nThread" not in dat.keys():
