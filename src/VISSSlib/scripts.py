@@ -228,7 +228,7 @@ def loopMetaCoefQuicklooks(settings, version=__version__, skipExisting=True):
         tz=None,
         normalize=True,
         name=None,
-        inclusive=None
+        inclusive='both'
     ):
 
         # , periods=nDays´´
@@ -562,9 +562,9 @@ def loopCreateLevel1trackWorker(fnameL1match, settings, skipExisting=True, nCPU=
 
     if fnameL1match.endswith("broken.txt") or fnameL1match.endswith("nodata") or fnameL1match.endswith("notenoughframes"):
         ffl1.createDirs()
-        with open(f"{fname1Match}.nodata", "w") as f:
+        with open(f"{fnameL1match}.nodata", "w") as f:
             f.write("no leader data")
-        log.info(f"NO leader DATA {fname1Match}")
+        log.info(f"NO leader DATA {fnameL1match}")
         return 0
 
     elif os.path.isfile(fnameL1track) and skipExisting:

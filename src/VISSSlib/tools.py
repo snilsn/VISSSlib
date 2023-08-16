@@ -101,7 +101,7 @@ def getDateRange(nDays, config, endYesterday=True):
             tz=None,
             normalize=True,
             name=None,
-            inclusive=None
+            inclusive='both'
         )
     elif type(nDays) is str:
         days = nDays.split(",")
@@ -115,7 +115,7 @@ def getDateRange(nDays, config, endYesterday=True):
                     tz=None,
                     normalize=True,
                     name=None,
-                    inclusive=None
+                    inclusive='both'
                 )
             else:
                 days = pd.date_range(
@@ -125,7 +125,7 @@ def getDateRange(nDays, config, endYesterday=True):
                     tz=None,
                     normalize=True,
                     name=None,
-                    inclusive=None)
+                    inclusive='both')
         else:
             days = pd.DatetimeIndex(days)
 
@@ -137,7 +137,7 @@ def getDateRange(nDays, config, endYesterday=True):
             tz=None,
             normalize=True,
             name=None,
-            inclusive=None
+            inclusive='both'
         )
 
     #double check to make sure we did not add too much
