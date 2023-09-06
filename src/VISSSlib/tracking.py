@@ -2,6 +2,9 @@
 
 # import matplotlib.pyplot as plt
 import warnings
+import os
+import sys
+
 from copy import deepcopy
 import numpy as np
 import xarray as xr
@@ -9,17 +12,20 @@ from scipy.optimize import linear_sum_assignment
 from scipy.linalg import block_diag
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter
+from tqdm import tqdm
 
 
 from . import __version__
 from . import tools
 from . import files
+from . import matching
 
 import logging
 log = logging.getLogger()
 
 
 log = logging.getLogger(__name__)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 # x: x, xvel, y, yvel, z, zvel
@@ -136,7 +142,8 @@ class Tracker(object):
     """
 
     def __init__(self, lv1match, config, dist_thresh=1, max_frames_to_skip=2, max_trace_length=None,
-                 velocityGuess=[0, 0, 50], maxIter= 1e30, fig=None, featureVariance = {"distance":200**2, "area":20
+                 velocityGuess=[0, 0, 50], maxIter= 1e30, fig=None,
+                featureVariance = {"distance":200**2, "area":20
                  # , "pixMean": 7
                  }):
         """Initialize variable used by Tracker class
@@ -177,6 +184,8 @@ class Tracker(object):
             self.ax.set_zlabel("z")
 
         self.iiCapture = -99
+
+        #make a frame id used for tracking
         self._lv1matchgp["frameid4tracking"] = self._lv1matchgp.capture_time.isel(
             camera=0).astype(int)//np.around(1e9/config.fps, -3).astype(int)
         self._lv1matchgp["frameid4tracking"] -= self._lv1matchgp["frameid4tracking"][0]
@@ -189,18 +198,18 @@ class Tracker(object):
         nParts = len(self.lv1track.pair_id)
         self.lv1track["track_id"] = xr.DataArray(
             np.zeros(nParts, dtype=int)-99, coords=[self.lv1track.pair_id])
+        self.lv1track["track_step"] = xr.DataArray(
+            np.zeros(nParts, dtype=np.int16)-99, coords=[self.lv1track.pair_id])
         self.lv1track["track_velociytGuess"] = xr.DataArray(
-            np.zeros((nParts, 3))*np.nan, {"pair_id":self.lv1track.pair_id, "dim3Dt":["x","y","z"]})
+            np.zeros((nParts, 4))*np.nan, {"pair_id":self.lv1track.pair_id, "dim3D":["x","y","z", "z_rotated"]})
 
 
         logging.info(f"processing {self.nFrames} frames")
 
     def updateAll(self):
-        while True:
-            try:
-                self.update()
-            except StopIteration:
-                break
+        for ff in tqdm(range(self.nFrames), file=sys.stdout):
+            self.update()
+            #break after maxIter frames
             if self._frameid >= self.maxIter:
                 self.lv1track = self.lv1track.isel(pair_id=(self.lv1track.track_id != -99))
                 break
@@ -247,8 +256,8 @@ class Tracker(object):
 
         self._frameid = int(thisDat.frameid4tracking.values[0])
 
-        # get particle positoion and id
-        detections = thisDat.position_3D.isel(dim3D=range(3)).values.T
+        # get particle position and id
+        detections = thisDat.position3D_centroid.isel(dim3D=range(3)).values.T
         if len(self.featureVariance) > 1:
             features = thisDat[self.featureKeys].max("camera").to_array().T
         else:
@@ -285,7 +294,7 @@ class Tracker(object):
                 vels = np.array([t.predictedVel for t in self.oldTracks[-backSteps:]])
                 self.velocityGuess = np.mean(vels[cond], axis=0)
                 self.velocityGuessFactor = 1
-            print("velocityGuess", self.velocityGuess)
+            # print("velocityGuess", self.velocityGuess)
 
         # Create tracks if no track vector found
         if (len(self.activeTracks) == 0):
@@ -302,7 +311,8 @@ class Tracker(object):
                 # save "result"
                 pp = np.where(self.lv1track.pair_id == pair_ids[i])[0][0]
                 self.lv1track["track_id"].values[pp] = track.track_id
-                self.lv1track["track_velociytGuess"].values[pp] = self.velocityGuess
+                self.lv1track["track_step"].values[pp] = len(track)
+                self.lv1track["track_velociytGuess"].values[pp, :3] = self.velocityGuess
 
                 #print(f"assigned particle {pair_ids[i]} to ALL NEW track id {track.track_id}")
 
@@ -375,8 +385,8 @@ class Tracker(object):
         row_ind, col_ind = linear_sum_assignment(self.cost)
         self.assignment[row_ind] = col_ind
         self.assignment = list(self.assignment)
-        print("ddists", (joinedDiffs)[row_ind, col_ind])
-        print("costs", (joinedDiffs/self.featureVariance.values)[row_ind, col_ind])
+        # print("ddists", (joinedDiffs)[row_ind, col_ind])
+        # print("costs", (joinedDiffs/self.featureVariance.values)[row_ind, col_ind])
 
 
         #if 52 in [a.track_id for a in  self.activeTracks]:
@@ -452,7 +462,8 @@ class Tracker(object):
             pp = np.where(self.lv1track.pair_id ==
                           pair_ids[un_assigned_detects[i]])[0][0]
             self.lv1track["track_id"].values[pp] = track.track_id
-            self.lv1track["track_velociytGuess"].values[pp] = self.velocityGuess
+            self.lv1track["track_step"].values[pp] = len(track)
+            self.lv1track["track_velociytGuess"].values[pp, :3] = self.velocityGuess
 
                 #print(f"assigned particle {pair_ids[un_assigned_detects[i]]} to NEW track id {track.track_id}")
 
@@ -471,7 +482,8 @@ class Tracker(object):
                 pp = np.where(self.lv1track.pair_id ==
                               pair_ids[self.assignment[i]])[0][0]
                 self.lv1track["track_id"].values[pp] = self.activeTracks[i].track_id
-                self.lv1track["track_velociytGuess"].values[pp] = self.velocityGuess
+                self.lv1track["track_step"].values[pp] = len(self.activeTracks[i])
+                self.lv1track["track_velociytGuess"].values[pp, :3] = self.velocityGuess
 
                 #print(f"assigned particle {pair_ids[self.assignment[i]]} to track id {self.activeTracks[i].track_id}")
             else:
@@ -507,7 +519,7 @@ class Tracker(object):
         return
 
 
-def trackParticles(fnameLv1Match, 
+def trackParticles(fnameLv1Detect, 
                    config,
                    version=__version__, 
                    dist_thresh=2, 
@@ -515,22 +527,35 @@ def trackParticles(fnameLv1Match,
                    max_trace_length=None,
                    velocityGuess=[0, 0, 50],
                    maxIter = 1e30,
-                   featureVariance = {"distance":100**2, 'Dmax': 100  }
+                   featureVariance = {"distance":100**2, 'Dmax': 100  },
+                   minMatchScore=1e-3,
+                   forceMatchUpdate=True,
                    ):
 
 
     if type(config) is str:
         config = tools.readSettings(config)
 
+    ffl1 = files.FilenamesFromLevel(fnameLv1Detect, config)
 
-    lv1match = xr.open_dataset(fnameLv1Match)
-    ffl1 = files.FilenamesFromLevel(fnameLv1Match, config)
+    fnameLv1Match = ffl1.fname["level1match"]
     fnameTracking = ffl1.fname["level1track"]
 
+    if (not forceMatchUpdate) and os.path.isfile(fnameLv1Match):
+        lv1match = xr.open_dataset(fnameLv1Match)
+    else:
+        log.info("need to create lv1match data")
+        _, lv1match, _, _ = matching.matchParticles(fnameLv1Detect, config, writeNc=False)
 
-    lv1match["Dequiv"] = np.sqrt(4*lv1match["area"]/np.pi)
-    #based on Garrett, T. J., and S. E. Yuter, 2014: Observed influence of riming, temperature, and turbulence on the fallspeed of solid precipitation. Geophys. Res. Lett., 41, 6515–6522, doi:10.1002/2014GL061016.
-    lv1match["complexityBW"] = lv1match["perimeter"]/(np.pi * lv1match["Dequiv"])
+        if lv1match is None:
+            with tools.open2(f"{fnameTracking}.nodata", "w") as f:
+                f.write("no data")
+            log.error(f"NO DATA {fnameTracking}")
+            return None, fnameTracking
+
+    matchCond = (lv1match.matchScore >= minMatchScore).values
+    log.info(tools.concat("matchCond applies to", (matchCond.sum()/len(matchCond))*100, "% of data"))
+    lv1match = lv1match.isel(pair_id=matchCond)
 
 
     track = Tracker(lv1match, 

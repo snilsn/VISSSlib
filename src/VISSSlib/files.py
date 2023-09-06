@@ -20,10 +20,11 @@ from .tools import nicerNames, otherCamera
 from . import __version__
 
 
-dailyLevels = ["metaEvents", "metaRotation", "level2match"]
+dailyLevels = ["metaEvents", "metaRotation", "level2match", "level2match", "level2track"]
+hourlyLevels = []
 fileLevels = ["level1detect", "level1match", "level1track", "metaFrames", "metaDetection", "imagesL1detect"]#, "metaFixedCaptureId"]
 quicklookLevelsSep = ["level0", "metaFrames", "metaEvents", "level1detect", "level1match", "level1matchParticles", "metaRotation"]
-quicklookLevelsComb = [ "level2match"]
+quicklookLevelsComb = [ "level2match", "level2track"]
 imageLevels = ["imagesL1detect"]
 
 class FindFiles(object):
@@ -74,7 +75,7 @@ class FindFiles(object):
         outpathDaily = "%s/%s" % (config["pathOut"], self.year)
 
         self.outpath = Dict({})
-        for dL in fileLevels:
+        for dL in fileLevels+hourlyLevels:
             self.outpath[dL] = outpath.format(site=config.site, level=dL, version=self.version)
         for dL in dailyLevels:
             self.outpath[dL] = outpathDaily.format(site=config.site, level=dL, version=self.version)
@@ -104,11 +105,13 @@ class FindFiles(object):
         self.fnamesPattern.level0status = f"{self.outpath['level0']}/*_{config['visssGen']}_{camera}_{self.case}_status.txt"
         for dL in dailyLevels:
             self.fnamesPattern[dL] = "%s/%s_V%s_*%s*%s%s%s.nc"%(self.outpath[dL], dL, version, camera, self.year, self.month, self.day)
+        for dL in hourlyLevels:
+            self.fnamesPattern[dL] = "%s/%s_V%s_*%s*%s%s%s-%s%s.nc"%(self.outpath[dL], dL, version, camera, self.year, self.month, self.day, self.hour, self.minute)
         self.fnamesPattern["imagesL1detect"] = self.fnamesPattern["imagesL1detect"].replace(".nc", ".zip")
 
 
         self.fnamesPatternExt = Dict({})
-        for dL in fileLevels + dailyLevels:
+        for dL in fileLevels + dailyLevels + hourlyLevels:
             self.fnamesPatternExt[dL] = "%s/%s_V%s_*%s*%s*nc.[b,n]*"%(self.outpath[dL], dL, version, camera, self.case) #finds broken & nodata
         self.fnamesPatternExt.level0txt = ""
         self.fnamesPatternExt.level0jpg = ""
@@ -117,6 +120,10 @@ class FindFiles(object):
         self.fnamesDaily = Dict({})
         for dL in dailyLevels:
             self.fnamesDaily[dL] = "%s/%s_V%s_%s_%s_%s_%s_%s%s%s.nc"%(self.outpath[dL], dL, version, config.site, self.computer, config['visssGen'], camera, self.year, self.month, self.day)
+
+        self.fnamesHourly = Dict({})
+        for dL in hourlyLevels:
+            self.fnamesHourly[dL] = "%s/%s_V%s_%s_%s_%s_%s_%s%s%s-%s%s.nc"%(self.outpath[dL], dL, version, config.site, self.computer, config['visssGen'], camera, self.year, self.month, self.day, self.hour, self.minute)
 
                 
         self.quicklook = Dict({})
@@ -225,7 +232,7 @@ class FindFiles(object):
 
     def createDirs(self):
         res = []
-        for fL in dailyLevels + fileLevels:
+        for fL in dailyLevels + fileLevels +hourlyLevels:
             #print('mkdir -p %s' %
             #      self.outpath[fL])
             res.append(os.system('mkdir -p %s' %

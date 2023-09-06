@@ -769,7 +769,10 @@ def level0Quicklook(
         print("no input files")
         return None
     if ff.datetime.date() == datetime.datetime.today().date():
-        shutil.copy(fOut, ff.quicklookCurrent.level0)
+        try: 
+            shutil.copy(fOut, ff.quicklookCurrent.level0)
+        except PermissionError:
+            log.error(f"No permission to write {fOut}")
 
     return fOut
 
@@ -975,7 +978,10 @@ def metaFramesQuicklook(
     fig.savefig(fOut)
 
     if ff.datetime.date() == datetime.datetime.today().date():
-        shutil.copy(fOut, ff.quicklookCurrent.metaFrames)
+        try: 
+            shutil.copy(fOut, ff.quicklookCurrent.metaFrames)
+        except PermissionError:
+            log.error(f"No permission to write {fOut}")
 
     if metaDats is not None: metaDats.close()
     events.close()
@@ -1244,7 +1250,10 @@ def metaRotationYearlyQuicklook(
     rotDat.close()
     
     if year == str(datetime.datetime.today().year):
-        shutil.copy(fOut, shutil.copy(fOut, ff.quicklookCurrent.metaRotation))
+        try: 
+            shutil.copy(fOut, ff.quicklookCurrent.metaRotation)
+        except PermissionError:
+            log.error(f"No permission to write {fOut}")
 
     fOut = fOut.replace("0101.png",".png")
     return fOut, fig

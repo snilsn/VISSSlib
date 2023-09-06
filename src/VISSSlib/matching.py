@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import datetime
 import os
+import sys
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,6 +24,7 @@ from . import files
 
 import logging
 log = logging.getLogger(__name__)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 deltaY = deltaH = deltaI = 1.
@@ -433,7 +436,7 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
     #print("doMatch", len(leader1D.fpid), len(follower1D.fpid))
     prop = {}
     
-    log.info(f"match with rotate={str(rotate)}")
+    log.debug(f"match with rotate={str(rotate)}")
     # particle Z position difference in joint coordinate system
     if "Z" in sigma.keys():
         
@@ -718,19 +721,35 @@ def get3DPosition(leaderDat, followerDat, config):
     return L_x, L_z, F_y, F_z
 
 
+def get3DCentroid(leaderDat, followerDat, config):
+    F_z = followerDat.position_centroid.sel(dim2D="y").values
+    F_y = followerDat.position_centroid.sel(dim2D="x").values
+    L_x = leaderDat.position_centroid.sel(dim2D="x").values
+    L_z = leaderDat.position_centroid.sel(dim2D="y").values
+
+    #watch out, right hand coordinate system! 
+    F_y = config.frame_width - F_y
+
+    return L_x, L_z, F_y, F_z
+
+
 def addPosition(matchedDat, rotate, rotate_err, config):
     '''
     add postion variable to match dataset based on retrieved rotation parameters
     '''
+    matchedDat["dim3D"] = ["x", "y", "z", "z_rotated"]
 
     L_x, L_z, F_y, F_z = get3DPosition(matchedDat.sel(camera=config.leader), matchedDat.sel(camera=config.follower), config)
-
     # Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
-
     L_z_estimated = calc_L_z_withOffsets(L_x, F_y, F_z, **rotate)
+    matchedDat["position3D_center"] = xr.DataArray([L_x, F_y, L_z, L_z_estimated], coords=[matchedDat.dim3D, matchedDat.pair_id] )
 
-    matchedDat["dim3D"] = ["x", "y", "z", "z_rotated"]
-    matchedDat["position_3D"] = xr.DataArray([L_x, F_y, L_z, L_z_estimated], coords=[matchedDat.dim3D, matchedDat.pair_id] )
+    L_x, L_z, F_y, F_z = get3DCentroid(matchedDat.sel(camera=config.leader), matchedDat.sel(camera=config.follower), config)
+    # Fz_estimated = calc_Fz(rotate["phi"], rotate["theta"], rotate["Ofz"], Lx, Lz, Fy)
+    L_z_estimated = calc_L_z_withOffsets(L_x, F_y, F_z, **rotate)
+    matchedDat["position3D_centroid"] = xr.DataArray([L_x, F_y, L_z, L_z_estimated], coords=[matchedDat.dim3D, matchedDat.pair_id] )
+
+
 
     nid = len(matchedDat.pair_id)
     matchedDat["camera_rotation"] = np.array(["mean", "err"])
@@ -767,7 +786,7 @@ def doMatchSlicer(leader1D, follower1D, sigma, mu, delta, config, rotate, minPro
     JJs = np.linspace(0, len(leader1D.fpid), len(leader1D.fpid)//chunckSize+1, dtype=int)
 
     log.info(tools.concat(f"slicing data into {len(JJs)-1} pieces"))
-    for ii, jj in tqdm(zip(JJs[:-1], JJs[1:]), total=len(JJs)-1):
+    for ii, jj in tqdm(zip(JJs[:-1], JJs[1:]), total=len(JJs)-1, file=sys.stdout):
 
         leader1DSlice = leader1D.isel(fpid=slice(ii,jj))
         follower1DSlice = tools.cutFollowerToLeader(leader1DSlice, follower1D)
@@ -811,6 +830,7 @@ def matchParticles(fnameLv1Detect, config,
         minDMax4rot=0,
         singleParticleFramesOnly=False,
         doRot = False,
+        writeNc = True,
     ):
 
     if type(config) is str:
@@ -898,7 +918,7 @@ def matchParticles(fnameLv1Detect, config,
         log.error(tools.concat(f"no follower data for {fnameLv1Detect} processed YET"))
         log.error(tools.concat(fnames1F))
         log.error(tools.concat(fnames1FRAW))
-        return fname1Match, None, None, None
+        return fname1Match, np.nan, None, None
     if len(fnames1F) == 0:
         if not rotationOnly:
             with tools.open2('%s.nodata' % fname1Match, 'w') as f:
@@ -1223,7 +1243,7 @@ def matchParticles(fnameLv1Detect, config,
         with tools.open2(f"{fname1Match}.nodata", "w") as f:
             f.write("no data")
         log.error(tools.concat("NO DATA", fname1Match))
-        return fname1Match, matchedDats, rotate, rotate_err
+        return fname1Match, None, rotate, rotate_err
 
     elif len(matchedDats) == 1:
         # easy case
@@ -1234,14 +1254,17 @@ def matchParticles(fnameLv1Detect, config,
         matchedDats = xr.concat(matchedDats, dim="pair_id")
         matchedDats["pair_id"] = range(len(matchedDats["pair_id"]))
 
-    matchedDats = tools.finishNc(matchedDats)
+    matchedDats = tools.finishNc(matchedDats, config.site, config.visssGen)
 
     matchedDats["fitMethod"] = matchedDats.fitMethod.astype("U30")
     matchedDats["dim2D"] = matchedDats.dim2D.astype("U2")
     matchedDats["dim3D"] = matchedDats.dim3D.astype("U9")
     matchedDats["camera"] = matchedDats.camera.astype("U30")
     matchedDats["camera_rotation"] = matchedDats.camera_rotation.astype("U30")
-    tools.to_netcdf2(matchedDats, fname1Match)
+
+
+    if writeNc:
+        tools.to_netcdf2(matchedDats, fname1Match)
 
     log.info(tools.concat("DONE", fname1Match, "with", len(matchedDats.pair_id), "particles"))
 
@@ -1468,7 +1491,7 @@ def createMetaRotation(case,
 
 
 
-    metaRotation = tools.finishNc(metaRotation)
+    metaRotation = tools.finishNc(metaRotation, config.site, config.visssGen)
     tools.to_netcdf2(metaRotation, fnameMetaRotation)
     print("DONE", fnameMetaRotation)
 

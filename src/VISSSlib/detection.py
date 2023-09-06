@@ -29,6 +29,7 @@ import zipfile
 
 import logging
 log = logging.getLogger(__name__)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # class movementDetection(object):
 #     def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
@@ -140,6 +141,7 @@ gmg
 64.7 ms ± 197 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
 cnt
 4.85 ms ± 14.8 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
+-> doesnt work at NYA for some reason, very noisy!
 gsoc
 158 ms ± 814 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
 lsbp
@@ -204,12 +206,13 @@ class detectedParticles(object):
                  height_offset=64,
                  maskCorners=None,
                  cropImage=None,  # (offsetX, offsetY)
-                 backSub=cv2.bgsegm.createBackgroundSubtractorCNT,
-                 backSubKW={"minPixelStability": 10, "maxPixelStability": 100},
+                backSubKW={"dist2Threshold": 400,
+                               "detectShadows": False, "history": 100},
+                backSub=cv2.createBackgroundSubtractorKNN,
                  applyCanny2Frame=False,
                  applyCanny2Particle=True,  # much faster than 2 whole Frame!
                  dilateIterations=1,
-                 blurSigma=1.0,
+                 blurSigma=1.5,
                  minAspectRatio=None,  # testing only
                  ):
 
@@ -592,7 +595,7 @@ class detectedParticles(object):
             if self.particleProps[key].dtype == np.float64:
                 self.particleProps[key] = self.particleProps[key].astype(
                     np.float32)
-            elif key in ["position_upperLeft", 'pixMin', 'pixMax', 'nThread', "Droi"]:
+            elif key in ["position_upperLeft", 'pixMin', 'pixMax', 'nThread', "Droi", "position_centroid"]:
                 self.particleProps[key] = self.particleProps[key].astype(
                     np.int16)
         if includeCnts:
@@ -718,19 +721,17 @@ class singleParticle(object):
             particleBoxData, range(10, 100, 10))  # , interpolation='nearest'
         self.pixStd = np.std(particleBoxData, ddof=1)
 
-        #disabel soem warnings
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            self.pixSkew = scipy.stats.skew(particleBoxData)
-            self.pixKurtosis = scipy.stats.kurtosis(particleBoxData)
+        self.pixSkew = scipy.stats.skew(particleBoxData)
+        self.pixKurtosis = scipy.stats.kurtosis(particleBoxData)
         self.particleContrast = parent.brightnessBackground - self.pixMin
 
         # figure out whether particle was properly detected
         # if not, contour describes only a line which can be detected by
         # looking into how perimeter changes during erosion
-        erodeMask = cv2.erode(self.particleBoxMask, None, 1)
+        erodeMask = cv2.erode(np.pad(self.particleBoxMask,1), None, 1)
         cntsAfter = cv2.findContours(erodeMask, cv2.RETR_EXTERNAL,
                                      cv2.CHAIN_APPROX_SIMPLE)[0]
+
         if len(cntsAfter) > 0:
             self.perimeterEroded = np.max(
                 [cv2.arcLength(c, True) for c in cntsAfter])
@@ -1019,12 +1020,13 @@ def detectParticles(fname,
                     writeNc=True,
                     trainingSize=100,
                     testMovieFile=True,
-                    backSubKW={"minPixelStability": 10, "maxPixelStability": 100},
-                    backSub=cv2.bgsegm.createBackgroundSubtractorCNT,
+                    backSubKW={"dist2Threshold": 400,
+                               "detectShadows": False, "history": 100},
+                    backSub=cv2.createBackgroundSubtractorKNN,
                     applyCanny2Frame=False,
                     applyCanny2Particle=True,
                     dilateIterations=1,
-                    blurSigma=1.0,
+                    blurSigma=1.5,
                     minBlur=10,
                     erosionTestThreshold=0.06,
                     minArea=1,
@@ -1451,7 +1453,7 @@ def detectParticles(fname,
             np.uint32)
         metaData["movingObjects"] = metaData["movingObjects"].astype(np.uint32)
 
-        metaData = tools.finishNc(metaData)
+        metaData = tools.finishNc(metaData, config.site, config.visssGen)
 
         metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
         metaData.close()
@@ -1459,7 +1461,7 @@ def detectParticles(fname,
         if hasData:
 
             snowParticlesXR = snowParticles.collectResults()
-            snowParticlesXR = tools.finishNc(snowParticlesXR)
+            snowParticlesXR = tools.finishNc(snowParticlesXR, config.site, config.visssGen)
 
             snowParticlesXR.to_netcdf(fn.fname.level1detect, engine="netcdf4")
             log.info("written %s"%fn.fname.level1detect)

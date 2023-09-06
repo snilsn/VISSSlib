@@ -538,7 +538,7 @@ def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, nCPU
 
     return 0
 
-def loopCreateLevel1trackWorker(fnameL1match, settings, skipExisting=True, nCPU=1):
+def loopCreateLevel1trackWorker(fnameL1detect, settings, skipExisting=True, nCPU=1):
 
     '''
     We need this worker function becuase  we want to do the matching by indipendent 
@@ -553,18 +553,18 @@ def loopCreateLevel1trackWorker(fnameL1match, settings, skipExisting=True, nCPU=
     time.sleep(np.random.random())
             
 
-    ffl1  = files.FilenamesFromLevel(fnameL1match, config)
+    ffl1  = files.FilenamesFromLevel(fnameL1detect, config)
 
     fnameL1track = ffl1.fname["level1track"]
     #print(ffl1.fname["level1match"])
     ffl1.createDirs()
     tmpFile = os.path.basename('%s.processing.txt' % fnameL1track)
 
-    if fnameL1match.endswith("broken.txt") or fnameL1match.endswith("nodata") or fnameL1match.endswith("notenoughframes"):
+    if fnameL1detect.endswith("broken.txt") or fnameL1detect.endswith("nodata") or fnameL1detect.endswith("notenoughframes"):
         ffl1.createDirs()
-        with open(f"{fnameL1match}.nodata", "w") as f:
+        with open(f"{fnameL1track}.nodata", "w") as f:
             f.write("no leader data")
-        log.info(f"NO leader DATA {fnameL1match}")
+        log.info(f"NO leader DATA {fnameL1detect}")
         return 0
 
     elif os.path.isfile(fnameL1track) and skipExisting:
@@ -577,14 +577,14 @@ def loopCreateLevel1trackWorker(fnameL1match, settings, skipExisting=True, nCPU=
         log.info(f"SKIPPING nodata {fnameL1track}")
         return 0
     elif skipExisting and ( os.path.isfile(tmpFile)):
-        log.info('output already processing, skipping %s %s' % (fnameL1match, ffl1.fname["level1match"]))
+        log.info('output already processing, skipping %s %s' % (fnameL1detect, ffl1.fname["level1match"]))
         return 0
 
     BIN = os.path.join(sys.exec_prefix, "bin", "python")
     if nCPU is None:
-        command = f"{BIN} -m VISSSlib tracking.trackParticles  {fnameL1match} {settings}"
+        command = f"{BIN} -m VISSSlib tracking.trackParticles  {fnameL1detect} {settings}"
     else:
-        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib tracking.trackParticles  {fnameL1match} {settings}"
+        command = f"export OPENBLAS_NUM_THREADS={nCPU}; export MKL_NUM_THREADS={nCPU}; export NUMEXPR_NUM_THREADS={nCPU}; export OMP_NUM_THREADS={nCPU}; {BIN} -m VISSSlib tracking.trackParticles  {fnameL1detect} {settings}"
     success = _runCommand(command, tmpFile, fnameL1track)
 
     return 0
@@ -612,7 +612,6 @@ def _runCommand(command, tmpFile, fOut, stdout=subprocess.DEVNULL):
                 log.info(line)
                 f.write(line)
                 f.flush()
-                output += line
         for line in proc.stderr: 
             line = line.decode()
             log.error(line)
@@ -761,7 +760,7 @@ def loopCreateLevel1track(settings, skipExisting=True, nDays = 0,  nCPU=None):
             log.error(tools.concat("SKIPPING", dd, "no rotation file yet"))
             continue
 
-        fname0s =  ff.listFilesExt("level1match")
+        fname0s =  ff.listFilesExt("level1detect")
         fnames += filter( os.path.isfile,
                                 fname0s )
 
@@ -769,7 +768,7 @@ def loopCreateLevel1track(settings, skipExisting=True, nDays = 0,  nCPU=None):
         fnames = sorted( fnames, key =  lambda x: os.stat(x).st_size)[::-1]
     
     if len(fnames) == 0:
-        log.error('no files to process %s' % "level1match")
+        log.error('no files to process %s' % "level1detect")
         # print('no files %s' % fnamesPattern)
     else:
         log.info(f"found {len(fnames)} files, lets do it:")

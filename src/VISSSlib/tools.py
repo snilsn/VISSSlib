@@ -24,6 +24,7 @@ import cv2
 from PIL import Image
 import skimage
 import flatten_dict
+from dask.diagnostics import ProgressBar
 
 from . import files
 from . import fixes
@@ -579,24 +580,24 @@ class imageZipFile(zipfile.ZipFile):
         return array
 
 
-def ncAttrs(extra={}):
-    attrs = {
-        "VISSSlib-version": __versionFull__,
-        "OpenCV-version": cv2.__version__,
-        "host": socket.getfqdn(),
-        "creation-time": str(datetime.datetime.utcnow()),
-        }
+def ncAttrs(site, visssGen, extra={}):
     if  os.environ.get('USER') is not None:
-        attrs["user"] =  os.environ.get('USER')
+        user =  f" by user {os.environ.get('USER')}"
+    attrs = {
+        "title": f"Video In Situ Snowfall Sensor (VISSS) observations at {site}",
+        "source": f"{visssGen} observations at {site}",
+        "history": f"{str(datetime.datetime.utcnow())}: created with VISSSlib {__versionFull__} and OpenCV {cv2.__version__} on {socket.getfqdn()}{user}",
+        "references":"Maahn, M., Moisseev, D., Steinke, I., Maherndl, N., and Shupe, M. D.: Introducing the Video In Situ Snowfall Sensor (VISSS), EGUsphere [preprint], https://doi.org/10.5194/egusphere-2023-655, 2023."
+        }
 
     attrs.update(extra)
     return attrs
 
-def finishNc(dat, extra={}):
+def finishNc(dat, site, visssGen, extra={}):
 
     #todo: add yaml dump of config file
 
-    dat.attrs.update(ncAttrs(extra=extra))
+    dat.attrs.update(ncAttrs(site, visssGen, extra=extra))
 
 
     for k in list(dat.data_vars) + list(dat.coords):
@@ -605,8 +606,8 @@ def finishNc(dat, extra={}):
             dat[k] = dat[k].astype(np.float32)
 
         # #newest netcdf4 version doe snot like strings or objects:
-        # if (dat[k].dtype == object) or (dat[k].dtype == str):
-        #     dat[k] = dat[k].astype("U")
+        if (dat[k].dtype == object) or (dat[k].dtype == str):
+            dat[k] = dat[k].astype("U")
 
         dat[k].encoding = {}
         dat[k].encoding["zlib"] = True
@@ -615,6 +616,9 @@ def finishNc(dat, extra={}):
         #due to mixing of milli and micro seconds
         if k.endswith("time") or k.endswith("time_orig") or k.endswith("time_even"):
             dat[k].encoding["units"] = 'microseconds since 1970-01-01 00:00:00'
+
+    #sort variabels alphabetically
+    dat = dat[sorted(dat.data_vars)]
     return dat
 
 def getPrevRotationEstimate(datetime64, key, config):
@@ -693,4 +697,13 @@ def to_netcdf2(dat, file, **kwargs):
     dirname = os.path.dirname(file)
     if (dirname != "") and (not os.path.exists(dirname)):
         os.makedirs(dirname)
-    return dat.to_netcdf(file, **kwargs)
+
+    log.info(f"save {file}")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        if dat[list(dat.data_vars)[0]].chunks is not None:
+            with ProgressBar():
+                res = dat.to_netcdf(file, **kwargs)
+        else:
+                res = dat.to_netcdf(file, **kwargs)
+    return res
