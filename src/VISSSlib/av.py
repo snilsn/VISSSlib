@@ -36,13 +36,13 @@ class VideoReader(cv2.VideoCapture):
 #         return res, frame
 
     @functools.lru_cache(maxsize=100, typed=False)
-    def getFrameByIndex(self, ii, saveMode=False):
+    def getFrameByIndex(self, ii, safeMode=False):
         '''
         like read, but for a specific index
         output is cached.
         '''
         if int(self.get(cv2.CAP_PROP_POS_FRAMES)) != ii:
-            if saveMode:
+            if safeMode:
                 if int(self.get(cv2.CAP_PROP_POS_FRAMES)) < ii:
                     while(int(self.get(cv2.CAP_PROP_POS_FRAMES)) < ii):
                         # print('fast forwarding', int(self.get(cv2.CAP_PROP_POS_FRAMES)), ii, )
@@ -68,7 +68,7 @@ class VideoReader(cv2.VideoCapture):
 # can cause segfaults!
 
 class VideoReaderMeta(object):
-    def __init__(self, movFilePattern, metaFrames, lv1detect=None, lv1match=None, imagesL1detect=None, saveMode=False, config=None, skipNonMatched=False):
+    def __init__(self, movFilePattern, metaFrames, lv1detect=None, lv1match=None, imagesL1detect=None, safeMode=False, config=None, skipNonMatched=False):
         if type(metaFrames) is xr.Dataset:
             self.metaFrames = metaFrames
         else:
@@ -94,7 +94,7 @@ class VideoReaderMeta(object):
             self.tarFile = None
             #self.tarRoot = None
 
-        self.saveMode = saveMode
+        self.safeMode = safeMode
         self.config = config
         self.skipNonMatched = skipNonMatched
 
@@ -172,7 +172,7 @@ class VideoReaderMeta(object):
         else:
             self.currentThread = int(self.currentMetaFrames.nThread.values)
             rr = int(self.currentMetaFrames.record_id.values)
-            self.res, self.curentFrame = self.video[self.currentThread].getFrameByIndex(rr, saveMode=self.saveMode)
+            self.res, self.curentFrame = self.video[self.currentThread].getFrameByIndex(rr, safeMode=self.safeMode)
             if increaseContrast:
                 self.curentFrame = doubleDynamicRange(self.curentFrame)
             self.position = np.where(self.metaFrames.capture_time==captureTime)[0][0]

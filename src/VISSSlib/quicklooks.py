@@ -345,7 +345,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                                 videos[k].release()
 
                             videos[thisfname_lv0] = av.VideoReaderMeta(
-                                thisfname_lv0, fname)
+                                thisfname_lv0, fname, safeMode=True)
                 #             print('opened %s'%thisfname_lv0)
 
                     particle = thisDat.sel(fpid=(fname, pid))

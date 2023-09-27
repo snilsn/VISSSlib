@@ -155,7 +155,7 @@ class _stereoViewMatch(object):
                 lv1match=self.lv1match.sel(camera=camera),
                 imagesL1detect=self.imagesL1detect[camera],
                 config=self.config,
-                saveMode=False,
+                safeMode=False,
                 skipNonMatched = self.skipNonMatched,
             )
             self.captureTimes[camera] = xr.DataArray(
@@ -540,7 +540,7 @@ class _stereoViewDetect(object):
                 lv1detect=self.lv1detect[camera],
                 lv1match=None,
                 config=self.config,
-                saveMode=False,
+                safeMode=False,
             )
 
             self.index[camera] = range(len(self.meta[camera].capture_time))
