@@ -139,15 +139,15 @@ def createLevel2(
 
     if sublevel == "match":
         if not fL.isCompleteL1match:
-            print("level1match NOT COMPLETE YET %i of %i %s" %
+            log.error("level1match NOT COMPLETE YET %i of %i %s" %
                   (len(fL.listFilesExt("level1match")), len(fL.listFiles("level0txt")),  lv2File))
-            print("look at ", fL.fnamesPatternExt["level1match"])
+            log.error("look at %s"% fL.fnamesPatternExt["level1match"])
             return None, None
     elif sublevel == "track":
         if not fL.isCompleteL1track:
-            print("level1track NOT COMPLETE YET %i of %i %s" %
+            log.error("level1track NOT COMPLETE YET %i of %i %s" %
                   (len(fL.listFilesExt("level1track")), len(fL.listFiles("level0txt")),  lv2File))
-            print("look at ", fL.fnamesPatternExt["level1track"])
+            log.error("look at %s"% fL.fnamesPatternExt["level1track"])
             return None, None
     else:
         raise ValueError
@@ -155,9 +155,9 @@ def createLevel2(
     lv1Files = fL.listFilesWithNeighbors(f"level1{sublevel}")
 
     if len(lv1Files) == 0:
-        print("level1 NOT AVAILABLE %s" %
+        log.error("level1 NOT AVAILABLE %s" %
               lv2File)
-        print("look at ", fL.fnamesPatternExt[f"level1{sublevel}"])
+        log.error("look at %s"% fL.fnamesPatternExt[f"level1{sublevel}"])
         return None, None
 
     timeIndex = pd.date_range(start=case, end=fL.datetime64 +
@@ -307,9 +307,9 @@ def createLevel2part(
     lv1Files = fL.listFilesWithNeighbors(f"level1{sublevel}")
 
     if len(lv1Files) == 0:
-        print("level1 NOT AVAILABLE %s" %
+        log.error("level1 NOT AVAILABLE %s" %
               lv2File)
-        print("look at ", fL.fnamesPatternExt[f"level1{sublevel}"])
+        log.error("look at %s"% fL.fnamesPatternExt[f"level1{sublevel}"])
         return None
 
     timeIndex = pd.date_range(start=case, end=fL.datetime64 +

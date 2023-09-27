@@ -237,7 +237,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
         if len(dat2.pid) == 0:
             continue
-        dat2 = dat2[["record_time", "record_id", "Droi"]]
+        dat2 = dat2[["record_time", "record_id", "Droi", "position_upperLeft"]]
 
         dat2 = dat2.expand_dims(dict(file=[fname1]))
     #     dat2 = dat2.set_coords(dict(file = fname2))
@@ -330,16 +330,15 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                 particlesPloted += nParticlesNeeded
                 ims = []
 
+                videos = {}
+
                 for fname, pid in pids:
 
                     # basenameImg = fname.split('/')[-1]
 
                     if not readParticlesFromFiles:
-
-                        basename = '_'.join(fname.split(
-                            '/')[-1].split('.')[-2].split('_')[3:])
-                        thisfname_lv0 = fname_lv0.format(root=root, computer=computer, visssGen=visssGen, camera=camera, timestamp=timestamp,
-                                                         site=site, year=year, month=month, day=day, nThread='{thread}', basename=basename, movieExtension=movieExtension,)
+                        f1 = files.FilenamesFromLevel(fname, config)
+                        thisfname_lv0 = f1.fname.level0
 
                         if thisfname_lv0 not in videos.keys():
                             for k in videos.keys():
@@ -363,7 +362,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                         x, y  = particle.position_upperLeft.values.astype(int)
                         if len(frame1.shape) == 3:
                             frame1 = frame1[:, :, 0]
-                        im = frame1[y+height_offset:y+height_offset+h, x:x+w]
+                        im = frame1[y+config.height_offset:y+config.height_offset+h, x:x+w]
                     else:
 
 

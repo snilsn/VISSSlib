@@ -583,6 +583,8 @@ class imageZipFile(zipfile.ZipFile):
 def ncAttrs(site, visssGen, extra={}):
     if  os.environ.get('USER') is not None:
         user =  f" by user {os.environ.get('USER')}"
+    else:
+        user =""
     attrs = {
         "title": f"Video In Situ Snowfall Sensor (VISSS) observations at {site}",
         "source": f"{visssGen} observations at {site}",
@@ -693,10 +695,15 @@ def open2(file, mode="r", **kwargs):
 def to_netcdf2(dat, file, **kwargs):
     '''
     like xarray netcdf open, but creating directories if needed
+    removes existign files to avoid permission errors
     '''
     dirname = os.path.dirname(file)
     if (dirname != "") and (not os.path.exists(dirname)):
         os.makedirs(dirname)
+
+    if os.path.isfile(file):
+        log.info(f"remove old version of {file}")
+        os.remove(file)
 
     log.info(f"save {file}")
     with warnings.catch_warnings():

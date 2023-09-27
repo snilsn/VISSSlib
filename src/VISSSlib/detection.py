@@ -401,7 +401,7 @@ class detectedParticles(object):
         else:
 
             # blur image, required to make algoprithm stable
-            print("self.blurSigma", self.blurSigma)
+            #print("self.blurSigma", self.blurSigma)
             if self.blurSigma != 0:
                 frame = cv2.GaussianBlur(frame, (0, 0), self.blurSigma)
             # frame = cv2.bilateralFilter(frame, 5,70,2)

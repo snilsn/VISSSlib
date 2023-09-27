@@ -10,3 +10,4 @@ pyOptimalEstimation/examples/*.png
 .DS_Store
 .eggs
 notebooks/.ipynb_checkpoints
+*.tmp

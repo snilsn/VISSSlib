@@ -514,7 +514,7 @@ def createMetaFrames(case, camera, config, skipExisting=True):
         if metaDat is not None:
 
             metaDat = tools.finishNc(metaDat, config.site, config.visssGen)
-            metaDat.to_netcdf(fn.fname.metaFrames)
+            tools.to_netcdf2(metaDat,fn.fname.metaFrames)
             print("%s written"%fn.fname.metaFrames)
         else:
             with open(fn.fname.metaFrames+".nodata", "w") as f:
@@ -675,20 +675,26 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
     if skipExisting and os.path.isfile(eventFile):
         eventDat = xr.open_dataset(eventFile)
         if len(eventDat.data_vars) == 0:
-            print("eventDat empty, redoing event file" )
+            log.info("eventDat empty, redoing event file" )
             eventDat.close()
+        #check whether status file is newer than event file, consider 6 hour buffer for data transfer
+        elif (fname0status is not None) and (os.path.getmtime(eventFile) < (os.path.getmtime(fname0status) + 60*60*6)):
+            log.info("status file was recently updated, redoing event file" )
+            eventDat.close()
+
         else:
             if "noLevel0Files" in eventDat.attrs:
                 nFiles = eventDat.attrs["noLevel0Files"]
             else:
                 nFiles = sum(eventDat.event == "newfile") + sum(eventDat.event == "brokenfile")
                 nFiles = int(nFiles.values)
+
             if nFiles == len(fnames0):
-                print("Skipping", case, eventFile )
+                log.info(tools.concat("Skipping", case, eventFile ))
                 eventDat.close()
                 return None
             else:
-                print("Missing files, redoing event file", nFiles, "of", len(fnames0) )
+                log.info(tools.concat("Missing files, redoing event file", nFiles, "of", len(fnames0)) )
                 eventDat.close()
 
         
@@ -702,7 +708,7 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
         nFiles = sum(metaDats.event == "newfile") + sum(metaDats.event == "brokenfile")
         nFiles = int(nFiles.values)
         metaDats.attrs["noLevel0Files"] = nFiles
-        metaDats.to_netcdf(eventFile)
+        tools.to_netcdf2(metaDats,eventFile)
 
 
     except (ValueError, AssertionError):

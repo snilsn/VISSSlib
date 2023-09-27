@@ -622,7 +622,7 @@ class FilenamesFromLevel(Filenames):
         month = case[4:6]
         day = case[6:8]
 
-        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["pathOut"].format(level="level0", site=site, version=version), computer, camera, year, month, day)
+        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (config["path"].format(level="level0", site=site, version=version), computer, camera, year, month, day)
         if config["nThreads"] is None:
             fnameLevel0 = f"{outpath0}/{basename}.{config['movieExtension']}"
         else:

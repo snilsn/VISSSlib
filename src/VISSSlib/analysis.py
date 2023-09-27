@@ -385,7 +385,7 @@ class matchGUI():
 
             print("leader:", c0, i0, "follower:", c1, i1)
             if lv1match is not None:
-                Zdiff = lv1match.position_3D.isel(
+                Zdiff = lv1match.position3D_centroid.isel(
                     dim3D=[2, 3], drop=True).diff("dim3D").values.flatten()
                 print(
                     lv1match.pair_id.values.flatten(),
