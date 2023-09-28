@@ -187,6 +187,18 @@ def main():
 
         scripts.loopCreateLevel2match(settings, skipExisting=skipExisting, nDays = nDays, nCPU=None)
 
+    elif sys.argv[1] == "scripts.loopCreateLevel2track":
+
+        settings = sys.argv[2]
+        nDays = sys.argv[3]
+
+        try:
+            skipExisting = bool(int(sys.argv[4]))
+        except IndexError:
+            skipExisting = True
+
+        scripts.loopCreateLevel2track(settings, skipExisting=skipExisting, nDays = nDays, nCPU=None)
+
 
 
     elif sys.argv[1] == "scripts.loopLevel1matchQuicklooks":
