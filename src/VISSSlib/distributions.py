@@ -724,11 +724,9 @@ def estimateObservationVolume(level1dat_time, config, DbinsPixel, timeIndex1):
 def calibrateData(level2dat, level1dat_time, config, DbinsPixel, timeIndex1):
     '''go from pixel to SI units'''
 
-    assert "intercept" in config.calibration.keys()
     assert "slope" in config.calibration.keys()
 
     slope = config.calibration.slope
-    intercept = config.calibration.intercept
 
     calibDat = level2dat.rename(N="counts").copy()
 
@@ -754,8 +752,8 @@ def calibrateData(level2dat, level1dat_time, config, DbinsPixel, timeIndex1):
     calibDat["area_dist"] = calibDat["area_dist"]  / slope**2 / 1e6**2
     calibDat["perimeter_dist"] = calibDat["perimeter_dist"] / slope / 1e6
 
-    calibDat["Dmax_mean"] = (calibDat["Dmax_mean"] -intercept )/ slope / 1e6
-    calibDat["Dmax_std"] = (calibDat["Dmax_std"] -intercept )/ slope / 1e6
+    calibDat["Dmax_mean"] = (calibDat["Dmax_mean"] )/ slope / 1e6
+    calibDat["Dmax_std"] = (calibDat["Dmax_std"] )/ slope / 1e6
     calibDat["area_mean"] = calibDat["area_mean"]  / slope**2 / 1e6**2
     calibDat["area_std"] = calibDat["area_std"]  / slope**2 / 1e6**2
     calibDat["perimeter_mean"] = calibDat["perimeter_mean"] / slope / 1e6
