@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import operator
 
 from .matching import *
 from . import __version__
@@ -41,6 +42,18 @@ def _preprocess(dat):
          raise KeyError
     return dat
 
+_operators = {'>': operator.gt,
+       '<': operator.lt,
+       '>=': operator.ge,
+       '<=': operator.le,
+       '==': operator.eq}
+
+_select = {
+    'max': np.max,
+    'mean': np.mean,
+    'min': np.min,
+       }
+
 
 def createLevel2match(
     case,
@@ -54,6 +67,7 @@ def createLevel2match(
     blowingSnowFrameThresh=0.05,
     skipExisting = True, 
     writeNc = True,
+    applyFilters = []
     ):
 
     return createLevel2(
@@ -68,7 +82,8 @@ def createLevel2match(
     blowingSnowFrameThresh=blowingSnowFrameThresh,
     skipExisting = skipExisting, 
     writeNc = writeNc ,
-    sublevel = "match"
+    applyFilters=applyFilters,
+    sublevel = "match",
     )
 
 def createLevel2track(
@@ -82,6 +97,7 @@ def createLevel2track(
     blowingSnowFrameThresh=0.05,
     skipExisting = True, 
     writeNc = True,
+    applyFilters = []
     ):
 
     return createLevel2(
@@ -96,7 +112,8 @@ def createLevel2track(
     blowingSnowFrameThresh=blowingSnowFrameThresh,  
     skipExisting = skipExisting, 
     writeNc = writeNc ,
-    sublevel = "track"
+    applyFilters=applyFilters,
+    sublevel = "track",
     )
 
 def createLevel2(
@@ -112,7 +129,8 @@ def createLevel2(
     skipExisting = True, 
     writeNc = True,
     hStep = 1,
-    sublevel = "match"
+    sublevel = "match",
+    applyFilters = []
     ):
 
     assert sublevel in ["match", "track"]
@@ -176,7 +194,8 @@ def createLevel2(
             sizeDefinitions=sizeDefinitions,
             endTime=endTime,
             skipExisting = skipExisting, 
-            sublevel = sublevel
+            sublevel = sublevel,
+            applyFilters=applyFilters,
             )
             if lv2Dat is not None:
                 log.info(f"load data for {case}")
@@ -199,7 +218,8 @@ def createLevel2(
             sizeDefinitions=sizeDefinitions,
             endTime=np.timedelta64(1, "h"),
             skipExisting = skipExisting, 
-            sublevel = sublevel
+            sublevel = sublevel,
+            applyFilters=applyFilters,
             )
 
             if lv2Dat1 is not None:
@@ -296,8 +316,24 @@ def createLevel2part(
     sizeDefinitions=["Dmax", "Dequiv"],
     endTime=np.timedelta64(1, "h"),
     skipExisting = True, 
-    sublevel = "match"
+    sublevel = "match",
+    applyFilters=[],
     ):
+
+
+    """applyFilter contains list of filters connected by AND. 
+    Each filter is a tuple with:
+    1) variable name (e.g. aspectRatio, all lv1 variables work) 
+    2) Operator, one of '>','<','>=','<=','=='
+    3) Value for comparison
+    4) if variable contains extra dimensions, which one to select, {} otherwise
+
+    Example to get all particles > 10 pixels (using max of both cameras) with aspectRatio >= 0.7 (using min of both cameras)
+    applyFilters = [
+        ("Dmax",">",10,"max",{}),
+        ("aspectRatio",">",0.7,"min",{"fitMethod":'cv2.fitEllipseDirect'}),
+    ]
+    """
 
     assert sublevel in ["match", "track"]
 
@@ -339,6 +375,26 @@ def createLevel2part(
             log.warning("no data remians after matchScore filtering %s" %
                   lv2File)
             return None   
+
+    for aa, applyFilter in enumerate(applyFilters):
+        assert len(applyFilter) == 5, "applyFilters elements must contain filterVar, operator, filerValue, extraDims"
+        filterVar, opStr, filerValue, selectCameraStr, extraDims = applyFilter
+        if selectCameraStr == "max":
+            thisDat = level1dat[filterVar].sel(**extraDims).max("camera")
+        elif selectCameraStr == "min":
+            thisDat = level1dat[filterVar].sel(**extraDims).min("camera")
+        elif selectCameraStr == "mean":
+            thisDat = level1dat[filterVar].sel(**extraDims).mean("camera")
+        else:
+            raise ValueError("selectCameraStr must be max, min or mean, received %s",selectCameraStr)
+        matchCond = _operators[opStr](thisDat,filerValue).values
+        level1dat = level1dat.isel(pair_id=matchCond)
+
+        if len(level1dat.matchScore) == 0:
+            log.warning("no data remians after additional filtering %s %s" %
+                  applyFilter, lv2File)
+            return None   
+
 
     sizeCond = (level1dat.Dmax < max(DbinsPixel)).all("camera").values
     level1dat = level1dat.isel(pair_id=sizeCond)
@@ -470,7 +526,7 @@ def createLevel2part(
         #level1dat_trackAve = xr.concat((level1dat_trackAve,level1dat_4trackAve.expand_dims(track=["individual"])), dim="cameratrack")
 
         log.info(f"reshape track data again")
-        #call me crayzy but now that we have mean track properties broadcasted to every particle we can go back to pair_id!
+        #call me crazy but now that we have mean track properties broadcasted to every particle we can go back to pair_id!
         level1dat_4timeAve = level1dat_trackAve.stack(pair_id=("track_id","track_step"))
         # make sure only data is used within original track length
         notNull = level1dat_4trackAve.Dmax.isel(camera=0, drop=True).notnull().stack(pair_id=("track_id","track_step")).compute()
@@ -735,8 +791,7 @@ def calibrateData(level2dat, level1dat_time, config, DbinsPixel, timeIndex1):
         volumes, coords=[level2dat.time, level2dat.D_bins])
 
     # apply resolution
-    calibDat["D_bins"] = (calibDat["D_bins"] - intercept) / slope / 1e6
-    # assume that intercept is an artifact of Dmax estimation
+    calibDat["D_bins"] = calibDat["D_bins"] / slope / 1e6
     calibDat["obs_volume"] = calibDat["obs_volume"]  / slope**3 / 1e6**3
 
     # go from intervals to center values
@@ -748,7 +803,6 @@ def calibrateData(level2dat, level1dat_time, config, DbinsPixel, timeIndex1):
         D_bins=[b.mid for b in calibDat.D_bins.values])
 
     #remaining variables
-    # assume that intercept is an artifact of Dmax estimation
     calibDat["area_dist"] = calibDat["area_dist"]  / slope**2 / 1e6**2
     calibDat["perimeter_dist"] = calibDat["perimeter_dist"] / slope / 1e6
 
@@ -758,7 +812,6 @@ def calibrateData(level2dat, level1dat_time, config, DbinsPixel, timeIndex1):
     calibDat["area_std"] = calibDat["area_std"]  / slope**2 / 1e6**2
     calibDat["perimeter_mean"] = calibDat["perimeter_mean"] / slope / 1e6
     calibDat["perimeter_std"] = calibDat["perimeter_std"] / slope / 1e6
-    # is the intercept correction needed for Dequiv? good question...
     calibDat["Dequiv_mean"] = (calibDat["Dequiv_mean"]) / slope / 1e6
 
     if "velocity_dist" in calibDat.data_vars:
