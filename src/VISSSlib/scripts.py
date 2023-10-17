@@ -212,6 +212,34 @@ def loopLevel2matchQuicklooks(settings, version=__version__, nDays = 0, skipExis
     return
 
 
+def loopLevel2trackQuicklooks(settings, version=__version__, nDays = 0, skipExisting=True):
+
+    config = tools.readSettings(settings)
+
+    days = tools.getDateRange(nDays, config, endYesterday=False)
+
+    for dd in days:
+
+        year = str(dd.year)
+        month = "%02i" % dd.month
+        day = "%02i" % dd.day
+        case = f"{year}{month}{day}"
+
+        #         print(case, computer, camera)
+
+        fname, fig = quicklooks.createLevel2trackQuicklook(
+            case, 
+            config, 
+            version=version, 
+            skipExisting=skipExisting,
+            )
+        try:
+            fig.close()
+        except AttributeError:
+            pass
+    return
+
+
 def loopMetaCoefQuicklooks(settings, version=__version__, skipExisting=True):
 
     config = tools.readSettings(settings)
@@ -358,21 +386,21 @@ def loopCreateLevel2track(settings, skipExisting=True, nDays = 0, useWorker=True
             case = f"{year}{month}{day}"
             distributions.createLevel2track(case, config, skipExisting=skipExisting)
 
-    # if doPlot:
-    #     for dd in days:
-    #         year = str(dd.year)
-    #         month = "%02i" % dd.month
-    #         day = "%02i" % dd.day
-    #         case = f"{year}{month}{day}"
-    #         fname, fig = quicklooks.createLevel2trackQuicklook(
-    #             case, 
-    #             config, 
-    #             skipExisting=skipExisting,
-    #             )
-    #         try:
-    #             fig.close()
-    #         except AttributeError:
-    #             pass
+    if doPlot:
+        for dd in days:
+            year = str(dd.year)
+            month = "%02i" % dd.month
+            day = "%02i" % dd.day
+            case = f"{year}{month}{day}"
+            fname, fig = quicklooks.createLevel2trackQuicklook(
+                case, 
+                config, 
+                skipExisting=skipExisting,
+                )
+            try:
+                fig.close()
+            except AttributeError:
+                pass
     return
 
 

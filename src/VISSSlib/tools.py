@@ -682,6 +682,64 @@ def concat(*strs):
     concat = " ".join([str(s) for s in strs])
     return concat
 
+def concatImgY(im1, im2, background=0):
+    '''helper function to concat to images in Y direction
+        
+    Parameters
+    ----------
+    im1 : np.array
+        upper image
+    im2 : np.array
+        lower image
+    background : number, optional
+        background color (the default is 0)
+    
+    Returns
+    -------
+    np.array
+        new image as array
+    '''
+    y1, x1 = im1.shape
+    y2, x2 = im2.shape
+
+    y3 = y1+y2
+    x3 = max(x1, x2)
+    imT = np.full((y3, x3), background, dtype=np.uint8)
+    imT[:y1, :x1] = im1
+    imT[y1:, :x2] = im2
+    # print("Y",im1.shape, im2.shape, imT.shape)
+
+    return imT
+
+def concatImgX(im1, im2, background=0):
+    '''helper function to concat to images in X direction
+    Parameters
+    ----------
+    im1 : np.array
+        left image
+    im2 : np.array
+        right image
+    background : number, optional
+        background color (the default is 0)
+    
+    Returns
+    -------
+    np.array
+        new image as array
+    '''
+    y1, x1 = im1.shape
+    y2, x2 = im2.shape
+
+    y3 = max(y1,y2)
+    x3 = x1+x2
+    imT = np.full((y3, x3), background, dtype=np.uint8)
+    imT[:y1, :x1] = im1
+    imT[:y2, x1:] = im2
+    
+    # print("X",im1.shape, im2.shape, imT.shape)
+
+    return imT
+
 def open2(file, mode="r", **kwargs):
     '''
     like standard open, but creating directories if needed

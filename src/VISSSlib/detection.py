@@ -153,42 +153,42 @@ VISSSlib wo training
 
 
 # decided not to use own class due to 1) perfoamnce reasons and doubts hwethe rthe
-# simple background model can handle different light situations properly
-class movementDetection(object):
-    def __init__(self, threshold=20, history=100, trainingInterval=140):
-        self.backgrounds = None
-        self.history = history
-        self.trainingInterval = trainingInterval
-        self.threshold = threshold
-        self.ii = 0
-        self.background = 0
+# # simple background model can handle different light situations properly
+# class movementDetection(object):
+#     def __init__(self, threshold=20, history=100, trainingInterval=140):
+#         self.backgrounds = None
+#         self.history = history
+#         self.trainingInterval = trainingInterval
+#         self.threshold = threshold
+#         self.ii = 0
+#         self.background = 0
 
-    def apply(self, frame):
-        if (self.ii % self.history == 0):
-            try:
-                self.background = np.mean(
-                    self.backgrounds, axis=0,).astype(np.uint8)
-            except np.AxisError:
-                self.background = 0
+#     def apply(self, frame):
+#         if (self.ii % self.history == 0):
+#             try:
+#                 self.background = np.mean(
+#                     self.backgrounds, axis=0,).astype(np.uint8)
+#             except np.AxisError:
+#                 self.background = 0
 
-        diff = cv2.absdiff(frame, self.background)
-        mask = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)[1]
-        if (self.ii < self.history) or (self.ii % self.trainingInterval == 0):
-            self.setBackground(frame)
-        self.ii += 1
-        return mask
+#         diff = cv2.absdiff(frame, self.background)
+#         mask = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)[1]
+#         if (self.ii < self.history) or (self.ii % self.trainingInterval == 0):
+#             self.setBackground(frame)
+#         self.ii += 1
+#         return mask
 
-    def getBackgroundImage(self):
-        return self.background
+#     def getBackgroundImage(self):
+#         return self.background
 
-    def setBackground(self, frame):
-        if self.backgrounds is None:
-            y, x = frame.shape
-            self.backgrounds = np.zeros(
-                (self.history, y, x), dtype=np.uint8) + frame
-        else:
-            self.backgrounds = np.roll(self.backgrounds, 1, axis=0)
-            self.backgrounds[0] = frame
+#     def setBackground(self, frame):
+#         if self.backgrounds is None:
+#             y, x = frame.shape
+#             self.backgrounds = np.zeros(
+#                 (self.history, y, x), dtype=np.uint8) + frame
+#         else:
+#             self.backgrounds = np.roll(self.backgrounds, 1, axis=0)
+#             self.backgrounds[0] = frame
 
 
 class detectedParticles(object):
@@ -307,6 +307,7 @@ class detectedParticles(object):
         # self.frame = av.doubleDynamicRange(cv2.bitwise_not(cv2.subtract(self.backSub.getBackgroundImage(), self.frame, )))
 #
 
+        # check whether anxthing is moving
         self.nMovingPix = self.fgMask.sum()//255
         if self.nMovingPix == 0:
             print("particles.update", "FRAME", pp, 'capture_time',

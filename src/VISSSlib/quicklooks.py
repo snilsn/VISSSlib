@@ -30,6 +30,7 @@ except ImportError:
 from . import __version__
 from . import *
 from . import av
+from . import tools
 
 import logging
 log = logging.getLogger(__name__)
@@ -1484,8 +1485,8 @@ def createLevel2matchQuicklook(
 
     #(dat2.aspectRatio_dist.sel(camera="max", size_definition="Dmax", fitMethod="cv2.fitEllipseDirect")).T.plot(ax=ax2, vmin=0,vmax=1, cbar_kwargs={"label":"aspect ratio [-]"})
     dat2.Dmax_mean.sel(camera="max").plot(ax=ax2, label="mean Dmax")
-    dat2.D23.sel(camera="max", size_definition="Dmax").plot(ax=ax2, label="D23")
-    dat2.D34.sel(camera="max", size_definition="Dmax").plot(ax=ax2, label="D34")
+    dat2.D32.sel(camera="max", size_definition="Dmax").plot(ax=ax2, label="D32")
+    dat2.D43.sel(camera="max", size_definition="Dmax").plot(ax=ax2, label="D43")
     ax2.set_ylabel("Size [m]")
     ax2.legend()
 
@@ -1556,34 +1557,152 @@ def createLevel2matchQuicklook(
         return fOut
 
 
-def concatImgY(im1, im2, background=0):
+def createLevel2trackQuicklook(
+                    case, config, version=__version__, skipExisting=True, returnFig=True):
+
+    if type(config) is str:
+        config = tools.readSettings(config)
+        
+    camera = config.leader
+
+    #get level 0 file names
+    ff = files.FindFiles(case, camera, config, version)
+    fOut = ff.quicklook.level2track
+    if skipExisting and os.path.isfile(fOut):
+        if os.path.getmtime(fOut) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
+            log.info(f"{case} file exists but older than event file, redoing {fOut}" )
+        else:
+            log.info(tools.concat(case, camera, "skip exisiting"))
+            return None, None
+        
+        
+    lv2track = ff.listFiles("level2track")
+    if len(lv2track) == 0:
+        log.error(f'{case} lv2track data not found')
+        return None, None
+    else:
+        lv2track = lv2track[0]
+
+
+    if len(ff.listFiles("metaEvents")) == 0:
+        log.error(f'{case} event data not found')
+        return None, None
+
+    log.info(f"running {case} {fOut}")
+
+    dat2 = xr.open_dataset(lv2track)
+    print(lv2track)
+    fEvents1 = ff.listFiles("metaEvents")[0]
+    fEvents2 = files.FilenamesFromLevel(fEvents1, config).filenamesOtherCamera(level="metaEvents")[0]
+
+    try:
+        events1 = xr.open_dataset(fEvents1)
+    except:
+        print(f'{fEvents1} broken')
+        return None, None
+    try:
+        events2 = xr.open_dataset(fEvents2)
+    except:
+        print(f'{fEvents2} broken')
+        return None, None
+
+    events = xr.concat((events1,events2), dim="file_starttime")
+
+    fig, axs = plt.subplots(nrows=5,ncols=2, figsize=(20,20),
+                            gridspec_kw={"width_ratios":[1, 0.01],"height_ratios":[1.25, 1.25, 1, 1, 1],'hspace':0.02,'wspace':0.02})
+    mid = (fig.subplotpars.right + fig.subplotpars.left)/2
+    fig.suptitle('VISSS level2track \n'+f'{ff.year}-{ff.month}-{ff.day}'+', '+config["name"]+'', fontsize=25, y=0.995, fontweight='bold', x=mid)
+
+    (ax1, ax1a, ax2, ax3, ax4) = axs[:,0]
+    (bx1, bx1a, bx2, bx3, bx4) = axs[:,1]
+
+
+    (dat2.PSD.sel(cameratrack="max", size_definition="Dmax")).T.plot(
+        ax=ax1, norm=mpl.colors.LogNorm(vmin=1,vmax=dat2.PSD.max()), 
+        cbar_kwargs={"label":"Particle Size Distribution [1/m^4]"},
+        cbar_ax=bx1)
+    ax1.set_ylabel("Dmax [m]")
+
+    (dat2.velocity_dist.sel(cameratrack="mean", size_definition="Dmax", dim3D="z")).T.plot(
+        ax=ax1a, cbar_kwargs={"label":"Particle Sedimentation velocity [m/s]"},
+        cbar_ax=bx1a)
+    ax1a.set_ylabel("Dmax [m]")
     
-    y1, x1 = im1.shape
-    y2, x2 = im2.shape
+    #(dat2.aspectRatio_dist.sel(cameratrack="max", size_definition="Dmax", fitMethod="cv2.fitEllipseDirect")).T.plot(ax=ax2, vmin=0,vmax=1, cbar_kwargs={"label":"aspect ratio [-]"})
+    dat2.Dmax_mean.sel(cameratrack="max").plot(ax=ax2, label="mean Dmax")
+    dat2.D32.sel(cameratrack="max", size_definition="Dmax").plot(ax=ax2, label="D32")
+    dat2.D43.sel(cameratrack="max", size_definition="Dmax").plot(ax=ax2, label="D34")
+    ax2.set_ylabel("Size [m]")
+    ax2.legend()
 
-    y3 = y1+y2
-    x3 = max(x1, x2)
-    imT = np.full((y3, x3), background, dtype=np.uint8)
-    imT[:y1, :x1] = im1
-    imT[y1:, :x2] = im2
-    # print("Y",im1.shape, im2.shape, imT.shape)
+    dat2.complexityBW_mean.sel(cameratrack="max").plot(ax=ax3, label="complexity")
+    dat2.aspectRatio_mean.sel(cameratrack="min", fitMethod="cv2.fitEllipseDirect").plot(ax=ax3, label="aspect ratio")
+    ax3.set_ylabel("Shape [-]")
+    ax3.legend()
 
-    return imT
 
-def concatImgX(im1, im2, background=0):
+    dat2.counts.sel(cameratrack="max", size_definition="Dmax").sum("D_bins").plot(label="observed particles [1/min]", ax=ax4)
+    dat2.matchScore_mean.sel(cameratrack="max").plot(label="match score [-]", ax=ax4)
+    ax4.set_yscale("log")
+    ax4.set_ylabel("Performance")
+    ax4.legend()
+
+
+
+    for ax in axs[:,0]:
+        ax.set_title(None)
+
+        ylim = ax.get_ylim() 
+        cond = dat2.time.where(dat2.recordingFailed)
+        if cond.notnull().any():
+            ax.fill_between(cond, [ylim[0]]*len(dat2.time), [ylim[1]]*len(dat2.time), color="pink", alpha=0.25, label="cameras off")
+        cond = dat2.time.where(dat2.processingFailed)
+        if cond.notnull().any():
+            ax.fill_between(cond, [ylim[0]]*len(dat2.time), [ylim[1]]*len(dat2.time), color="purple", alpha=0.25, label="processing failed")
+        cond = dat2.time.where(dat2.blockedPixelRatio.max("camera")>0.1)
+        if cond.notnull().any():
+            ax.fill_between(cond, [ylim[0]]*len(dat2.time), [ylim[1]]*len(dat2.time), color="red", alpha=0.25, label="camera blocked > 10%")
+        cond = dat2.time.where(dat2.blowingSnowRatio.max("camera")>0.1)
+        if cond.notnull().any():
+            ax.fill_between(cond, [ylim[0]]*len(dat2.time), [ylim[1]]*len(dat2.time), color="orange", alpha=0.25, label="blowing snow > 10%")#, hatch='///')
+        ax.set_ylim(ylim) 
+
+        ax.tick_params(axis='both', labelsize=15)
+        ax.grid()
+        ax.set_xlim(np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00'), np.datetime64(f'{ff.year}-{ff.month}-{ff.day}'+'T00:00')+np.timedelta64(1, 'D'))
+
+    for ax in axs[:-1,0]:
+        ax.set_xticklabels([])
+
+    # mark relaunch
+    firstEvent = True
+    for event in events.event:
+        if str(event.values).startswith("start") or str(event.values).startswith("launch"):
+            for ax in axs[:,0]:
+                if firstEvent:
+                    label="restarted"
+                    firstEvent = False
+                else:
+                    label = None
+                ax.axvline(event.file_starttime.values, color="red", ls=":", label=label)
+
+
+    ax1.legend()
+    ax4.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+
+    for bx in axs[2:,1]:
+        bx.axis('off')
+
+    fig.tight_layout()
+    fig.savefig(fOut)
     
-    y1, x1 = im1.shape
-    y2, x2 = im2.shape
+    if returnFig:
+        return fOut, fig 
+    else:
+        return fOut
 
-    y3 = max(y1,y2)
-    x3 = x1+x2
-    imT = np.full((y3, x3), background, dtype=np.uint8)
-    imT[:y1, :x1] = im1
-    imT[:y2, x1:] = im2
-    
-    # print("X",im1.shape, im2.shape, imT.shape)
 
-    return imT
+
 
 def createLevel1matchParticlesQuicklook(timestamp, config, 
                        version = __version__,
@@ -1831,7 +1950,7 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
                         #drop alpha channel
                         im[cc] = im[cc][...,0]
                     
-                    im = concatImgX(*im, background=50)
+                    im = tools.concatImgX(*im, background=50)
 
                     # im = av.doubleDynamicRange(im, offset=2)
 
@@ -1854,7 +1973,7 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
                     if (omitLabel4small =="all") or ((omitLabel4small == True) and (x1 < x2)):
                         imT = im
                     else:
-                        imT = concatImgY(im, text)
+                        imT = tools.concatImgY(im, text)
                         # import pdb;pdb.set_trace()
                     ims.append(imT)
                     totalArea += np.prod(imT.shape)
