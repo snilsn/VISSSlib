@@ -26,7 +26,7 @@ setuptools.setup(
     python_requires=">=3.6",
     install_requires=['numpy', 'scipy', 'xarray', 'dask[complete]', 'pandas', "pyyaml", "trimesh","flatten_dict",
                    "matplotlib", "ipywidgets", "bottleneck", "pillow", "image-packer", "addict", "pyOptimalEstimation", "filterpy",
-                   "flox"],
+                   "flox", "portalocker", "numba", "vg"],
     setup_requires=['setuptools_scm'],
 )
  # "opencv-python" -> conda version is not recongnized

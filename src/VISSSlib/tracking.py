@@ -10,6 +10,7 @@ import numpy as np
 import xarray as xr
 from scipy.optimize import linear_sum_assignment
 from scipy.linalg import block_diag
+import scipy.stats
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter
 from tqdm import tqdm
@@ -21,12 +22,25 @@ from . import files
 from . import matching
 
 import logging
-log = logging.getLogger()
-
 
 log = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+#for performance
+logDebug = log.isEnabledFor(logging.DEBUG)
+
+_reference_slopes = {
+    "visss": 0.089,
+    "visss2":0.089,
+    "visss3":0.089,
+}
+
+_reference_intercepts = {
+    "visss": 1.605,
+    "visss2":1.463,
+    "visss3":1.441,
+}
+ 
 
 # x: x, xvel, y, yvel, z, zvel
 #z = x,y,z
@@ -78,7 +92,15 @@ class Track(object):
         None
     """
 
-    def __init__(self, position, feature, trackIdCount, startTime, velocityGuess=[0, 0, 50]):
+    def __init__(
+        self, 
+        position, 
+        feature, 
+        size, 
+        trackIdCount, 
+        startTime, 
+        velocityGuess=[0, 0, 50]
+        ):
         """Initialize variables used by Track class
         Args:
             prediction: predicted centroids of object to be tracked
@@ -95,6 +117,7 @@ class Track(object):
         self.skipped_frames = 0  # number of frames skipped undetected
         self._trace = [position]  # trace path
         self._features = [feature]  # trace path
+        self._sizes = [size]  # size path
         self.startTime = startTime
         #print("track created at ", position)
         self.predictedVel = np.array([np.nan]*3)
@@ -117,15 +140,21 @@ class Track(object):
     def trace(self):
         return np.array(self._trace)
 
-    def updateTrack(self, position, feature):
+    @property
+    def meanSize(self):
+        return np.nanmean(self._sizes)
+    
+    def updateTrack(self, position, feature, size):
         if position is not None:
             self._trace.append(position)
             self._features.append(feature)
+            self._sizes.append(size)
             self.KF.update(position)
         else:
             self._trace.append([np.nan, np.nan, np.nan])
             #recycle last features
             self._features.append(self._features[-1])
+            self._sizes.append(np.nan)
             self.KF.update(self.predictedPos)
 
     def predict(self):
@@ -142,7 +171,7 @@ class Tracker(object):
     """
 
     def __init__(self, lv1match, config, dist_thresh=1, max_frames_to_skip=2, max_trace_length=None,
-                 velocityGuess=[0, 0, 50], maxIter= 1e30, fig=None,
+                 velocityGuessXY=[0, 0], maxIter= 1e30, fig=None,#, 50
                 featureVariance = {"distance":200**2, "area":20
                  # , "pixMean": 7
                  }):
@@ -158,22 +187,34 @@ class Tracker(object):
             None
         """
         self._lv1matchgp = lv1match
+        self.config = config
         self.lv1track = deepcopy(lv1match)
         self.dist_thresh = dist_thresh
         self.max_frames_to_skip = max_frames_to_skip
         self.max_trace_length = max_trace_length
-        self.velocityGuess = velocityGuess
-        self.defaultVelocityGuess = velocityGuess
+        self.velocityGuessXY = velocityGuessXY
+        self.defaultVelocityGuessXY = velocityGuessXY
         self.velocityGuessFactor = 4 #double variance when only defualt velocity is available
         self.maxIter = maxIter
         self.featureVariance = xr.Dataset(featureVariance).to_array()
         self.featureKeys = list(featureVariance.keys())
         self.featureKeys.remove("distance")
-        assert len(velocityGuess) == 3
+        assert len(velocityGuessXY) == 2
         assert self.featureVariance.coords["variable"].values[0] == "distance"
 
+        #intitalize
+        self.lastTime = np.datetime64("2010-01-01T00:00:00")
+        self.lastFrame = 0
+
+        # we do not need to load all variables
+        self._lv1matchgp = self._lv1matchgp[set(self.featureKeys + ["capture_time", "position3D_centroid", "pair_id", "area"])].load()
+
         self.activeTracks = []
-        self.oldTracks = []
+        self.archiveTrackNSamples = []
+        self.archiveTrackTimes = []
+        self.archiveTrackSize = []
+        self.archiveTrackVelocities = []
+
         self.trackIdCount = 0
         #print("Tracker created", dist_thresh, max_frames_to_skip)
         self.fig = fig
@@ -203,12 +244,38 @@ class Tracker(object):
         self.lv1track["track_velociytGuess"] = xr.DataArray(
             np.zeros((nParts, 4))*np.nan, {"pair_id":self.lv1track.pair_id, "dim3D":["x","y","z", "z_rotated"]})
 
+        # init velocity first guess
 
-        logging.info(f"processing {self.nFrames} frames")
+        self.backSteps = 200 #max number of data point to look back
+        self.backStepsMin = self.backSteps//10 # max number of default values to fill up backSteps
 
-    def updateAll(self):
-        for ff in tqdm(range(self.nFrames), file=sys.stdout):
-            self.update()
+        self.velGuess_slope = _reference_slopes[config.visssGen]
+        self.velGuess_intercept = _reference_intercepts[config.visssGen]
+
+        # use only a fraction of the backSteps for reference dtaa ppoints
+        Dlog = np.linspace(0,2,self.backStepsMin)
+        vLog = self.velGuess_slope * Dlog + self.velGuess_intercept
+        #shuffle and apply log
+        rng = np.random.default_rng(1)
+        ind = np.arange(self.backStepsMin)
+        rng.shuffle(ind)
+        self.Dref = 10**Dlog[ind]
+        self.vref = 10**vLog[ind]
+
+
+
+
+        log.info(f"processing {self.nFrames} frames of {lv1match.encoding['source']}")
+
+    def updateAll(self, stopAfter=None):
+
+        if stopAfter is None:
+            stopAfter = self.nFrames
+        else:
+            stopAfter = min(self.nFrames, stopAfter)
+
+        for ff in tqdm(range(stopAfter), file=sys.stdout):
+            self.update(ff)
             #break after maxIter frames
             if self._frameid >= self.maxIter:
                 self.lv1track = self.lv1track.isel(pair_id=(self.lv1track.track_id != -99))
@@ -218,7 +285,7 @@ class Tracker(object):
 
 
 
-    def update(self):
+    def update(self,ff):
         """Update tracks vector using following steps:
             - extract data from one frame
             - Create tracks if no tracks vector found
@@ -239,10 +306,10 @@ class Tracker(object):
         """
 
         # extractData from lv1match iterator over frames
-        _, thisDat = next(self._lv1matchgp)
+        _, self._thisDat = next(self._lv1matchgp)
 
         # identify jumps in time - reset everything even if a single frame is missing
-        frameDiff = (thisDat.frameid4tracking.values[0] - self._frameid)
+        frameDiff = (self._thisDat.frameid4tracking.values[0] - self._frameid)
         if frameDiff > 2:
             #print("#"*10, f"resetting due to jump of {frameDiff} frames!", "#"*10)
             self.reset()
@@ -250,27 +317,27 @@ class Tracker(object):
         elif (frameDiff == 2):
             #print("#"*10, f"one frame is missing {frameDiff} update particles using predictions", "#"*10)
             for i in range(len(self.activeTracks)):
-                self.activeTracks[i].updateTrack(None, None)
+                self.activeTracks[i].updateTrack(None, None, None)
                 self.activeTracks[i].skipped_frames += 1
             stop = True
 
-        self._frameid = int(thisDat.frameid4tracking.values[0])
+        self._frameid = int(self._thisDat.frameid4tracking.values[0])
 
         # get particle position and id
-        detections = thisDat.position3D_centroid.isel(dim3D=range(3)).values.T
+        detections = self._thisDat.position3D_centroid.isel(dim3D=range(3)).values.T
         if len(self.featureVariance) > 1:
-            features = thisDat[self.featureKeys].max("camera").to_array().T
+            features = self._thisDat[self.featureKeys].max("camera").to_array().T
         else:
             features = None
-        capture_times = thisDat.capture_time.isel(camera=0).values
-        pair_ids = thisDat.pair_id.values
+        capture_times = self._thisDat.capture_time.isel(camera=0).values
+        pair_ids = self._thisDat.pair_id.values
 
         #print("#"*10, "update", self._frameid, "#"*10)
 
         # see whether we need to update the velocity first guess:
 
-        # for ii in range(-min(10, len(self.oldTracks)), 0):
-        #     oldTrack = self.oldTracks[ii]
+        # for ii in range(-min(10, len(self.archiveTracks)), 0):
+        #     oldTrack = self.archiveTracks[ii]
         #     # we want only relatively recent observations with at least 4 data points
         #     if (capture_times[0] - oldTrack.startTime) < np.timedelta64(1, "s"):
         #         if len(oldTrack) > 3:
@@ -281,19 +348,14 @@ class Tracker(object):
         #     self.velocityGuess = self.defaultVelocityGuess
         #     #print(f"velocity first guess reset to {self.velocityGuess}")
 
-        self.velocityGuess = self.defaultVelocityGuess
-        self.velocityGuessFactor = 4
-        if len(self.oldTracks) > 0:
-            backSteps = 100
-            minTrackLen = 4
-            maxAge = 2 #seconds
-            nSamples = np.array([t.length for t in self.oldTracks[-backSteps:]])
-            times = np.array([t.startTime for t in self.oldTracks[-backSteps:]])
-            cond = (nSamples >= minTrackLen) & ((capture_times[0]  - times) < np.timedelta64(maxAge, "s"))
-            if np.any(cond):
-                vels = np.array([t.predictedVel for t in self.oldTracks[-backSteps:]])
-                self.velocityGuess = np.mean(vels[cond], axis=0)
-                self.velocityGuessFactor = 1
+
+        if (
+            #(ff%10 == 0) or #update only every 10th frame
+            ((capture_times[0] - self.lastTime) > np.timedelta64(500,"ms")) or # or if older than X s
+            (len(self.archiveTrackNSamples) < (self.backSteps*10)) # or at the beginning
+               ) :
+            self.updateVelocityFirstGuess(capture_times,ff)
+
             # print("velocityGuess", self.velocityGuess)
 
         # Create tracks if no track vector found
@@ -304,15 +366,18 @@ class Tracker(object):
                     feat = features.isel(pair_id=i)
                 else:
                     feat = None
-                track = Track(detections[i], feat, self.trackIdCount,
-                              capture_times[i], velocityGuess=self.velocityGuess)
+
+                size = self._thisDat.area.isel(pair_id=i).max("camera").values
+                velocityGuess = self.getVelocityFirstGuess(size)
+                track = Track(detections[i], feat, size, self.trackIdCount,
+                              capture_times[i], velocityGuess=velocityGuess)
                 self.trackIdCount += 1
                 self.activeTracks.append(track)
                 # save "result"
                 pp = np.where(self.lv1track.pair_id == pair_ids[i])[0][0]
                 self.lv1track["track_id"].values[pp] = track.track_id
                 self.lv1track["track_step"].values[pp] = len(track)
-                self.lv1track["track_velociytGuess"].values[pp, :3] = self.velocityGuess
+                self.lv1track["track_velociytGuess"].values[pp, :3] = velocityGuess
 
                 #print(f"assigned particle {pair_ids[i]} to ALL NEW track id {track.track_id}")
 
@@ -341,6 +406,7 @@ class Tracker(object):
         else:
             joinedDiffs = distancesSq[:,:,np.newaxis]
         #weigh squared difference with assumed variance and sum up
+        #note: oder of self.featureVariance.values is fixed becuas eit is an DataArray
         self.cost = np.mean(joinedDiffs/self.featureVariance.values, axis=-1)
 
         #print(self._frameid, joinedDiffs/self.featureVariance.values)
@@ -348,22 +414,7 @@ class Tracker(object):
 
         N = len(self.activeTracks)
         M = len(detections)
-#         #print("N,M", (N, M))
-#         self.cost = np.zeros(shape=(N, M))   # Cost matrix
-#         for i in range(len(self.activeTracks)):
-#             for j in range(len(detections)):
-#                 #                 try:
-#                 predicition = self.activeTracks[i].predictedPos
-#                 diff = predicition - detections[j]
-#                 distanceSq = np.sum(diff**2)
 
-#                 #
-#                 self.cost[i][j] = distanceSq
-#                 ##print("measure distance", i, j,
-#                 #      predicition.T,  detections[j], distance)
-# #                 except:
-# #                     pass
-#         #print("self.cost calculated", self.cost)
 
 
         # inflate teh cost of values exceeding the threshold
@@ -421,7 +472,7 @@ class Tracker(object):
         if np.sum(del_ii) > 0:  # only when skipped frame exceeds max
             # for id in del_ii:
             #     if id < len(self.activeTracks):
-            #         self.oldTracks.append(self.activeTracks[id])
+            #         self.archiveTracks.append(self.activeTracks[id])
             #         if self.fig is not None:
             #             self.ax.scatter(
             #                 xs=self.activeTracks[id].trace[:, 0], ys=self.activeTracks[id].trace[:, 1], zs=self.activeTracks[id].trace[:, 2], alpha=1)
@@ -452,9 +503,11 @@ class Tracker(object):
                 feat = features.isel(pair_id=un_assigned_detects[i])
             else:
                 feat = None
-            track = Track(detections[un_assigned_detects[i]], feat,
+            size = self._thisDat.area.isel(pair_id=un_assigned_detects[i]).max("camera").values
+            velocityGuess = self.getVelocityFirstGuess(size)
+            track = Track(detections[un_assigned_detects[i]], feat, size,
                           self.trackIdCount, capture_times[un_assigned_detects[i]],
-                          velocityGuess=self.velocityGuess)
+                          velocityGuess=velocityGuess)
             self.trackIdCount += 1
             self.activeTracks.append(track)
             #print("started", track)
@@ -463,7 +516,7 @@ class Tracker(object):
                           pair_ids[un_assigned_detects[i]])[0][0]
             self.lv1track["track_id"].values[pp] = track.track_id
             self.lv1track["track_step"].values[pp] = len(track)
-            self.lv1track["track_velociytGuess"].values[pp, :3] = self.velocityGuess
+            self.lv1track["track_velociytGuess"].values[pp, :3] = velocityGuess
 
                 #print(f"assigned particle {pair_ids[un_assigned_detects[i]]} to NEW track id {track.track_id}")
 
@@ -476,19 +529,21 @@ class Tracker(object):
                     feat = features.isel(pair_id=self.assignment[i])
                 else:
                     feat = None
+                size = self._thisDat.area.isel(pair_id=self.assignment[i]).max("camera").values
+                velocityGuess = self.getVelocityFirstGuess(size)
                 self.activeTracks[i].updateTrack(
-                    detections[self.assignment[i]], feat)
+                    detections[self.assignment[i]], feat, size)
                 # save result
                 pp = np.where(self.lv1track.pair_id ==
                               pair_ids[self.assignment[i]])[0][0]
                 self.lv1track["track_id"].values[pp] = self.activeTracks[i].track_id
                 self.lv1track["track_step"].values[pp] = len(self.activeTracks[i])
-                self.lv1track["track_velociytGuess"].values[pp, :3] = self.velocityGuess
+                self.lv1track["track_velociytGuess"].values[pp, :3] = velocityGuess
 
                 #print(f"assigned particle {pair_ids[self.assignment[i]]} to track id {self.activeTracks[i].track_id}")
             else:
                 # track not found in current frame, use predicted position to identify particle potentially again
-                self.activeTracks[i].updateTrack(None, None)
+                self.activeTracks[i].updateTrack(None, None, None)
 
             if self.max_trace_length is not None:
                 if(len(self.activeTracks[i].trace) > self.max_trace_length):
@@ -497,6 +552,91 @@ class Tracker(object):
                         del self.activeTracks[i].trace[j]
 
             #print(i, "done")
+
+    def updateVelocityFirstGuess(self, capture_times, ff):
+        '''
+        update the first guess based on the previous observations
+        '''
+
+        minTrackLen = 4
+        maxAge = 100 #seconds
+
+        self.velocityGuessXY = self.defaultVelocityGuessXY
+        self.velocityGuessFactor = 4
+
+        # first resteto standard values
+        self.velGuess_slope = _reference_slopes[self.config.visssGen]
+        self.velGuess_intercept = _reference_intercepts[self.config.visssGen]
+
+        if len(self.archiveTrackTimes) > 0:
+
+            nSamples = np.array(self.archiveTrackNSamples[-(self.backSteps*10):])
+            times = np.array(self.archiveTrackTimes[-(self.backSteps*10):])
+            zVels = np.array(self.archiveTrackVelocities)[-self.backSteps*10:,2]
+            sizes = np.array(self.archiveTrackSize[-self.backSteps*10:])
+
+            cond = (
+                (nSamples >= minTrackLen) & 
+                ((capture_times[0]  - times) < np.timedelta64(maxAge, "s")) &
+                (zVels > 0) &  # due to the log scale we can deal only with positive velocities
+                np.isfinite(zVels) &
+                np.isfinite(sizes)
+                )
+            if np.any(cond):
+                zVels = zVels[cond][-self.backSteps:]
+                sizes = sizes[cond][-self.backSteps:]
+
+                if logDebug: log.debug(f"using {len(sizes)} particle tracks")
+
+                # add default values in case too few data points
+                if len(zVels) < self.backStepsMin:
+                    zVels = np.concatenate((zVels,self.vref))[:self.backStepsMin]
+                    sizes = np.concatenate((sizes,self.Dref))[:self.backStepsMin]
+
+                # lr = scipy.stats.linregress(np.log10(sizes), np.log10(zVels))
+                # self.velGuess_slope = lr.slope
+                # self.velGuess_intercept = lr.intercept
+                self.velGuess_slope, self.velGuess_intercept = tools.linreg(np.log10(sizes), np.log10(zVels))
+
+                if  np.isnan(self.velGuess_slope):
+                    log.error("nan result of velocity size fit!")
+                    raise ValueError
+                if logDebug: log.debug(f"fit results in slope {self.velGuess_slope} and intercept {self.velGuess_intercept}")
+
+                #print(repr(sizes))
+                #print(repr(zVels))
+
+                # if ff%10 == 0:
+                #     import matplotlib.pylab as plt
+                #     plt.figure()
+                #     plt.plot(np.log10(sizes), np.log10(zVels),".")
+                #     plt.plot(np.log10(np.arange(100)), self.velGuess_slope*np.log10(np.arange(100))+self.velGuess_intercept)
+                #     from IPython import display
+                #     display.display(plt.gcf())
+
+                # implement size dependency here!
+                xVel, yVel = np.nanmean(np.array(self.archiveTrackVelocities)[:,:2], axis=0)
+                self.velocityGuessXY = [xVel, yVel] #, np.mean(zVels, axis=0)
+                if logDebug: log.debug(self.velocityGuessXY)
+                self.velocityGuessFactor = 1
+
+        self.lastTime = capture_times[0]
+        self.lastFrame = ff
+
+        return 
+
+    def getVelocityFirstGuess(self, size):
+
+        '''get first guess of particle velocity based on the size
+        '''
+
+        velocityGuessZ = self.velGuess_slope * np.log10(size) + self.velGuess_intercept
+        velocityGuessZ = 10**velocityGuessZ
+        velocityGuess = self.velocityGuessXY + [velocityGuessZ]
+        assert len(velocityGuess) == 3
+        assert not np.any(np.isnan(velocityGuess))
+        return velocityGuess
+
 
     def reset(self):
         'reset everything'
@@ -507,13 +647,34 @@ class Tracker(object):
                 self.ax.scatter(
                     xs=self.activeTracks[ii].trace[:, 0], ys=self.activeTracks[ii].trace[:, 1], zs=self.activeTracks[ii].trace[:, 2], alpha=1)
 
-        self.oldTracks += self.activeTracks
+        # self.archiveTracks += self.activeTracks
+        self.archiveTrackTimes += [t.startTime for t in self.activeTracks]
+        self.archiveTrackNSamples += [t.length for t in self.activeTracks]
+        self.archiveTrackSize += [t.meanSize for t in self.activeTracks]
+        self.archiveTrackVelocities += [t.predictedVel for t in self.activeTracks]
+
+        self.archiveTrackTimes = self.archiveTrackTimes[-(self.backSteps*10):]
+        self.archiveTrackNSamples = self.archiveTrackNSamples[-(self.backSteps*10):]
+        self.archiveTrackSize = self.archiveTrackSize[-(self.backSteps*10):]
+        self.archiveTrackVelocities = self.archiveTrackVelocities[-(self.backSteps*10):]
+
+
         self.activeTracks = []
         self.assignment = []
 
     def removeTracks(self, del_ii):
         del_ii = np.where(del_ii)[0]
-        self.oldTracks += [i for j, i in enumerate(self.activeTracks) if j in del_ii]
+        self.archiveTrackTimes += [i.startTime for j, i in enumerate(self.activeTracks) if j in del_ii]
+        self.archiveTrackNSamples += [i.length for j, i in enumerate(self.activeTracks) if j in del_ii]
+        self.archiveTrackSize += [i.meanSize for j, i in enumerate(self.activeTracks) if j in del_ii]
+        self.archiveTrackVelocities += [i.predictedVel for j, i in enumerate(self.activeTracks) if j in del_ii]
+
+        self.archiveTrackTimes = self.archiveTrackTimes[-(self.backSteps*10):]
+        self.archiveTrackNSamples = self.archiveTrackNSamples[-(self.backSteps*10):]
+        self.archiveTrackSize = self.archiveTrackSize[-(self.backSteps*10):]
+        self.archiveTrackVelocities = self.archiveTrackVelocities[-(self.backSteps*10):]
+
+
         self.activeTracks = [i for j, i in enumerate(self.activeTracks) if j not in del_ii]
         self.assignment = [i for j, i in enumerate(self.assignment) if j not in del_ii]
         return
@@ -525,13 +686,14 @@ def trackParticles(fnameLv1Detect,
                    dist_thresh=2, 
                    max_frames_to_skip=1,
                    max_trace_length=None,
-                   velocityGuess=[0, 0, 50],
+                   velocityGuessXY=[0, 0],#, 50],
                    maxIter = 1e30,
                    featureVariance = {"distance":100**2, 'Dmax': 100  },
                    minMatchScore=1e-3,
-                   forceMatchUpdate=True,
+                   doMatchIfRequired=False,
+                   writeNc=True,
+                   showFits=False,
                    ):
-
 
     if type(config) is str:
         config = tools.readSettings(config)
@@ -541,22 +703,38 @@ def trackParticles(fnameLv1Detect,
     fnameLv1Match = ffl1.fname["level1match"]
     fnameTracking = ffl1.fname["level1track"]
 
-    if (not forceMatchUpdate) and os.path.isfile(fnameLv1Match):
+    if os.path.isfile(fnameLv1Match):
         lv1match = xr.open_dataset(fnameLv1Match)
-    else:
+    elif os.path.isfile('%s.nodata' % fnameLv1Match) or os.path.isfile('%s.broken.txt' % fnameLv1Match):
+        with tools.open2(f"{fnameTracking}.nodata", "w") as f:
+            f.write("no data, lv1match nodata or broken")
+        log.error(f"NO DATA {fnameTracking}")
+        return None, fnameTracking
+    elif ( doMtachIfRequired):
         log.info("need to create lv1match data")
         _, lv1match, _, _ = matching.matchParticles(fnameLv1Detect, config, writeNc=False)
 
         if lv1match is None:
-            with tools.open2(f"{fnameTracking}.nodata", "w") as f:
-                f.write("no data")
+            with tools.open2(f"{fnameTracking}.broken.txt", "w") as f:
+                f.write("no data, lv1match processing failed")
             log.error(f"NO DATA {fnameTracking}")
             return None, fnameTracking
+    else:
+        log.error(f"NO DATA lv1match yet {fnameTracking}")
+        return None, fnameTracking
+
 
     matchCond = (lv1match.matchScore >= minMatchScore).values
+
+    if matchCond.sum() == 0:
+        log.error("matchCond applies to ALL data")
+        with tools.open2(f"{fnameTracking}.nodata", "w") as f:
+            f.write("no data, matchCond applies to ALL data")
+        log.error(f"NO DATA {fnameTracking}")
+        return None, fnameTracking
+
     log.info(tools.concat("matchCond applies to", (matchCond.sum()/len(matchCond))*100, "% of data"))
     lv1match = lv1match.isel(pair_id=matchCond)
-
 
     track = Tracker(lv1match, 
         config,
@@ -564,16 +742,18 @@ def trackParticles(fnameLv1Detect,
         dist_thresh=dist_thresh, 
         max_frames_to_skip=max_frames_to_skip, 
         max_trace_length=max_trace_length,
-        velocityGuess = velocityGuess,
+        velocityGuessXY = velocityGuessXY,
         maxIter = maxIter,
         featureVariance = featureVariance
         )
+    
     lv1track = track.updateAll()
 
 
 
-    lv1track = tools.finishNc(lv1track)
-    tools.to_netcdf2(lv1track, fnameTracking)
+    lv1track = tools.finishNc(lv1track, config.site, config.visssGen)
+    if writeNc:
+        tools.to_netcdf2(lv1track, fnameTracking)
     print("DONE", fnameTracking)
 
     return lv1track, fnameTracking

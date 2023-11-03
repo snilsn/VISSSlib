@@ -26,12 +26,16 @@ import skimage
 import flatten_dict
 from dask.diagnostics import ProgressBar
 
+
+
 from . import files
 from . import fixes
 from . import __version__, __versionFull__
 
 import logging
 log = logging.getLogger(__name__)
+
+from numba import jit
 
 
 #settings that stay mostly constant
@@ -398,6 +402,7 @@ def estimateCaptureIdDiff(leaderFile, followerFiles, config, dim, concat_dim="ca
     if "makeCaptureTimeEven" in config.dataFixes:
         #does not make sense for leader
         # redo capture_time based on first time stamp...
+        # requires trust in capture_id 
         followerDat = fixes.makeCaptureTimeEven(followerDat, config, dim)
 
     idDiff =  estimateCaptureIdDiffCore(leaderDat, followerDat, dim, nPoints = nPoints, maxDiffMs = maxDiffMs)
@@ -624,6 +629,9 @@ def finishNc(dat, site, visssGen, extra={}):
     return dat
 
 def getPrevRotationEstimate(datetime64, key, config):
+    '''
+    Extract reotation first guess from config structure
+    '''
 
     rotate_all = {np.datetime64(datetime.datetime.strptime(d.ljust(15, "0"), "%Y%m%d-%H%M%S")):r[key] for d,r in config.rotate.items()}
     rotTimes = np.array(list(rotate_all.keys()))
@@ -772,3 +780,30 @@ def to_netcdf2(dat, file, **kwargs):
         else:
                 res = dat.to_netcdf(file, **kwargs)
     return res
+
+
+@jit(nopython=True)
+def linreg(x, y):
+    """
+    Summary
+        Linear regression of y = ax + b
+    Usage
+        real, real, real = linreg(list, list)
+    Returns coefficients to the regression line "y=ax+b" from x[] and y[]
+
+    Turns out to be a lot faster than  scipy and numpy code when using numba (1.7 us vs 25 us)
+    """
+    mean_x = np.mean(x)
+    mean_y = np.mean(y)
+    n = len(x)
+    #formula to calculate m : x-mean_x*y-mean_y/ (x-mean_x)^2
+    num = 0
+    denom = 0
+    for i in range(n):
+      num += (x[i] - mean_x) * (y[i] - mean_y)
+      denom += (x[i] - mean_x) ** 2
+    slope = num/denom
+    
+    #calculate c = y_mean - m * mean_x / n
+    intercept = (mean_y - slope * mean_x)
+    return slope, intercept

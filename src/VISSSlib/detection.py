@@ -31,6 +31,11 @@ import logging
 log = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+
+#for performance
+logDebug = log.isEnabledFor(logging.DEBUG)
+
+
 # class movementDetection(object):
 #     def __init__(self, VideoReader, window=21, indices = None, threshold = 20, height_offset = 64):
 #         '''
@@ -548,8 +553,9 @@ class detectedParticles(object):
                 # log.info("particles.update")
                 # print("TEST4Canny", self.lastParticle.perimeter, self.lastParticle.perimeterEroded, self.lastParticle.perimeterEroded/self.lastParticle.perimeter)
 
-                if ("result" in testing) or ("resultAddedOnly" in testing):
+                if ("result" in testing) or ("resultAddedOnly" in testing) or ("report" in testing):
                     print(self.lastParticle)
+                if ("result" in testing) or ("resultAddedOnly" in testing):
                     self.frame4drawing = self.lastParticle.drawContour(
                         self.frame4drawing)
                     self.frame4drawing = self.lastParticle.annotate(

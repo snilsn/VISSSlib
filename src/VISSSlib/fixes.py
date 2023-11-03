@@ -79,10 +79,15 @@ def fixMosaicTimeL1(dat1, config):
 
 def captureIdOverflows(dat, config, storeOrig=True, idOffset=0, dim="pid"):
     '''
-    For M1280, capture_id is 16 bit integer and does overflow very few minutes
+    For M1280, capture_id is 16 bit integer and does overflow every few minutes
     fixed in raw data in version 0.3  06/2022
     '''
+    log.info("fixing captureIdOverflows")
     maxInt = 65535
+
+    #if someone already messed with the data, revert it 
+    if "capture_id_orig" in dat.keys():
+        dat["capture_id"] = deepcopy(dat["capture_id_orig"])
 
     if storeOrig:
         dat["capture_id_orig"] = deepcopy(dat["capture_id"])
@@ -123,11 +128,12 @@ def captureIdOverflows(dat, config, storeOrig=True, idOffset=0, dim="pid"):
         raise RuntimeError("was einfallen lassen...")
 
     assert np.all(dat.capture_id.diff(dim)>=0)
-    print(f"captureIdOverflows: expecting {nStepsExpected} jumps, found and fixed {(stepsObserved).sum()} jumps")
+    log.info(f"expecting {nStepsExpected} jumps, found and fixed {(stepsObserved).sum().values} jumps")
 
     return dat
 
 def revertIdOverflowFix(dat):
+    log.info("reverting revertIdOverflowFix")
     dat = dat.rename({"capture_id": "capture_id_fixed"})
     dat = dat.rename({"capture_id_orig": "capture_id"})
     return dat
@@ -145,13 +151,16 @@ def removeGhostFrames(metaDat, config, intOverflow=True, idOffset = 0, fixIterat
     suspicous position
     '''
 
+    log.info("fixing removeGhostFrames")
+
     beyondRepair = False
     metaDat["capture_id_orig"] = deepcopy(metaDat["capture_id"])
 
     metaDat["capture_id"] = metaDat["capture_id"] + idOffset
 
     if intOverflow:
-        metaDat = fixIntOverflow(metaDat, storeOrig=False, idOffset=0)
+        metaDat = captureIdOverflows(metaDat, config, dim="capture_time", storeOrig=False)
+        
 
     # ns are assumed
     assert metaDat["capture_time"].dtype == '<M8[ns]'
@@ -170,7 +179,7 @@ def removeGhostFrames(metaDat, config, intOverflow=True, idOffset = 0, fixIterat
         # the last loop is only for testng 
         if nn == fixIteration:
             if nGroups != 0:
-                print("FILE BROKEN BEYOND REPAIR")
+                log.error("FILE BROKEN BEYOND REPAIR")
                 droppedFrames += len(metaDat.capture_time)-jumpsII[0]
                 #remove fishy data and everything after
                 metaDat = metaDat.isel(capture_time = slice(0,jumpsII[0]))
@@ -189,9 +198,10 @@ def removeGhostFrames(metaDat, config, intOverflow=True, idOffset = 0, fixIterat
         droppedFrames += len(jumpsII)
 
         if nGroups > 0:
-            print(f"ghost iteration {nn}: found {nGroups} ghost frames at {lastII.tolist()}")
+            log.warn(f"ghost iteration {nn}: found {nGroups} ghost frames at {lastII.tolist()}")
         else:
             break
+
 
     return metaDat, droppedFrames, beyondRepair
 
@@ -201,7 +211,8 @@ def delayedClockReset(metaDat, config):
     be at least 10s to make sure we look at the right problem
     '''
     if  (metaDat.capture_time.diff() <= -10e6).any(): 
-    
+        log.info("fixing detected delayedClockReset")
+
         resetII = np.where((metaDat.capture_time.diff() < -10e6))[0]
         assert len(resetII) == 1, "len(resetII) %i"%len(resetII)
         resetII = resetII[0] # +1 already applied by pandas!
@@ -231,7 +242,7 @@ def makeCaptureTimeEven(datF, config, dim="capture_time"):
     we care about this only for the capture id offset estimation, so make 
     special variable
     '''
-    print("making follower times even")
+    log.info("making follower times even")
 
     if len(datF[dim])<=1:
         print("makeCaptureTimeEven: too short, nothing to do")

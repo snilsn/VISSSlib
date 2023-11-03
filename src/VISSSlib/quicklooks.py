@@ -1043,7 +1043,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     assert len(fnames1DL)>0
     assert len(fnames1DF)>0
 
-    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position_3D", "position_upperLeft","Droi", "camera_theta", "camera_phi", "camera_Ofz"])        
+    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position_centroid", "position_upperLeft","Droi", "camera_theta", "camera_phi", "camera_Ofz"])        
     datM = datMfull.isel(fpair_id=(datMfull.matchScore >= minMatchScore))
 
     if len(datM.fpair_id) <= 1:
@@ -1084,7 +1084,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     _, _ = plot2dhist(matchScore, datMfull.capture_time, ax[2], cax[2], bins, ylabel="match score [-]", cbarlabel="%")
     ax[2].axhline(minMatchScore)
     
-    zDiff = datM.position_3D.sel(dim3D=["z", "z_rotated"]).diff("dim3D").values.squeeze()
+    zDiff = datM.position_centroid.sel(dim3D=["z", "z_rotated"]).diff("dim3D").values.squeeze()
     _, rs = plotVar(zDiff, datM.capture_time, ax[3], "z difference [px]", axhline=0, resample=resample)
     cax[3].axis('off')
     

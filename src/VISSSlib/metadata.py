@@ -24,6 +24,10 @@ import logging
 log = logging.getLogger(__name__)
 
 
+#for performance
+logDebug = log.isEnabledFor(logging.DEBUG)
+
+
 from . import __version__
 from . import fixes
 from . import files
@@ -31,6 +35,7 @@ from . import detection
 from . import tools
 
 
+warnings.filterwarnings("ignore", category=UserWarning)
 
 '''
 Mosaic problems with metadata:
@@ -38,7 +43,8 @@ Mosaic problems with metadata:
 * capture_id overflows at 65535 - relatively easy to fix
 * capture_time drifts becuase it is only reset when camera starts
 * record_time is assigned in the processing queue, can be a couple of seconds 
-  off if queue is long
+  off if queue is long. more importantly, it appears to drift sometimes, a stable 
+  capture_id offset cannot be always obtained... 
 * flipped capture_time: once in a while timestamps of two consecutive frames are 
   flipped. Not clear whetehr frame itself is also flipped. So far only 
   observed for follower. solution: remove flipped frames.
@@ -129,18 +135,18 @@ def getMetaData(fnames, camera, config, stopAfter=-1, detectMotion4oldVersions=F
         droppedFrames += len(droppedIndices)
         # end fix time stamps are jumping around
 
-        
-        if "removeGhostFrames" in config.fixes:
-            #### fix capture_id ####
-            metaDat, droppedFrames1, beyondRepair = fixes.removeGhostFrames(metaDat, config, intOverflow=True, idOffset=idOffset, fixIteration=fixIteration)
-            droppedFrames += droppedFrames1
+        # unclear whether it works, MX oct 2023
+        # if "removeGhostFrames" in config.dataFixes:
+        #     #### fix capture_id ####
+        #     metaDat, droppedFrames1, beyondRepair = fixes.removeGhostFrames(metaDat, config, intOverflow=True, idOffset=idOffset, fixIteration=fixIteration)
+        #     droppedFrames += droppedFrames1
             #### end fix capture_id ####
         # elif config.model == "M1280": # does not really work with all the data gaps...
         #     metaDat = fixes.fixIntOverflow(metaDat,idOffset=idOffset)
 
-        if "makeCaptureTimeEven" in config.fixes:
-            if camera == config.follower:
-                metaDat = makeCaptureTimeEven(metaDat, config)
+        # if "makeCaptureTimeEven" in config.fixes:
+        #     if camera == config.follower:
+        #         metaDat = makeCaptureTimeEven(metaDat, config)
 
 
     return metaDat, droppedFrames, beyondRepair
@@ -613,6 +619,8 @@ def getEvents(fnames0, config, fname0status=None):
 
         statusDat = pd.read_csv(fname0status, names=["file_starttime", "timestamp","event","user"],index_col=0)
         statusDat.index = pd.to_datetime(statusDat.index, format='%Y-%m-%d %H:%M:%S.%f')
+        #remove faulty data
+        statusDat = statusDat.iloc[~np.isnan(statusDat.index)]
         statusDat["event"] = [f"{e.lstrip()}-{u.lstrip()}" for e, u in zip(statusDat.event, statusDat.user)]
         statusDat = statusDat["event"]
         statusDat = xr.Dataset({"event":xr.DataArray(statusDat)})
@@ -636,8 +644,8 @@ def getEvents(fnames0, config, fname0status=None):
     if (len(fnames0) > 0) and (config.site == "mosaic"):
 
         #becuase this is the only time we use _softwareStarttimes files, name is hardcoded here:
-        path = "/".join(fname0.split("/")[:-6])
-        restartFile = f'{path}/metaEvents/{"_".join(fname0.split("/")[-1].split("_")[:-1])}_softwareStarttimes.nc'
+        path = config.pathOut.format(level="metaEvents", version=__version__)
+        restartFile = f'{path}/{"_".join(fname0.split("/")[-1].split("_")[:-1])}_softwareStarttimes.nc'
         restartDat = xr.open_dataset(restartFile)
         case = fname0.split("/")[-1].split("_")[-1].split("-")[0]
         startTime = np.datetime64(f"{case[:4]}-{case[4:6]}-{case[6:8]}") 

@@ -387,7 +387,7 @@ def retrieveRotation(dat3, x_ap, x_cov_diag, y_cov_diag, config, verbose=False):
         forwardKwArgs=forwardKwArgs, verbose=verbose
         )
 
-    oe.doRetrieval()
+    oe.doRetrieval(maxIter=30)
 
     assert not np.any(np.isnan(oe.x_op))
 
@@ -831,6 +831,7 @@ def matchParticles(fnameLv1Detect, config,
         singleParticleFramesOnly=False,
         doRot = False,
         writeNc = True,
+        offsetsOnly=False
     ):
 
     if type(config) is str:
@@ -1040,6 +1041,17 @@ def matchParticles(fnameLv1Detect, config,
 
         if maxDiffMs == "config":
             maxDiffMs = 1000/config.fps/2
+
+        # if (minDMax4rot > 0):
+        #     filt = (leader1D.Dmax>minDMax4rot).values
+        #     log.info(tools.concat("DMax capture id filter leader:", minDMax4rot, np.sum(filt)/len(leader1D.fpid) * 100,"%"))
+        #     leader1D = leader1D.isel(fpid=filt)
+
+        # if (minDMax4rot > 0):
+        #     filt = (follower1D.Dmax>minDMax4rot).values
+        #     log.info(tools.concat("DMax capture id filter follower:", minDMax4rot, np.sum(filt)/len(follower1D.fpid) * 100,"%"))
+        #     follower1D = follower1D.isel(fpid=filt)
+
         try:
             captureIdOffset1, nMatched1 = tools.estimateCaptureIdDiffCore(leader1D, follower1D, "fpid", maxDiffMs=maxDiffMs, nPoints=nPoints, timeDim="capture_time")
         except Exception as e:
@@ -1068,11 +1080,22 @@ def matchParticles(fnameLv1Detect, config,
 
 
         # In theory, capture time is much better, but there are cases were it is off. Try to identify them by chgecking whether record_time yielded more matches.
-        if nMatched2 > nMatched1:
+        # for mosaic, capture time is pretty much useless!
+        if (nMatched2 > nMatched1) or (config.site == "mosaic"):
+
+            if (nMatched2 == -99):
+                log.error(tools.concat("record_id based diff estiamtion failed", fname1Match, tt, FR1, FR2))
+                continue
+
             captureIdOffset = captureIdOffset2
+            nMatched = nMatched2
             log.info(tools.concat(f"Taking offset from record_time {(captureIdOffset2, nMatched2)} intead of capture_time {(captureIdOffset1, nMatched1)}"))
         else:
             captureIdOffset = captureIdOffset1
+            nMatched = nMatched1
+
+        if offsetsOnly:
+            return captureIdOffset, nMatched
 
         mu = {
             "Z" : 0,

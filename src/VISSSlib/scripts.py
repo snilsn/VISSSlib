@@ -9,6 +9,7 @@ import collections
 import logging
 import time
 import shlex
+import portalocker
 from functools import partial
 from itertools import chain
 
@@ -431,9 +432,9 @@ def loopCreateLevel2Worker(day, matchTrack="match", settings=None, skipExisting=
     elif skipExisting and ( os.path.isfile('%s.nodata' % lv2File)):
         # log.info('output exists %s %s' % (fname, lv2File))
         return 0
-    elif skipExisting and (os.path.isfile('%s.broken.txt' % lv2File)):
-        log.error('output already broken %s.broken.txt' % (lv2File))
-        return 1
+    # elif skipExisting and (os.path.isfile('%s.broken.txt' % lv2File)):
+    #     log.error('output already broken %s.broken.txt' % (lv2File))
+    #     return 1
     elif skipExisting and ( os.path.isfile(tmpFile)):
         log.info('output processing %s' % (lv2File))
         return 0
@@ -660,38 +661,43 @@ def loopCreateLevel1trackWorker(fnameL1detect, settings, skipExisting=True, nCPU
 def _runCommand(command, tmpFile, fOut, stdout=subprocess.DEVNULL):
     success = True
     # with statement extended to avoid race conditions
-    with open(tmpFile, 'w') as f:
-        f.write('PID & Host: %i %s\n' % (os.getpid(), socket.gethostname()))
-        f.write("Command: %s\n"%command)
-        f.write("Outfile: %s\n"%fOut)
-        f.write("#########################\n")
-        f.flush()
-        log.info(f"written {tmpFile} in {os.getcwd()}")
-        log.info(command)
+    try:
+        with portalocker.Lock(tmpFile, timeout=0) as f:
+            f.write('PID & Host: %i %s\n' % (os.getpid(), socket.gethostname()))
+            f.write("Command: %s\n"%command)
+            f.write("Outfile: %s\n"%fOut)
+            f.write("#########################\n")
+            f.flush()
+            log.info(f"written {tmpFile} in {os.getcwd()}")
+            log.info(command)
 
-        #proc = subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
-        proc = subprocess.Popen(command, shell=True, stdout=stdout, stderr=subprocess.PIPE)
+            #proc = subprocess.Popen(shlex.split(f'bash -c "{command}"'), stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
+            proc = subprocess.Popen(command, shell=True, stdout=stdout, stderr=subprocess.PIPE)
 
-        # Poll process for new output until finished
-        if proc.stdout is not None:
-            for line in proc.stdout: 
+            # Poll process for new output until finished
+            if proc.stdout is not None:
+                for line in proc.stdout: 
+                    line = line.decode()
+                    log.info(line)
+                    f.write(line)
+                    f.flush()
+            for line in proc.stderr: 
                 line = line.decode()
-                log.info(line)
+                log.error(line)
                 f.write(line)
                 f.flush()
-        for line in proc.stderr: 
-            line = line.decode()
-            log.error(line)
-            f.write(line)
-            f.flush()
+        
+            proc.wait()
+            exitCode = proc.returncode
+            if exitCode != 0:
+                success = False
+                log.error(f"{fOut} BROKEN {exitCode}")
+            else:
+                log.info(f"{fOut} SUCCESS {exitCode}")
     
-        proc.wait()
-        exitCode = proc.returncode
-        if exitCode != 0:
-            success = False
-            log.error(f"{fOut} BROKEN {exitCode}")
-        else:
-            log.info(f"{fOut} SUCCESS {exitCode}")
+    except portalocker.LockException:
+        success = False
+        return success
 
     if not success:
         shutil.copy(tmpFile, '%s.broken.txt' % tmpFile)
@@ -977,7 +983,7 @@ def reportLastFiles(settings, writeFile=True, nameFile=False, products = ["level
     output += "\n"
 
     if writeFile:
-        fOut = f"{config['pathQuicklooks'].format(version=f1.version,site=config['site'], level='')}/{'productReport'}_{config['site']}.html"
+        fOut = f"{config['pathQuicklooks'].format(version=ff.version,site=config['site'], level='')}/{'productReport'}_{config['site']}.html"
         with open(fOut, "w") as f:
             f.write("<html><pre>\n")
             f.write(output)

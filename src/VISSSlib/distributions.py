@@ -15,12 +15,18 @@ import dask
 import dask.array
 from tqdm import tqdm
 from dask.diagnostics import ProgressBar
+import vg
 
 import functools
 import warnings
 import logging
 log = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+
+#for performance
+logDebug = log.isEnabledFor(logging.DEBUG)
+
 
 def _preprocess(dat):
 
@@ -261,13 +267,13 @@ def createLevel2(
     lv2Dat.N0_star_43.attrs.update(dict(units='1/m^3/m', long_name='PSD scaling parameter based on the third and fourth PSD moments'))
     lv2Dat.Ntot.attrs.update(dict(units='1/m^3', long_name='Integral over size distribution'))
     lv2Dat.PSD.attrs.update(dict(units='1/m^3/m', long_name='Particle size distribution'))
-    lv2Dat.angle_dist.attrs.update(dict(units='deg', long_name='angle dsitribution'))
+    lv2Dat.angle_dist.attrs.update(dict(units='deg', long_name='angle distribution'))
     lv2Dat.angle_mean.attrs.update(dict(units='deg', long_name='mean angle'))
     lv2Dat.angle_std.attrs.update(dict(units='deg', long_name='standard deviation angle'))
-    lv2Dat.area_dist.attrs.update(dict(units='m^2', long_name='area dsitribution'))
+    lv2Dat.area_dist.attrs.update(dict(units='m^2', long_name='area distribution'))
     lv2Dat.area_mean.attrs.update(dict(units='m^2', long_name='mean area'))
     lv2Dat.area_std.attrs.update(dict(units='m^2', long_name='standard deviation area'))
-    lv2Dat.aspectRatio_dist.attrs.update(dict(units='-', long_name='aspectRatio dsitribution'))
+    lv2Dat.aspectRatio_dist.attrs.update(dict(units='-', long_name='aspectRatio distribution'))
     lv2Dat.aspectRatio_mean.attrs.update(dict(units='-', long_name='mean aspect ratio'))
     lv2Dat.aspectRatio_std.attrs.update(dict(units='-', long_name='standard deviation aspect ratio'))
     lv2Dat.blockedPixelRatio.attrs.update(dict(units='-', long_name='ratio of frames rejected due to blocked image filter'))
@@ -278,7 +284,7 @@ def createLevel2(
     lv2Dat.matchScore_mean.attrs.update(dict(units='-', long_name='mean camera match score'))
     lv2Dat.matchScore_std.attrs.update(dict(units='-', long_name='standard deviation camera match score'))
     lv2Dat.obs_volume.attrs.update(dict(units='m^3', long_name='obs_volume'))
-    lv2Dat.perimeter_dist.attrs.update(dict(units='m', long_name='perimeter dsitribution'))
+    lv2Dat.perimeter_dist.attrs.update(dict(units='m', long_name='perimeter distribution'))
     lv2Dat.perimeter_mean.attrs.update(dict(units='m', long_name='mean perimeter'))
     lv2Dat.perimeter_std.attrs.update(dict(units='m', long_name='standard deviation perimeter'))
     lv2Dat.processingFailed.attrs.update(dict(units='-', long_name='flag for faild processing'))
@@ -293,9 +299,12 @@ def createLevel2(
 
         lv2Dat.track_length_mean.attrs.update(dict(units='# frames', long_name='mean track_length'))
         lv2Dat.track_length_std.attrs.update(dict(units='# frames', long_name='standard deviation track_length'))
-        lv2Dat.velocity_dist.attrs.update(dict(units='m/s', long_name='velocity dsitribution'))
+        lv2Dat.velocity_dist.attrs.update(dict(units='m/s', long_name='velocity distribution'))
         lv2Dat.velocity_mean.attrs.update(dict(units='m/s', long_name='mean velocity'))
         lv2Dat.velocity_std.attrs.update(dict(units='m/s', long_name='standard deviation velocity'))
+        lv2Dat.track_angle_dist.attrs.update(dict(units='deg', long_name='track_angle distribution to 0,0,1 vector'))
+        lv2Dat.track_angle_mean.attrs.update(dict(units='deg', long_name='mean track_angle to 0,0,1 vector'))
+        lv2Dat.track_angle_std.attrs.update(dict(units='deg', long_name='standard deviation track_angle to 0,0,1 vector'))
         lv2Dat.nParticles.attrs.update(dict(units='-', long_name='number of observed unique particles'))
 
 
@@ -425,6 +434,9 @@ def createLevel2part(
               lv2File)
         return None   
 
+    log.info("loading data")
+    #the following code is much faster with a loaded netcdf object
+    level1dat.load()
 
     if sublevel == "match":
         log.info(f"estimate camera mean values")
@@ -461,75 +473,24 @@ def createLevel2part(
 
     elif sublevel == "track":
 
-        log.warning("make first guess smarter by including size dependence!")
-
-        log.info(f"reshape tracks")
-
-        #go from pair_id to track_id and put observations along same track into new track_step dimension
-        track_mi = pn.MultiIndex.from_arrays((level1dat.track_id.values,level1dat.track_step.values), names=["track_id","track_step"])
-        level1dat["track_mi"] = xr.DataArray(track_mi, coords=[level1dat.pair_id])
-        level1dat = level1dat.swap_dims(pair_id="track_mi")
-
-        #this costs a lot of memeory but I do not know a better way
-        level1dat_time = level1dat.unstack("track_mi")
-        #promote capture_time to coordimnate for later
-        level1dat_time = level1dat_time.assign_coords(time=xr.DataArray(level1dat_time.capture_time.isel(camera=0,track_step=0).values, coords=[level1dat_time.track_id]))
-
-        #cut tracks longer than 40 elements to save memory!
-        if len(level1dat_time.track_step) >40:
-            log.info(f"truncating {100*level1dat_time.Dmax.isel(camera=0, track_step=40).notnull().sum().values/len(level1dat_time.track_id)} % tracks")
-            level1dat_time = level1dat_time.isel(track_step=slice(40))
-
-
-        log.info(f"estimate track mean values")
-        #fix order
-        level1dat_4trackAve = level1dat_time.transpose(*["track_id", "track_step", "camera" , "dim3D","fitMethod","camera_rotation"])
-        level1dat_4trackAve = level1dat_4trackAve[['Dmax', 'area', 'matchScore', 'aspectRatio', 'angle', 'perimeter', 'position3D_centroid', 'capture_time']]
-
-        # add velocities
-        distSpace = level1dat_4trackAve.position3D_centroid.diff("track_step", label="upper")
-        distTime = level1dat_4trackAve.capture_time.isel(camera=0, drop=True).diff("track_step", label="upper")
-        #to fraction of seconds
-        distTime = distTime/np.timedelta64(1,"s")
-
-        #velocity in px/s
-        level1dat_4trackAve["velocity"] = distSpace/distTime
-        del level1dat_4trackAve["capture_time"]
-
-        #save for later
-        individualDataPoints = level1dat_4trackAve.track_id
-        individualDataPoints.name = "nParticles"
-
-        #diff output is one element shorter, so add the mean value again
-        # causes problems and advantage is not clear...
-        #level1dat_4trackAve["velocity"][dict(track_step=0)] = level1dat_4trackAve["velocity"].mean("track_step")
-        del level1dat_4trackAve[ 'position3D_centroid']
-
-        # estimate max, mean and min for tracks by reducing track_step
-        trackOps = ["max", "mean", "min", "std"]
-        level1dat_trackAve = (level1dat_4trackAve.max(["track_step", "camera"]), level1dat_4trackAve.mean(["track_step", "camera"]), level1dat_4trackAve.min(["track_step", "camera"]), level1dat_4trackAve.std(["track_step", "camera"]))
-        level1dat_trackAve = xr.concat(level1dat_trackAve, dim="cameratrack")
-        level1dat_trackAve["cameratrack"] = trackOps
-            # position_3D is the same for all
-
-        # use Dmax as arbitrary variable with only one dimension
-        level1dat_trackAve["track_length"] = level1dat_4trackAve.Dmax.isel(camera=0, drop=True).notnull().sum("track_step")
+        level1dat_trackAve, level1dat_track2D, level1dat_time, individualDataPoints = getPerTrackStatitics(level1dat)
 
         # becuase there are no weighted groupby operations, we have to improvise and broadcast the results
         # again to a shape including track_step - then the mean etc. values are dublicated as per track length 
         # and the result is weighted when averaging with timme
         data_vars = ['Dmax', 'area', 'matchScore', 'aspectRatio', 'angle', 'perimeter', 'velocity']
         for data_var in data_vars:
-            level1dat_trackAve[data_var] = level1dat_trackAve[data_var].broadcast_like(level1dat_4trackAve.isel(camera=0, drop=True)[data_var])
+            level1dat_trackAve[data_var] = level1dat_trackAve[data_var].broadcast_like(level1dat_track2D.isel(camera=0, drop=True)[data_var])
 
         #add back the original individual values (mainly for testing)
-        #level1dat_trackAve = xr.concat((level1dat_trackAve,level1dat_4trackAve.expand_dims(track=["individual"])), dim="cameratrack")
+        #level1dat_trackAve = xr.concat((level1dat_trackAve,level1dat_track2D.expand_dims(track=["individual"])), dim="cameratrack")
 
         log.info(f"reshape track data again")
         #call me crazy but now that we have mean track properties broadcasted to every particle we can go back to pair_id!
         level1dat_4timeAve = level1dat_trackAve.stack(pair_id=("track_id","track_step"))
+
         # make sure only data is used within original track length
-        notNull = level1dat_4trackAve.Dmax.isel(camera=0, drop=True).notnull().stack(pair_id=("track_id","track_step")).compute()
+        notNull = level1dat_track2D.Dmax.isel(camera=0, drop=True).notnull().stack(pair_id=("track_id","track_step")).compute()
         level1dat_4timeAve = level1dat_4timeAve.isel(pair_id=notNull)
         #multiindex causes trouble below, so just swap with time
 
@@ -544,9 +505,9 @@ def createLevel2part(
     #clean up 
     level1dat.close()
 
-    log.info(f"load data")
-    #turned out, it runs about 3 to 4 times faster when NOT using dask beyond this point. 
-    level1dat_4timeAve = level1dat_4timeAve.load()
+    #log.info(f"load data")
+    ##turned out, it runs about 3 to 4 times faster when NOT using dask beyond this point. 
+    #level1dat_4timeAve = level1dat_4timeAve.load()
 
     log.info(f"add additonal variables")
     level1dat_4timeAve = addPerParticleVariables(level1dat_4timeAve)
@@ -735,6 +696,76 @@ def addVariables(calibDat, case, config, timeIndex, timeIndex1, sublevel, blocke
 
     return calibDatFilt
 
+
+
+def getPerTrackStatitics(level1dat):
+
+    '''
+    go from particle statitics to per track statisticks with the mean/min/max/std along cameras and track
+    '''
+    log.info(f"reshape tracks")
+
+    #go from pair_id to track_id and put observations along same track into new track_step dimension
+    track_mi = pn.MultiIndex.from_arrays((level1dat.track_id.values,level1dat.track_step.values), names=["track_id","track_step"])
+    level1dat["track_mi"] = xr.DataArray(track_mi, coords=[level1dat.pair_id])
+    level1dat = level1dat.swap_dims(pair_id="track_mi")
+
+    #this costs a lot of memeory but I do not know a better way
+    level1dat_time = level1dat.unstack("track_mi")
+    #promote capture_time to coordimnate for later
+    level1dat_time = level1dat_time.assign_coords(time=xr.DataArray(level1dat_time.capture_time.isel(camera=0,track_step=0).values, coords=[level1dat_time.track_id]))
+
+    #cut tracks longer than 40 elements to save memory!
+    if len(level1dat_time.track_step) >40:
+        log.info(f"truncating {100*level1dat_time.Dmax.isel(camera=0, track_step=40).notnull().sum().values/len(level1dat_time.track_id)} % tracks")
+        level1dat_time = level1dat_time.isel(track_step=slice(40))
+
+
+    log.info(f"estimate track mean values")
+    #fix order
+    try:
+        level1dat_track2D = level1dat_time.transpose(*["track_id", "track_step", "camera" , "dim3D","fitMethod","camera_rotation"])
+    except ValueError: # sometimes function is called for teting purposes with more variables:
+        level1dat_track2D = level1dat_time.transpose(*["track_id", "track_step", "camera" , "dim3D","fitMethod","camera_rotation",'dim2D', 'percentiles'])
+
+    level1dat_track2D = level1dat_track2D[['Dmax', 'area', 'matchScore', 'aspectRatio', 'angle', 'perimeter', 'position3D_centroid', 'capture_time']]
+
+    # add velocities
+    distSpace = level1dat_track2D.position3D_centroid.diff("track_step", label="upper")
+    distTime = level1dat_track2D.capture_time.isel(camera=0, drop=True).diff("track_step", label="upper")
+    #to fraction of seconds
+    distTime = distTime/np.timedelta64(1,"s")
+
+    #velocity in px/s
+    level1dat_track2D["velocity"] = distSpace/distTime
+    del level1dat_track2D["capture_time"]
+
+    #compute 3d angle to 0,0,1 vector, vg library doesnt like ND arrays or xr:
+    di = distSpace.sel(dim3D=["x","y","z"]).values[:]
+    an = vg.angle(np.array([0,0,1]),di.reshape(di.shape[0]*di.shape[1],di.shape[2])).reshape(di.shape[:2])
+    level1dat_track2D["track_angle"] = xr.DataArray(an, coords=[distSpace.track_id,distSpace.track_step])
+
+    #save for later
+    individualDataPoints = level1dat_track2D.track_id
+    individualDataPoints.name = "nParticles"
+
+    #diff output is one element shorter, so add the mean value again
+    # causes problems and advantage is not clear...
+    #level1dat_track2D["velocity"][dict(track_step=0)] = level1dat_track2D["velocity"].mean("track_step")
+    del level1dat_track2D[ 'position3D_centroid']
+
+    # estimate max, mean and min for tracks by reducing track_step
+    trackOps = ["max", "mean", "min", "std"]
+    level1dat_trackAve = (level1dat_track2D.max(["track_step", "camera"]), level1dat_track2D.mean(["track_step", "camera"]), level1dat_track2D.min(["track_step", "camera"]), level1dat_track2D.std(["track_step", "camera"]))
+    level1dat_trackAve = xr.concat(level1dat_trackAve, dim="cameratrack")
+    level1dat_trackAve["cameratrack"] = trackOps
+        # position_3D is the same for all
+
+    # use Dmax as arbitrary variable with only one dimension
+    level1dat_trackAve["track_length"] = level1dat_track2D.Dmax.isel(camera=0, drop=True).notnull().sum("track_step")
+
+
+    return level1dat_trackAve, level1dat_track2D, level1dat_time, individualDataPoints
 
 def estimateObservationVolume(level1dat_time, config, DbinsPixel, timeIndex1):
 
