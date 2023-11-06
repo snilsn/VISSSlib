@@ -707,7 +707,7 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
 
         
 
-    print("Running",case, eventFile )
+    log.info(tools.concat("Running",case, eventFile ))
     metaDats = getEvents(fnames0, config, fname0status=fname0status)
     try:
         assert len(metaDats.file_starttime) > 0

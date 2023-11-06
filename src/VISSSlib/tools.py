@@ -45,7 +45,7 @@ DEFAULT_SETTINGS = {
     'threshs': [20, 30, 40, 60, 80, 100, 120],
     'goodFiles': ['None', 'None'],
     'level1detectQuicklook': {
-        'minBlur': 1000, 
+        'minBlur': 500, 
         'minSize': 10,
         'omitLabel4small': True
     },
@@ -53,7 +53,7 @@ DEFAULT_SETTINGS = {
     'level1detect': {
         'maxMovingObjects': 60,
         'minAspectRatio' : None,
-        'minBlur': 500, 
+        'minBlur': 250, 
         'minSize': 8,
     },
 }
@@ -485,6 +485,20 @@ def nextCase(case):
 def prevCase(case):
     return str(np.datetime64(f"{case[:4]}-{case[4:6]}-{case[6:8]}") - np.timedelta64(1,"D")).replace("-","")
 
+def rescaleImage(frame1, rescale, anti_aliasing=False, anti_aliasing_sigma=None, mode='edge'):
+    if (len(frame1.shape) == 3):
+        newShape = np.array((frame1.shape[0]*rescale, frame1.shape[1]*rescale, frame1.shape[2]))
+    else:
+        newShape = np.array(frame1.shape)*rescale
+    frame1 = skimage.transform.resize(frame1,
+                           newShape,
+                           mode=mode,
+                           anti_aliasing=anti_aliasing,
+                           anti_aliasing_sigma=anti_aliasing_sigma,
+                           preserve_range=True,
+                           order=0)
+    return frame1
+
 def displayImage(frame, doDisplay=True, rescale = None):
 
     #opencv cannot handle grayscale png with alpha channel
@@ -498,19 +512,8 @@ def displayImage(frame, doDisplay=True, rescale = None):
     else:
         frame1 = frame
 
-
     if rescale is not None:
-        if (len(frame1.shape) == 3):
-            newShape = np.array((frame1.shape[0]*rescale, frame1.shape[1]*rescale, frame1.shape[2]))
-        else:
-            newShape = np.array(frame1.shape)*rescale
-        frame1 = skimage.transform.resize(frame1,
-                               newShape,
-                               mode='edge',
-                               anti_aliasing=False,
-                               anti_aliasing_sigma=None,
-                               preserve_range=True,
-                               order=0)
+        frame1 = rescaleImage(frame1, rescale)
 
     _, frame1 = cv2.imencode('.png', frame1)
 

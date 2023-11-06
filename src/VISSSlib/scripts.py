@@ -993,7 +993,7 @@ def reportLastFiles(settings, writeFile=True, nameFile=False, products = ["level
 
 
 
-def loopCreateBatch(settings, skipExisting=True, nDays = 0, cameras = "all", nCPU=None, products = ["level1detect", "level1match", "level1track", "level2match", "level2track"], doPlot=True):
+def loopCreateBatch(settings, skipExisting=True, nDays = 0, cameras = "all", nCPU=None, products = ["level1detect", "level1match", "level2match"], doPlot=True): #, "level1track", "level2track"
     config = tools.readSettings(settings)
     log = logging.getLogger()
 

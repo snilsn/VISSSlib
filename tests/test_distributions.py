@@ -13,10 +13,10 @@ class TestVolume(object):
         np.random.seed(seed)
         phi, theta, Of_z = np.random.random(3)
         minDmax, maxDmax = 0,20
-
-        D_highRes, V_highRes = estimateVolumes(width, height, phi, theta, Of_z, minDmax, maxDmax, nSteps=21, interpolate=False)
-        D_lowRes, V_lowRes = estimateVolumes(width, height, phi, theta, Of_z, minDmax, maxDmax, nSteps=2, interpolate=False)
-        D_lowResInterp, V_lowResInterp = interpolateVolumes(minDmax, maxDmax, D_lowRes, V_lowRes)
+        sizeBins = np.linspace(minDmax, maxDmax)
+        D_highRes, V_highRes = estimateVolumes(width, height, phi, theta, Of_z, sizeBins, nSteps=21, interpolate=False)
+        D_lowRes, V_lowRes = estimateVolumes(width, height, phi, theta, Of_z, sizeBins, nSteps=2, interpolate=False)
+        D_lowResInterp, V_lowResInterp = interpolateVolumes(sizeBins, D_lowRes, V_lowRes)
 
         assert np.allclose(V_lowResInterp,  V_highRes)
 
