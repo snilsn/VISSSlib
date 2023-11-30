@@ -457,10 +457,10 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
 
             plt.figure()
             plt.title("diffZ")
-            plt.imshow(diffZ[:20,:20], vmin=-20, vmax=20)
+            plt.imshow(diffZ, vmin=-20, vmax=20, cmap="bwr")
             plt.colorbar()
-            plt.xticks(range(20))
-            plt.yticks(range(20))
+            plt.xticks(follower1D.pid.values)
+            plt.yticks(leader1D.pid.values)
             plt.xlabel("follower")
             plt.ylabel("leader")
 
@@ -537,20 +537,24 @@ def doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=1e-1
     propJoint = prop["Y"]*prop["T"]*prop["H"]*prop["I"]*prop["Z"]
 
     if testing:
+        import pdb
+        pdb.set_trace()
+
+    if testing:
         for k in prop.keys():
             if type(prop[k]) is not float:
                 plt.figure()
                 plt.title(k)
-                plt.imshow(prop[k][:20,:20])
-                plt.xticks(range(20))
-                plt.yticks(range(20))
+                plt.imshow(prop[k])
+                plt.xticks(leader1D.pid.values)
+                plt.yticks(follower1D.pid.values)
                 plt.xlabel("follower")
                 plt.ylabel("leader")
         plt.figure()
-        plt.title(k)
-        plt.imshow(propJoint[:20,:20])
-        plt.xticks(range(20))
-        plt.yticks(range(20))
+        plt.title("joined")
+        plt.imshow(propJoint)
+        plt.xticks(leader1D.pid.values)
+        plt.yticks(follower1D.pid.values)
         plt.xlabel("follower")
         plt.ylabel("leader")
 
@@ -772,6 +776,10 @@ def doMatchSlicer(leader1D, follower1D, sigma, mu, delta, config, rotate, minPro
 
     #short cut for small data sets
     if (len(leader1D.fpid) < chunckSize) or (len(follower1D.fpid) < chunckSize):
+
+        if testing:
+            follower1D = tools.cutFollowerToLeader(leader1D, follower1D, gracePeriod=0.01)
+
         return doMatch(leader1D, follower1D, sigma, mu, delta, config, rotate, minProp=minProp, maxMatches=maxMatches, minNumber4Stats=minNumber4Stats, testing=testing)
 
     # ok it is too long... 
@@ -831,7 +839,8 @@ def matchParticles(fnameLv1Detect, config,
         singleParticleFramesOnly=False,
         doRot = False,
         writeNc = True,
-        offsetsOnly=False
+        offsetsOnly=False,
+        subset = None,
     ):
 
     if type(config) is str:
@@ -892,6 +901,8 @@ def matchParticles(fnameLv1Detect, config,
         log.error(tools.concat(f"only one particle in {fnameLv1Detect}"))
         return fname1Match, None, None, None
 
+    if subset is not None:
+        leader1D = leader1D.isel(fpid=slice(*subset))
 
     file_starttime = leader1D.file_starttime[0].values
 
@@ -1118,18 +1129,18 @@ def matchParticles(fnameLv1Detect, config,
             rotates = []
             
             # for estiamting rotation, we wo not need the full data set, use subset to speed up caluculation
-
+            minBlur4rot = 100
             if (minDMax4rot > 0):
-                filt = (leader1D.Dmax>minDMax4rot).values
-                log.info(tools.concat("DMax filter leader:", minDMax4rot, np.sum(filt)/len(leader1D.fpid) * 100,"%"))
+                filt = (leader1D.Dmax>minDMax4rot).values & (leader1D.blur>minBlur4rot).values
+                log.info(tools.concat("DMax&blur filter leader:", minDMax4rot, np.sum(filt)/len(leader1D.fpid) * 100,"%"))
                 leader1D4rot = leader1D.isel(fpid=filt)
             else:
                 leader1D4rot = leader1D.copy()
 
 
             if (minDMax4rot > 0):
-                filt = (follower1D.Dmax>minDMax4rot).values
-                log.info(tools.concat("DMax filter follower:", minDMax4rot, np.sum(filt)/len(follower1D.fpid) * 100,"%"))
+                filt = (follower1D.Dmax>minDMax4rot).values & (follower1D.blur>minBlur4rot).values
+                log.info(tools.concat("DMax&blur filter follower:", minDMax4rot, np.sum(filt)/len(follower1D.fpid) * 100,"%"))
                 follower1D4rot = follower1D.isel(fpid=filt)
             else:
                 follower1D4rot = follower1D.copy()

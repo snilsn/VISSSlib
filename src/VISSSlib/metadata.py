@@ -503,13 +503,12 @@ def createMetaFrames(case, camera, config, skipExisting=True):
         
         if os.path.getsize(fname0.replace(config.movieExtension,"txt")) == 0:
             print("%s has size 0!"%fname0)
-            with open(fn.fname.metaFrames+".nodata", "w") as f:
+            with tools.open2(fn.fname.metaFrames+".nodata", "w") as f:
                 f.write("%s has size 0!"%fname0)
             continue
           
         print(fname0)
 
-        fn.createDirs()
         fname0all = list(fn.fnameTxtAllThreads.values())
 
         metaDat, droppedFrames, beyondRepair = getMetaData(fname0all, camera, config, idOffset=0)
@@ -523,7 +522,7 @@ def createMetaFrames(case, camera, config, skipExisting=True):
             tools.to_netcdf2(metaDat,fn.fname.metaFrames)
             print("%s written"%fn.fname.metaFrames)
         else:
-            with open(fn.fname.metaFrames+".nodata", "w") as f:
+            with tools.open2(fn.fname.metaFrames+".nodata", "w") as f:
                 f.write("no data recorded")
 
     return metaDat
@@ -711,7 +710,6 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
     metaDats = getEvents(fnames0, config, fname0status=fname0status)
     try:
         assert len(metaDats.file_starttime) > 0
-        fn.createDirs()
         metaDats = tools.finishNc(metaDats, config.site, config.visssGen)
         nFiles = sum(metaDats.event == "newfile") + sum(metaDats.event == "brokenfile")
         nFiles = int(nFiles.values)

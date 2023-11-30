@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 
 
 class _stereoViewMatch(object):
-    def __init__(self, case, config, version=__version__, markParticles=True, increaseContrast=True, showTracks=False, skipNonMatched=False):
+    def __init__(self, case, config, version=__version__, markParticles=True, increaseContrast=True, showTracks=False, skipNonMatched=False, lv1match=None):
 
         self.case = case
         self.config = config
@@ -47,6 +47,7 @@ class _stereoViewMatch(object):
         self.cameras = [config.leader, config.follower]
         self.skipNonMatched = skipNonMatched
 
+        self.lv1match = lv1match
         self.open()
         self.rr = 0
 
@@ -100,13 +101,16 @@ class _stereoViewMatch(object):
         self.lv1detect[self.config.follower] = tools.open_mflevel1detect(
             fnames1F, self.config)
 
-        if not self.showTracks:
-            self.lv1match = tools.open_mflevel1match(
-                fL.listFiles("level1match"), self.config)
+        if self.lv1match is None:
+            if not self.showTracks:
+                self.lv1match = tools.open_mflevel1match(
+                    fL.listFiles("level1match"), self.config)
+            else:
+                self.lv1match = tools.open_mflevel1match(
+                    fL.listFiles("level1track"), self.config)
         else:
-            self.lv1match = tools.open_mflevel1match(
-                fL.listFiles("level1track"), self.config)
-
+            self.lv1match = self.lv1match.rename({"pair_id":"fpair_id"})
+            self.lv1match["pair_id"] = self.lv1match.fpair_id
         try:
             self.imagesL1detect[self.config.follower] = fL1.filenamesOtherCamera(
                 graceInterval=-1, level="imagesL1detect")[0]
@@ -330,11 +334,21 @@ class _stereoViewMatch(object):
 
 
 class matchGUI():
-    def __init__(self, case, config, markParticles=True, increaseContrast=False, showTracks=False, skipNonMatched=False):
+    def __init__(self, case, config, 
+        markParticles=True, increaseContrast=False, showTracks=False, 
+        skipNonMatched=False, showVars=["Dmax"], lv1match=None, 
+        showParticles=False, scale=0.5):
 
         self.sv = _stereoViewMatch(case, config, markParticles=markParticles,
-                                   increaseContrast=increaseContrast, showTracks=showTracks, skipNonMatched=skipNonMatched)
+                                   increaseContrast=increaseContrast, showTracks=showTracks, skipNonMatched=skipNonMatched, lv1match=lv1match)
+        self.showVars = showVars
+        self.showParticles = showParticles
+        self.scale = scale
+
         return
+
+    def updateHandlesId(self, fid):
+        return self.updateHandles(*self.sv.get(fid))
 
     def updateHandles(self, frame, metaFrames, lv1detects, lv1matches, particles):
 
@@ -355,18 +369,28 @@ class matchGUI():
         else:
             lv1match = None
 
-        _, frame = cv2.imencode('.png', frame)
+        _, frame = cv2.imencode('.jpg',
+            skimage.transform.resize(frame,
+                               (np.array(frame.shape[:2])*self.scale).astype(int),
+                               mode='edge',
+                               anti_aliasing=True,
+                               preserve_range=True,
+                               order=0) 
+            )
         try:
             self.display_handle.update(Image(data=frame.tobytes()))
         except AttributeError:
             self.display_handle = display(
                 Image(data=frame.tobytes()), display_id=True)
 
-        self.setNN(self.sv.rr)
+        try:
+            self.setNN(self.sv.rr)
+        except AttributeError: #if no GUI available
+            pass
         with self.out:
             self.out.clear_output()
 
-            if particles is not None:
+            if self.showParticles and particles is not None:
                 for k in particles:
                     if len(particles[k]) == 0:
                         continue
@@ -375,31 +399,31 @@ class matchGUI():
                         tools.displayImage(part, rescale=4)
 
             if metaFrames[0] is None:
-                c0, i0 = "n/a", "n/a"
+                c0, i0, r0 = "n/a", "n/a", "n/a"
             else:
-                c0, i0 = metaFrames[0].capture_time.values, metaFrames[0].capture_id.values
+                c0, i0, r0 = metaFrames[0].capture_time.values, metaFrames[0].capture_id.values, metaFrames[0].record_id.values
             if metaFrames[1] is None:
-                c1, i1 = "n/a", "n/a"
+                c1, i1, r1 = "n/a", "n/a", "n/a"
             else:
-                c1, i1 = metaFrames[1].capture_time.values, metaFrames[1].capture_id.values
+                c1, i1, r1 = metaFrames[1].capture_time.values, metaFrames[1].capture_id.values, metaFrames[1].record_id.values
 
             print("leader:", c0, i0, "follower:", c1, i1)
             if lv1match is not None:
                 Zdiff = lv1match.position3D_centroid.isel(
                     dim3D=[2, 3], drop=True).diff("dim3D").values.flatten()
-                print(
-                    lv1match.pair_id.values.flatten(),
-                    ["%.7f score" % (l) for l in lv1match.matchScore.values],
-                    ["%.i ms" % (
-                        l/1e6) for l in lv1match.capture_time.diff("camera").values.astype(int).flatten()],
-                    ["%.2f y" % (l) for l in lv1match.position_upperLeft.diff(
-                        "camera").sel(dim2D="y", drop=True).values.flatten()],
-                    ["%.2f h" % (l) for l in lv1match.Droi.diff(
-                        "camera").sel(dim2D="y", drop=True).values.flatten()],
-                    ["%.2f Z" % z for z in Zdiff]
-                )
-                print("blur", lv1match.blur.values)
-                print("Dmax", lv1match.Dmax.values)
+                # print(
+                #     lv1match.pair_id.values.flatten(),
+                #     ["%.7f score" % (l) for l in lv1match.matchScore.values],
+                #     ["%.i ms" % (
+                #         l/1e6) for l in lv1match.capture_time.diff("camera").values.astype(int).flatten()],
+                #     ["%.2f y" % (l) for l in lv1match.position_upperLeft.diff(
+                #         "camera").sel(dim2D="y", drop=True).values.flatten()],
+                #     ["%.2f h" % (l) for l in lv1match.Droi.diff(
+                #         "camera").sel(dim2D="y", drop=True).values.flatten()],
+                #     ["%.2f Z" % z for z in Zdiff]
+                # )
+                for var in self.showVars:
+                    print(var, lv1match[var].values)
                 print("#"*100)
             if (lv1detects[0] is not None) and (lv1detects[1] is not None) and (lv1detects[0]["pid"].shape == lv1detects[1]["pid"].shape):
                 print(f"{'pid'.ljust(20)}: D {'X'.ljust(23)}, L {str(lv1detects[0]['pid'].values).ljust(23)}, F {str(lv1detects[1]['pid'].values).ljust(23)}")
@@ -415,10 +439,9 @@ class matchGUI():
     def setNN(self, nn):
         self.texts[0].value = str(nn)
 
-    def createGUI(self, pid=0):
+    def createGUI(self, pid=0, startId=0):
 
         self.out = widgets.Output()
-
         # set width and height
         layout = widgets.Layout(width='auto', height='30px')
 
@@ -455,11 +478,11 @@ class matchGUI():
         )
 
         load = widgets.Button(description='Load', layout=layout)
-        load.on_click(lambda x: self.updateHandles(*self.sv.get(self.getNN())))
+        load.on_click(lambda x: self.updateHandlesId(self.getNN()))
         self.texts.append(load)
 
         display_handle = None
-        self.updateHandles(*self.sv.get(0))
+        self.updateHandlesId(startId)
 
         self.statusP = widgets.HTML(
             value="-",
@@ -469,7 +492,9 @@ class matchGUI():
         buttonsH = widgets.HBox(buttons)
         statusH = widgets.HBox(self.texts)
 
-        return widgets.VBox([statusH, buttonsH, self.out])
+        display(widgets.VBox([statusH, buttonsH, self.out]))
+
+        return
 
 
 class _stereoViewDetect(object):
@@ -742,12 +767,14 @@ class manualMatchGUI():
             startId[camera] = 0
 
         for ii, camera in enumerate(self.sv.config.instruments):
-            self.texts.append(widgets.Text(
+            w = widgets.Text(
                 value=str(startId[camera]),
                 description=f"{camera}: {len(self.sv.lv1detect[camera].capture_id)} tot. ids",
                 disabled=False,
                 width=500,
-            ))
+            )
+            # w.observe(lambda x: self.updateHandles(*self.sv.get(self.getNN()))) #doesnt work?!
+            self.texts.append(w)
 
         load = widgets.Button(description='Load', layout=layout)
         load.on_click(lambda x: self.updateHandles(*self.sv.get(self.getNN())))
@@ -789,4 +816,9 @@ class manualMatchGUI():
         statusH = widgets.HBox(self.texts)
         matchingH = widgets.HBox(matching)
 
-        return widgets.VBox([statusH, buttonsH, matchingH, self.out])
+        display(widgets.VBox([statusH, buttonsH, matchingH, self.out]))
+
+        return 
+
+
+

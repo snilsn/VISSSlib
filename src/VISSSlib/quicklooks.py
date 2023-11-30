@@ -213,7 +213,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
 
     print("RUNNING open files ", ffOut, len(ff.listFiles("metaFrames")))
 
-    ff.createQuicklookDirs()
+
 
     dats2 = []
     l1Files = ff.listFilesWithNeighbors("level1detect")
@@ -309,7 +309,7 @@ def createLevel1detectQuicklook(timestamp, camera, config,
                     # tars[fname] = (tools.imageTarFile.open(fn.fname.imagesL1detect, "r:bz2"), tarRoot)
                     # print(fn.fname.imagesL1detect)
                     try:
-                        tars[fname] = tools.imageZipFile(fn.fname.imagesL1detect, "r")
+                        tars[fname] = tools.imageZipFile(fn.fname.imagesL1detect, mode="r")
                     except FileNotFoundError:
                         log.warning(f"did not fine {fn.fname.imagesL1detect}")
                 nPids = len(pids)
@@ -714,9 +714,10 @@ class Packer_patched(packer.Packer):
 #     fig.suptitle(f"{fn.year}-{fn.month}-{fn.day}")
 #     fig.tight_layout()
 
-#     fn.createQuicklookDirs()
+
 #     print(outFile)
-#     fig.savefig(outFile)
+#     tools.createParentDir(outFile)
+#        fig.savefig(outFile)
 #     return outFile, fig
 
 
@@ -735,7 +736,7 @@ def level0Quicklook(
     #get level 0 file names
     ff = files.FindFiles(case, camera, config, version)
     fOut = ff.quicklook.level0
-    ff.createQuicklookDirs()
+    tools.createParentDir(fOut)
 
     if skipExisting and os.path.isfile(fOut):
         if os.path.getmtime(fOut) < os.path.getmtime(ff.listFiles("metaEvents")[0]):
@@ -974,7 +975,8 @@ def metaFramesQuicklook(
 
     ax1.legend(fontsize=15, bbox_to_anchor=(1, 1.4))
 
-    ff.createQuicklookDirs()
+
+    tools.createParentDir(fOut)
     fig.savefig(fOut)
 
     if ff.datetime.date() == datetime.datetime.today().date():
@@ -1031,6 +1033,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
         fig, axcax = plt.subplots(nrows=1, ncols=1, figsize=(10,15))
         axcax.axis('off')
         axcax.set_title(f"VISSS level1match {config.name} {case} \n No precipitation")
+        tools.createParentDir(fOut)
         fig.savefig(fOut)
         return fOut, fig    
 
@@ -1043,7 +1046,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     assert len(fnames1DL)>0
     assert len(fnames1DF)>0
 
-    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position_centroid", "position_upperLeft","Droi", "camera_theta", "camera_phi", "camera_Ofz"])        
+    datMfull = tools.open_mflevel1match(fnames1M, config, datVars=["Dmax", "capture_time", "matchScore", "position3D_centroid", "position_upperLeft","Droi", "camera_theta", "camera_phi", "camera_Ofz"])        
     datM = datMfull.isel(fpair_id=(datMfull.matchScore >= minMatchScore))
 
     if len(datM.fpair_id) <= 1:
@@ -1051,6 +1054,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
         fig, axcax = plt.subplots(nrows=1, ncols=1, figsize=(10,15))
         axcax.axis('off')
         axcax.set_title(f"VISSS level1match {config.name} {case} \n No precipitation (2)")
+        tools.createParentDir(fOut)
         fig.savefig(fOut)
         return fOut, fig    
 
@@ -1084,7 +1088,7 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
     _, _ = plot2dhist(matchScore, datMfull.capture_time, ax[2], cax[2], bins, ylabel="match score [-]", cbarlabel="%")
     ax[2].axhline(minMatchScore)
     
-    zDiff = datM.position_centroid.sel(dim3D=["z", "z_rotated"]).diff("dim3D").values.squeeze()
+    zDiff = datM.position3D_centroid.sel(dim3D=["z", "z_rotated"]).diff("dim3D").values.squeeze()
     _, rs = plotVar(zDiff, datM.capture_time, ax[3], "z difference [px]", axhline=0, resample=resample)
     cax[3].axis('off')
     
@@ -1173,8 +1177,9 @@ def createLevel1matchQuicklook(case, config, skipExisting = True, version=__vers
 
     fig.tight_layout(w_pad=0.05, h_pad=0.005)
 
-    fl.createQuicklookDirs()
+
     print("DONE", fOut)
+    tools.createParentDir(fOut)
     fig.savefig(fOut)
     
     if returnFig:
@@ -1246,6 +1251,7 @@ def metaRotationYearlyQuicklook(
     ax3.grid()
     ax3.set_xlabel("time")
 
+    tools.createParentDir(fOut)
     fig.savefig(fOut)
     rotDat.close()
     
@@ -1410,7 +1416,8 @@ def metaRotationQuicklook(
 
     ax1.legend(fontsize=15, bbox_to_anchor=(1, 1.4))
 
-    ff.createQuicklookDirs()
+
+    tools.createParentDir(fOut)
     fig.savefig(fOut)
 
     rotDat.close()
@@ -1549,6 +1556,7 @@ def createLevel2matchQuicklook(
         bx.axis('off')
 
     fig.tight_layout()
+    tools.createParentDir(fOut)
     fig.savefig(fOut)
     
     if returnFig:
@@ -1694,6 +1702,7 @@ def createLevel2trackQuicklook(
         bx.axis('off')
 
     fig.tight_layout()
+    tools.createParentDir(fOut)
     fig.savefig(fOut)
     
     if returnFig:
@@ -1789,7 +1798,7 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
 
     print("RUNNING open files ", ffOut, len(ff.listFiles("metaFrames")))
 
-    ff.createQuicklookDirs()
+
 
     dats2 = []
     l1Files = ff.listFilesWithNeighbors("level1match")
@@ -1902,7 +1911,7 @@ def createLevel1matchParticlesQuicklook(timestamp, config,
                     # tarRoot = fn.fname.imagesL1detect.split("/")[-1].replace(".tar.bz2","")
                     # tars[fname] = (tools.imageTarFile.open(fn.fname.imagesL1detect, "r:bz2"), tarRoot)
                     # print(fn.fname.imagesL1detect)
-                    tars[fname] = tools.imageZipFile(fn.fname.imagesL1detect, "r")
+                    tars[fname] = tools.imageZipFile(fn.fname.imagesL1detect, mode="r")
 
                 nPids = fpair_ids.shape[0]
                 np.random.seed(tt)

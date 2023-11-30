@@ -469,8 +469,8 @@ def getOtherCamera(config, camera):
 
 
 def cutFollowerToLeader(leader, follower, gracePeriod=1, dim="fpid"):
-    start = leader.capture_time[0].values - np.timedelta64(gracePeriod,"s")
-    end = leader.capture_time[-1].values + np.timedelta64(gracePeriod,"s")
+    start = leader.capture_time[0].values - np.timedelta64(int(gracePeriod*1000),"ms")
+    end = leader.capture_time[-1].values + np.timedelta64(int(gracePeriod*1000),"ms")
     
     if start is not None:
         follower = follower.isel({dim:(follower.capture_time >= start)})
@@ -561,6 +561,11 @@ imageTarFile.extractimage = _extractimage
 
 import zipfile
 class imageZipFile(zipfile.ZipFile):
+
+    def __init__(self, file, **kwargs):
+        createParentDir(file)
+        super().__init__(file, **kwargs)
+
     def addimage(self, fname, img):
         # encode
         img = Image.fromarray(img)
@@ -587,6 +592,12 @@ class imageZipFile(zipfile.ZipFile):
         array = np.load(io.BytesIO(self.read(fname)))
         return array
 
+def createParentDir(file):
+    dirname = os.path.dirname(file)
+    if (dirname != "") and (not os.path.exists(dirname)):
+        log.info(f"Created directory {dirname}")
+        os.makedirs(dirname)
+    return
 
 def ncAttrs(site, visssGen, extra={}):
     if  os.environ.get('USER') is not None:
@@ -755,9 +766,7 @@ def open2(file, mode="r", **kwargs):
     '''
     like standard open, but creating directories if needed
     '''
-    dirname = os.path.dirname(file)
-    if (dirname != "") and (not os.path.exists(dirname)):
-        os.makedirs(dirname)
+    createParentDir(file)
     return open(file, mode, **kwargs)
 
 
@@ -766,10 +775,7 @@ def to_netcdf2(dat, file, **kwargs):
     like xarray netcdf open, but creating directories if needed
     removes existign files to avoid permission errors
     '''
-    dirname = os.path.dirname(file)
-    if (dirname != "") and (not os.path.exists(dirname)):
-        os.makedirs(dirname)
-
+    createParentDir(file)
     if os.path.isfile(file):
         log.info(f"remove old version of {file}")
         os.remove(file)
@@ -779,9 +785,9 @@ def to_netcdf2(dat, file, **kwargs):
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         if dat[list(dat.data_vars)[0]].chunks is not None:
             with ProgressBar():
-                res = dat.to_netcdf(file, **kwargs)
+                res = dat.to_netcdf(file, engine="netcdf4", **kwargs)
         else:
-                res = dat.to_netcdf(file, **kwargs)
+                res = dat.to_netcdf(file, engine="netcdf4", **kwargs)
     return res
 
 

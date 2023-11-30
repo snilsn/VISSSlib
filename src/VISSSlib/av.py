@@ -3,6 +3,7 @@ import functools
 import os
 import sys
 import warnings
+import zipfile
 
 import numpy as np
 try:
@@ -85,10 +86,14 @@ class VideoReaderMeta(object):
         if imagesL1detect is not None:
             #self.tarFile = tools.imageTarFile.open(imagesL1detect, "r:bz2")
             try:
-                self.tarFile = tools.imageZipFile(imagesL1detect, "r")
+                self.tarFile = tools.imageZipFile(imagesL1detect, mode="r")
             except FileNotFoundError:
                 self.tarFile = None
-                log.warning(f"did not fine {imagesL1detect}")
+                log.warning(f"did not find {imagesL1detect}")
+            except zipfile.BadZipFile:
+                self.tarFile = None
+                log.warning(f"BROKEN {imagesL1detect}")
+
             #self.tarRoot = imagesL1detect.split("/")[-1].replace(".tar.bz2","")
         else:
             self.tarFile = None

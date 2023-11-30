@@ -419,7 +419,7 @@ def loopCreateLevel2Worker(day, matchTrack="match", settings=None, skipExisting=
 
     config = tools.readSettings(settings)
     fL = files.FindFiles(day, config.leader, config)
-    fL.createDirs()
+
     lv2File = fL.fnamesDaily[f"level2{matchTrack}"]
     tmpFile = os.path.basename('%s.processing.txt' % lv2File)
 
@@ -522,7 +522,7 @@ def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, nCPU=1):
     fn = files.Filenames(fname, config, __version__)
     camera = fn.camera
     
-    fn.createDirs()
+
     tmpFile = os.path.basename('%s.processing.txt' % fn.fname.level1detect)
     if skipExisting and ( os.path.isfile('%s' % fn.fname.level1detect)):
         # log.info('output exists %s %s' % (fname, fn.fname.level1detect))
@@ -535,7 +535,7 @@ def loopCreateLevel1detectWorker(fname, settings, skipExisting=True, nCPU=1):
         return 1
     elif skipExisting and ( os.path.isfile('%s.nodata' % fn.fname.metaFrames)):
         log.info('metaFrames contains no data %s %s' % (fname, fn.fname.metaFrames))
-        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+        with tools.open2('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('metaFrames contains no data %s %s' % (fname, fn.fname.metaFrames))
         return 0
     elif skipExisting and ( os.path.isfile(tmpFile)):
@@ -570,16 +570,16 @@ def loopCreateLevel1matchWorker(fnameL1detect, settings, skipExisting=True, nCPU
             
 
     ffl1  = files.FilenamesFromLevel(fnameL1detect, config)
-    ffl1.createDirs()
+
 
     fname1Match = ffl1.fname["level1match"]
     #print(ffl1.fname["level1match"])
-    ffl1.createDirs()
+
     tmpFile = os.path.basename('%s.processing.txt' % fname1Match)
 
     if fnameL1detect.endswith("broken.txt") or fnameL1detect.endswith("nodata") or fnameL1detect.endswith("notenoughframes"):
-        ffl1.createDirs()
-        with open(f"{fname1Match}.nodata", "w") as f:
+
+        with tools.open2(f"{fname1Match}.nodata", "w") as f:
             f.write("no leader data")
         log.info(f"NO leader DATA {fname1Match}")
         return 0
@@ -625,12 +625,12 @@ def loopCreateLevel1trackWorker(fnameL1detect, settings, skipExisting=True, nCPU
 
     fnameL1track = ffl1.fname["level1track"]
     #print(ffl1.fname["level1match"])
-    ffl1.createDirs()
+
     tmpFile = os.path.basename('%s.processing.txt' % fnameL1track)
 
     if fnameL1detect.endswith("broken.txt") or fnameL1detect.endswith("nodata") or fnameL1detect.endswith("notenoughframes"):
-        ffl1.createDirs()
-        with open(f"{fnameL1track}.nodata", "w") as f:
+
+        with tools.open2(f"{fnameL1track}.nodata", "w") as f:
             f.write("no leader data")
         log.info(f"NO leader DATA {fnameL1detect}")
         return 0
@@ -984,7 +984,7 @@ def reportLastFiles(settings, writeFile=True, nameFile=False, products = ["level
 
     if writeFile:
         fOut = f"{config['pathQuicklooks'].format(version=ff.version,site=config['site'], level='')}/{'productReport'}_{config['site']}.html"
-        with open(fOut, "w") as f:
+        with tools.open2(fOut, "w") as f:
             f.write("<html><pre>\n")
             f.write(output)
             f.write("</pre></html>\n")
@@ -993,7 +993,7 @@ def reportLastFiles(settings, writeFile=True, nameFile=False, products = ["level
 
 
 
-def loopCreateBatch(settings, skipExisting=True, nDays = 0, cameras = "all", nCPU=None, products = ["level1detect", "level1match", "level2match"], doPlot=True): #, "level1track", "level2track"
+def loopCreateBatch(settings, skipExisting=True, nDays = 0, cameras = "all", nCPU=None, products = ["level1detect", "level1match", "level2match", "level1track", "level2track"], doPlot=True): #
     config = tools.readSettings(settings)
     log = logging.getLogger()
 

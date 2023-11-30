@@ -48,7 +48,7 @@ bug fixes regarding handling of cnt children
 '''
 
 
-minCntSize = 3
+minCntSize =3
 
 class detectedParticles(object):
     def __init__(self,
@@ -76,6 +76,7 @@ class detectedParticles(object):
                  joinCannyEdges=False, 
                  check4childCntLength = True,
                  doubleDynamicRange = True,
+                 dilateFgMask4Contours = True,
                  testing=[], 
                  ):
 
@@ -120,6 +121,8 @@ class detectedParticles(object):
         self.doubleDynamicRange = doubleDynamicRange
         self.joinCannyEdges =  joinCannyEdges
         self.check4childCntLength = check4childCntLength
+        self.dilateFgMask4Contours = dilateFgMask4Contours
+
         self.testing = testing
         return
 
@@ -219,7 +222,14 @@ class detectedParticles(object):
             print("SHOWING", "fgMaskWithHoles")
             tools.displayImage(self.fgMask)
 
-        cnts, _ = cv2.findContours(self.fgMask, cv2.RETR_EXTERNAL,
+        # avoids that blowing snow detection is falsely removing data for blury particles
+        # larger conoturs are later corrected by canny filter
+        if self.dilateFgMask4Contours:
+            fgMask4Contours = cv2.dilate(self.fgMask, None, iterations=2)
+            #tools.displayImage(fgMask4Contours)
+        else:
+            fgMask4Contours = self.fgMask
+        cnts, _ = cv2.findContours(fgMask4Contours, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
 
         self.cnts = list()
@@ -229,7 +239,7 @@ class detectedParticles(object):
                 self.cnts.append(cnt)
 
         self.nParticle = len(self.cnts)
-        print(f"particles.update FRAME {pp} capture_time {capture_time} found {self.nParticle} particles")
+        if self.verbosity>0: print(f"particles.update FRAME {pp} capture_time {capture_time} found {self.nParticle} particles")
 
         if self.nParticle > self.maxNParticle:
             print(f"particles.update FRAME {pp} SKIPPED. more than {self.maxNParticle} particles")
@@ -343,9 +353,10 @@ class detectedParticles(object):
             (roi[1] + roi[3]) == frameHeight
         ]
         if np.any(touchesBorder):
-            print("particles.add", "PID", "n/a",
+            if self.verbosity>2:  
+                print("particles.add", "PID", "n/a",
                   "touches border", touchesBorder)
-            print("particles.update", "PID", "n/a", "Not added")
+                print("particles.update", "PID", "n/a", "Not added")
             return added
 
         # canny filter is expensive. so apply it of part of image taht is moving (plus a little extra otherwise edge detection does not work)
@@ -361,7 +372,7 @@ class detectedParticles(object):
                 particleBoxPlus, fgBoxMaskPlus)
             
             if np.sum(particleBoxMaskPlus) == 0:
-                print("canny filter did not detect anything")
+                if self.verbosity > 0: print("canny filter did not detect anything")
                 return False
             cnts, hierarchy = cv2.findContours(
                 particleBoxMaskPlus, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -406,7 +417,7 @@ class detectedParticles(object):
                     if self.verbosity>2: print(" ".join(["particles.add", "PID", "%i" % self.lastParticle.pid,
                                        "too small minContrast", "%.2f" % self.lastParticle.particleContrast]))
 
-                elif self.lastParticle.blur < self.minBlur:
+                elif (self.lastParticle.Dmax >= 8) and (self.lastParticle.blur < self.minBlur): # do not apply blur test tp very small particles, blur estimation is uncertain
                     if self.verbosity>2: print(" ".join(["particles.add", "PID", "%i" % self.lastParticle.pid,
                                        "too small minBlur", "%.2f" % self.lastParticle.blur]))
 
@@ -770,8 +781,8 @@ class singleParticle(object):
         try:
             self.position_centroid = (
                 int(M['m10']/M['m00']), int(M['m01']/M['m00']))
-        except ZeroDivisionError:
-            self.position_centroid = 0, 0
+        except ZeroDivisionError: #happens typically for very small particles
+            self.position_centroid = self.position_circle
 
         self.perimeter = cv2.arcLength(self.cnt, True)
         # data type cv2.CV_16S requried to avoid overflow
@@ -805,6 +816,7 @@ class singleParticle(object):
         props += 'ROI (x, y, w, h): %i %i %i %i\n' % tuple(self.roi)
         props += 'Area: %.1f\n' % self.area
         props += 'position_centroid: %.1f, %.1f\n' % self.position_centroid
+        props += 'position_circle: %.1f, %.1f\n' % self.position_circle
         props += 'Perimeter, PerimeterEroded: %.1f %.1f\n' % (
             self.perimeter, self.perimeterEroded)
         props += 'pixMin/pixMax: %.1f %i %f\n' % (
@@ -972,6 +984,8 @@ def detectParticles(fname,
                     doubleDynamicRange=True,
                     joinCannyEdges=False,
                     check4childCntLength = True,
+                    dilateFgMask4Contours = True,
+                    minContrast=20,
                     stopAfter=None,
                     version=__version__,
                     verbosity=0,
@@ -1022,7 +1036,7 @@ def detectParticles(fname,
     joinCannyEdges : bool, optional
         novel way to close canny edges, nice idea but closes them to often in teh wrong way (the default is False)
     check4childCntLength : bool, optional
-        discard short child contours instead of dilate/erose (the default is False)
+        discard short child contours instead of dilate/erose (the default is True)
     stopAfter : [type], optional
         [description] (the default is None)
     version : [type], optional
@@ -1086,9 +1100,9 @@ def detectParticles(fname,
     
     # txt data is transmitted first
     if len(fnamesT) == 0:
-        with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
+        with tools.open2('%s.nodata' % fn.fname.metaDetection, 'w') as f:
             f.write('no data in %s' % fn.fname.metaFrames)
-        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+        with tools.open2('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data in %s' % fn.fname.metaFrames)
         log.warning('no movie files: ' + fname)
         return 0
@@ -1100,9 +1114,9 @@ def detectParticles(fname,
             log.warning('movie files not found (yet?) ' + fname)
         else:
             log.warning('movie files not found, no data ' + fname)
-            with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
+            with tools.open2('%s.nodata' % fn.fname.metaDetection, 'w') as f:
                 f.write('no data')
-            with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+            with tools.open2('%s.nodata' % fn.fname.level1detect, 'w') as f:
                 f.write('no data')
         return 0
 
@@ -1114,9 +1128,9 @@ def detectParticles(fname,
         metaData = xr.open_dataset(fn.fname.metaFrames)
     except FileNotFoundError:
         if os.path.isfile(f"{fn.fname.metaFrames}.nodata"):
-            with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
+            with tools.open2('%s.nodata' % fn.fname.metaDetection, 'w') as f:
                 f.write('no data in %s' % fn.fname.metaFrames)
-            with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+            with tools.open2('%s.nodata' % fn.fname.level1detect, 'w') as f:
                 f.write('no data in %s' % fn.fname.metaFrames)
             log.warning('metaFrames contains no data: ' + fn.fname.metaFrames)
         else:
@@ -1128,9 +1142,9 @@ def detectParticles(fname,
     if len(metaData.capture_time) == 0:
         log.info('nothing moves: ' + fname)
 
-        with open('%s.nodata' % fn.fname.metaDetection, 'w') as f:
+        with tools.open2('%s.nodata' % fn.fname.metaDetection, 'w') as f:
             f.write('no data')
-        with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+        with tools.open2('%s.nodata' % fn.fname.level1detect, 'w') as f:
             f.write('no data')
         return 0
 
@@ -1180,10 +1194,7 @@ def detectParticles(fname,
                     raise RuntimeError('WAS NOT ABLE TO FIX %s' % fnameV)
                 log.info('REPAIRED ' + fnameV)
 
-    log.info(f"{fn.year}, {fn.month}, {fn.day}, {fname}")
-    fn.createDirs()
-
-    log.info('Processing %s' % fn.fname.level1detect)
+    log.info(f'Processing {fn.fname.level1detect} {fn.year}, {fn.month}, {fn.day}, {fname}')
 
     hasData = False
 
@@ -1201,7 +1212,7 @@ def detectParticles(fname,
         fname11 = files.Filenames(fname1, config, version=version).prevFile()
 
         if (ii > 20) or (fname11 is None):
-            with open('%s.notenoughframes' % fn.fname.level1detect, 'w') as f:
+            with tools.open2('%s.notenoughframes' % fn.fname.level1detect, 'w') as f:
                 f.write('too few frames %i %i %s \r' %
                         (len(trainingFrames), ii, fname11))
                 f.write(str(fnamesV))
@@ -1241,6 +1252,8 @@ def detectParticles(fname,
         doubleDynamicRange = doubleDynamicRange,
         joinCannyEdges=joinCannyEdges,
         check4childCntLength = check4childCntLength,
+        minContrast = minContrast,
+        dilateFgMask4Contours = dilateFgMask4Contours,
         testing=testing,
 
     )
@@ -1305,7 +1318,7 @@ def detectParticles(fname,
 
     if writeImg:
         imagesL1detect = tools.imageZipFile(
-            fn.fname.imagesL1detect, 'w', compresslevel=9)
+            fn.fname.imagesL1detect, mode='w', compresslevel=9)
 
     tarRoot = fn.fname.imagesL1detect.split("/")[-1].replace(".tar.bz2", "")
 
@@ -1349,7 +1362,7 @@ def detectParticles(fname,
             if firstRecordedFrame and singleFrameInFile:
                 log.warning("detected single frame issue %s thread %i" %
                             (fname, nThread))
-                with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+                with tools.open2('%s.nodata' % fn.fname.level1detect, 'w') as f:
                     f.write('no data (single frame problem)')
                 continue
             else:
@@ -1408,7 +1421,7 @@ def detectParticles(fname,
                 ):
                     pidStr = '%07i' % part.pid
                     # imName = '%s/%s/%s.npy' % (tarRoot, pidStr[:4], pidStr)
-                    log.info('writing %s %s' %
+                    if logDebug: log.debug('writing %s %s' %
                              (fn.fname.imagesL1detect, pidStr))
 
                     # imagesL1detect.addimage(imName, part.particleBoxAlpha)
@@ -1450,21 +1463,20 @@ def detectParticles(fname,
         metaData["movingObjects"] = metaData["movingObjects"].astype(np.uint32)
 
         metaData = tools.finishNc(metaData, config.site, config.visssGen)
-
-        metaData.to_netcdf(fn.fname.metaDetection, engine="netcdf4")
+        tools.to_netcdf2(metaData, fn.fname.metaDetection)
         metaData.close()
 
         if hasData:
 
             snowParticlesXR = snowParticles.collectResults()
             snowParticlesXR = tools.finishNc(snowParticlesXR, config.site, config.visssGen)
+            tools.to_netcdf2(snowParticlesXR, fn.fname.level1detect)
 
-            snowParticlesXR.to_netcdf(fn.fname.level1detect, engine="netcdf4")
             log.info("written %s"%fn.fname.level1detect)
             snowParticlesXR.close()
             return snowParticlesXR
         else:
-            with open('%s.nodata' % fn.fname.level1detect, 'w') as f:
+            with tools.open2('%s.nodata' % fn.fname.level1detect, 'w') as f:
                 f.write('no data')
             log.info("no data %s"%fn.fname.level1detect)
             return None
