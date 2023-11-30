@@ -9,6 +9,7 @@ from copy import deepcopy
 import numpy as np
 import scipy.special
 import xarray as xr
+import xarray_extras.sort
 import pandas as pn
 import trimesh
 import dask
@@ -473,7 +474,7 @@ def createLevel2part(
 
     elif sublevel == "track":
 
-        level1dat_trackAve, level1dat_track2D, level1dat_time, individualDataPoints = getPerTrackStatitics(level1dat)
+        level1dat_trackAve, level1dat_track2D, level1dat_time, individualDataPoints, _ = getPerTrackStatistics(level1dat)
 
         # becuase there are no weighted groupby operations, we have to improvise and broadcast the results
         # again to a shape including track_step - then the mean etc. values are dublicated as per track length 
@@ -698,7 +699,7 @@ def addVariables(calibDat, case, config, timeIndex, timeIndex1, sublevel, blocke
 
 
 
-def getPerTrackStatitics(level1dat):
+def getPerTrackStatistics(level1dat, maxAngleDiff = 20, extraVars = []):
 
     '''
     go from particle statitics to per track statisticks with the mean/min/max/std along cameras and track
@@ -725,10 +726,17 @@ def getPerTrackStatitics(level1dat):
     #fix order
     try:
         level1dat_track2D = level1dat_time.transpose(*["track_id", "track_step", "camera" , "dim3D","fitMethod","camera_rotation"])
-    except ValueError: # sometimes function is called for teting purposes with more variables:
+    except ValueError: # sometimes function is called for testing purposes with more variables:
         level1dat_track2D = level1dat_time.transpose(*["track_id", "track_step", "camera" , "dim3D","fitMethod","camera_rotation",'dim2D', 'percentiles'])
 
-    level1dat_track2D = level1dat_track2D[['Dmax', 'area', 'matchScore', 'aspectRatio', 'angle', 'perimeter', 'position3D_centroid', 'capture_time']]
+    level1dat_track2D = level1dat_track2D[set(['Dmax', 'area', 'matchScore', 'aspectRatio', 'angle', 'perimeter', 'position3D_centroid', 'capture_time'] + extraVars)]
+
+    #try to find and remove edges in the tracks,
+    tracksCut = 0
+    for kk in range(2):
+        log.info(f"try to find and remove edges in the tracks {kk}")
+        level1dat_track2D, nCuts = removeTrackEdges(level1dat_track2D, maxAngleDiff)
+        tracksCut += nCuts
 
     # add velocities
     distSpace = level1dat_track2D.position3D_centroid.diff("track_step", label="upper")
@@ -740,10 +748,6 @@ def getPerTrackStatitics(level1dat):
     level1dat_track2D["velocity"] = distSpace/distTime
     del level1dat_track2D["capture_time"]
 
-    #compute 3d angle to 0,0,1 vector, vg library doesnt like ND arrays or xr:
-    di = distSpace.sel(dim3D=["x","y","z"]).values[:]
-    an = vg.angle(np.array([0,0,1]),di.reshape(di.shape[0]*di.shape[1],di.shape[2])).reshape(di.shape[:2])
-    level1dat_track2D["track_angle"] = xr.DataArray(an, coords=[distSpace.track_id,distSpace.track_step])
 
     #save for later
     individualDataPoints = level1dat_track2D.track_id
@@ -765,7 +769,51 @@ def getPerTrackStatitics(level1dat):
     level1dat_trackAve["track_length"] = level1dat_track2D.Dmax.isel(camera=0, drop=True).notnull().sum("track_step")
 
 
-    return level1dat_trackAve, level1dat_track2D, level1dat_time, individualDataPoints
+    return level1dat_trackAve, level1dat_track2D, level1dat_time, individualDataPoints, tracksCut
+
+
+def removeTrackEdges(level1dat_track2D, maxAngleDiff):
+
+    distSpace = level1dat_track2D.position3D_centroid.diff("track_step", label="upper")
+
+    #compute 3d angle to 0,0,1 vector, vg library doesnt like ND arrays or xr:
+    di = distSpace.sel(dim3D=["x","y","z"]).values[:]
+    an = vg.angle(np.array([0,0,1]),di.reshape(di.shape[0]*di.shape[1],di.shape[2])).reshape(di.shape[:2])
+    level1dat_track2D["track_angle"] = xr.DataArray(an, coords=[distSpace.track_id,distSpace.track_step])
+
+    #try to find and remove edges in the tracks,
+    tts = []
+    if maxAngleDiff != 0:
+        ang = np.abs(level1dat_track2D.track_angle.diff("track_step"))
+        # angles can be large, but for natural tracks the 2nd is also large
+        # sort cannot handle nans
+        twoLargest = xarray_extras.sort.topk(ang.fillna(-999), 2, "track_step")
+        twoLargest = twoLargest.where(twoLargest!=-999)
+        #identify tracks
+        tts = np.where(twoLargest.diff("track_step") <-maxAngleDiff)[0]
+        tts = level1dat_track2D.track_id[tts].values
+        extraTracks = []
+        for tt in tts:
+            #where is the edge?
+            maxII = ang.sel(track_id=tt).argmax().values+2
+            #log.info(tools.concat("cutting track", tt, "max angle diff.", ang.sel(track_id=tt).max().values, "at index",  maxII))
+            # move to extra array
+            extraTracks.append(deepcopy(level1dat_track2D.loc[{"track_id":tt, "track_step":slice(maxII,None)}]))
+            #delete information
+            level1dat_track2D.loc[{"track_id":tt, "track_step":slice(maxII,None)}] = np.nan
+        
+        #create index and append extraTracks to end
+        if len(extraTracks)>0:
+            oldMax = level1dat_track2D.track_id.max().values
+            extraIds = range(oldMax+1, oldMax+1+len(extraTracks))
+            extraTracks = xr.concat(extraTracks,dim="track_id")
+            extraTracks["track_id"] = extraIds
+            level1dat_track2D = xr.concat((level1dat_track2D,extraTracks), dim="track_id")
+    log.info(f"track cut at {len(tts)} positions")
+    return level1dat_track2D, len(tts)
+
+
+
 
 def estimateObservationVolume(level1dat_time, config, DbinsPixel, timeIndex1):
 
