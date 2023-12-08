@@ -696,8 +696,8 @@ def _runCommand(command, tmpFile, fOut, stdout=subprocess.DEVNULL):
                 log.info(f"{fOut} SUCCESS {exitCode}")
     
     except portalocker.LockException:
-        success = False
-        return success
+        log.info(f"{fOut} RUNNING")
+        success = True
 
     if not success:
         shutil.copy(tmpFile, '%s.broken.txt' % tmpFile)

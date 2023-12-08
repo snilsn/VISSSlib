@@ -594,9 +594,13 @@ class imageZipFile(zipfile.ZipFile):
 
 def createParentDir(file):
     dirname = os.path.dirname(file)
-    if (dirname != "") and (not os.path.exists(dirname)):
-        log.info(f"Created directory {dirname}")
-        os.makedirs(dirname)
+    if (dirname != ""):
+        try:
+            os.makedirs(dirname)
+        except FileExistsError:
+            pass
+        finally:
+            log.info(f"Created directory {dirname}")
     return
 
 def ncAttrs(site, visssGen, extra={}):
@@ -773,23 +777,24 @@ def open2(file, mode="r", **kwargs):
 def to_netcdf2(dat, file, **kwargs):
     '''
     like xarray netcdf open, but creating directories if needed
-    removes existign files to avoid permission errors
+    remove to random file and move to final file to avoid errors due to race conditions or exisiting files
     '''
     createParentDir(file)
     if os.path.isfile(file):
         log.info(f"remove old version of {file}")
         os.remove(file)
 
-    log.info(f"save {file}")
+    tmpFile = f"{file}.{np.random.randint(0, 99999 + 1)}.tmp.cdf"
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
-        if dat[list(dat.data_vars)[0]].chunks is not None:
+        if dat[list(dat.data_vars)[-1]].chunks is not None:
             with ProgressBar():
-                res = dat.to_netcdf(file, engine="netcdf4", **kwargs)
+                res = dat.to_netcdf(tmpFile, **kwargs)
         else:
-                res = dat.to_netcdf(file, engine="netcdf4", **kwargs)
+                res = dat.to_netcdf(tmpFile, **kwargs)
+    os.rename(tmpFile, file)
+    log.info(f"saved {file}")
     return res
-
 
 @jit(nopython=True)
 def linreg(x, y):

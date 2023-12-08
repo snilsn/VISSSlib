@@ -480,7 +480,8 @@ class detectedParticles(object):
             "Dfit", 'angle', 'perimeter', 'perimeterEroded',
             'pixMin', 'pixMax', 'pixMean', 'pixStd', 'pixSkew', 'pixKurtosis',
             'blur', 'capture_id', 'record_id', 'capture_time',
-            'record_time', 'nThread', "aspectRatio","position_centroid"
+            'record_time', 'nThread', "aspectRatio","position_centroid",
+            #'pixCenter'
         ]:
             arr = []
             for i in self.all.values():
@@ -504,9 +505,12 @@ class detectedParticles(object):
             if self.particleProps[key].dtype == np.float64:
                 self.particleProps[key] = self.particleProps[key].astype(
                     np.float32)
-            elif key in ["position_upperLeft", 'pixMin', 'pixMax', 'nThread', "Droi", "position_centroid"]:
+            elif key in ["position_upperLeft", "Droi", "position_centroid"]:
                 self.particleProps[key] = self.particleProps[key].astype(
                     np.int16)
+            elif key in ['pixCenter', 'pixMin', 'pixMax', 'nThread']:
+                self.particleProps[key] = self.particleProps[key].astype(
+                    np.uint8)
         if includeCnts:
             arrTmp = []
             arrTmp2 = []
@@ -702,6 +706,16 @@ class singleParticle(object):
         self.position_circle, radius = cv2.minEnclosingCircle(self.cnt)
         self.Dmax = 2*radius
 
+        # brightness of center
+        centerX = round(self.position_circle[0] - self.xOffset)
+        centerY = round(self.position_circle[1] - self.yOffset)
+        try:
+            self.pixCenter = frame1[centerX, centerY]
+        #for long particles the center of the circle can be outside the image
+        except IndexError:
+            self.pixCenter = 0
+
+        #import pdb;pdb.set_trace()
         # estimate properties that need shifted position
         self.rect = cv2.minAreaRect(self.cnt)
         center, dims, self.angle = self.rect
@@ -788,6 +802,14 @@ class singleParticle(object):
         # data type cv2.CV_16S requried to avoid overflow
         # https://pyimagesearch.com/2015/09/07/blur-detection-with-opencv/
         self.blur = cv2.Laplacian(self.particleBox, cv2.CV_64F).var(ddof=1)
+
+        # texture
+
+        # remove mask from particle
+        particleMasked = self.particleBox
+        particleMasked[self.particleBoxMask == 0] = 255
+
+
         self.success = True
 
         return
@@ -1120,10 +1142,10 @@ def detectParticles(fname,
                 f.write('no data')
         return 0
 
-    # fnameM = [f.replace(config["movieExtension"], "txt") for f in fnamesV.values()]
 
-    # metaData, nDroppedFrames = metadata.getMetaData(
-    #     fnameM, camera, config, testMovieFile=True)
+    # just in case it is not there yet
+    metadata.createMetaFrames(fn.case, camera, config, skipExisting=True)
+
     try:
         metaData = xr.open_dataset(fn.fname.metaFrames)
     except FileNotFoundError:

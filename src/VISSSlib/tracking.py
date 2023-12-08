@@ -256,9 +256,8 @@ class Tracker(object):
         lv1match["pixSum"] = (
             ~lv1match.pixMean.astype(np.uint8)) * lv1match.area
 
-        self._lv1match = lv1match
+        self.lv1track = lv1match.load()
         self.config = config
-        self.lv1track = deepcopy(lv1match)
         self.dist_thresh = dist_thresh
         self.max_frames_to_skip = 0 # hard coded becuase gaps in data are not considered
         self.max_trace_length = max_trace_length
@@ -287,8 +286,8 @@ class Tracker(object):
         self.lastFrame = 0
 
         # we do not need to load all variables
-        self._lv1match = self._lv1match[set(
-            self.featureKeys + ["capture_time", "position3D_centroid", "pair_id"] + [self.sizeVariable])].load()
+        self._lv1match = deepcopy(self.lv1track[set(
+            self.featureKeys + ["capture_time", "position3D_centroid", "pair_id"] + [self.sizeVariable])])
 
         self.activeTracks = []
         self.archiveTrackNSamples = []
@@ -363,10 +362,6 @@ class Tracker(object):
 
     def updateAll(self):
 
-        if (self.maxIter is None):
-            stopAfter = self.nFrames
-        else:
-            stopAfter = min(self.nFrames, self.maxIter)
 
         for ff in tqdm(range(self.nFrames), file=sys.stdout):
             self.update(ff)
@@ -374,6 +369,12 @@ class Tracker(object):
             #     break
             if self.training and self.trainingComplete:
                 break
+
+        if (self.maxIter is None):
+            stopAfter = self.nFrames
+        else:
+            stopAfter = min(self.nFrames, self.maxIter)
+
 
         if self.training:
             print(f"training complete after {ff} of {self.nFrames} frames")
@@ -860,12 +861,13 @@ def trackParticles(fnameLv1Detect,
 
     if os.path.isfile(fnameLv1Match):
         lv1match = xr.open_dataset(fnameLv1Match)
+        lv1match.load() #important to do that early, is much slower after applying filters with isel
     elif os.path.isfile('%s.nodata' % fnameLv1Match) or os.path.isfile('%s.broken.txt' % fnameLv1Match):
         with tools.open2(f"{fnameTracking}.nodata", "w") as f:
             f.write("no data, lv1match nodata or broken")
         log.error(f"NO DATA {fnameTracking}")
         return None, fnameTracking
-    elif (doMtachIfRequired):
+    elif (doMatchIfRequired):
         log.info("need to create lv1match data")
         _, lv1match, _, _ = matching.matchParticles(
             fnameLv1Detect, config, writeNc=False)
@@ -912,6 +914,8 @@ def trackParticles(fnameLv1Detect,
     lv1track, velSlope, velIntercept = trackTrainer.updateAll()
 
     lv1track = tools.finishNc(lv1track, config.site, config.visssGen)
+    lv1track.load()
+    print(lv1track)
     if writeNc:
         tools.to_netcdf2(lv1track, fnameTracking)
     print("DONE", fnameTracking)

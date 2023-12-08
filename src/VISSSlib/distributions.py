@@ -476,7 +476,7 @@ def createLevel2part(
 
         level1dat_trackAve, level1dat_track2D, level1dat_time, individualDataPoints, _ = getPerTrackStatistics(level1dat)
 
-        # becuase there are no weighted groupby operations, we have to improvise and broadcast the results
+        # because there are no weighted groupby operations, we have to improvise and broadcast the results
         # again to a shape including track_step - then the mean etc. values are dublicated as per track length 
         # and the result is weighted when averaging with timme
         data_vars = ['Dmax', 'area', 'matchScore', 'aspectRatio', 'angle', 'perimeter', 'velocity']
@@ -492,12 +492,13 @@ def createLevel2part(
 
         # make sure only data is used within original track length
         notNull = level1dat_track2D.Dmax.isel(camera=0, drop=True).notnull().stack(pair_id=("track_id","track_step")).compute()
+
         level1dat_4timeAve = level1dat_4timeAve.isel(pair_id=notNull)
         #multiindex causes trouble below, so just swap with time
-
-        # switch to time coordinate
         level1dat_4timeAve = level1dat_4timeAve.swap_dims(pair_id="time")
-        
+        #for reasons I do not understand there are sometimes a few values with NaT timestamops
+        level1dat_4timeAve = level1dat_4timeAve.isel(time=~np.isnan(level1dat_4timeAve.time))
+        individualDataPoints = individualDataPoints.isel(track_id=~np.isnan(individualDataPoints.time))
 
         #clean up
         del level1dat_trackAve
@@ -522,7 +523,7 @@ def createLevel2part(
     sizeDefinitions = ["Dmax", "Dequiv"]
     data_vars = ["area", "angle", "aspectRatio", "perimeter"]
     if sublevel == "track":
-        data_vars.append("velocity")
+        data_vars += ["velocity", "track_angle"]
 
     log.info(f"get time resolved distributions")
     # process each 1 min chunks
@@ -823,7 +824,9 @@ def estimateObservationVolume(level1dat_time, config, DbinsPixel, timeIndex1):
     '''
 
     rotDat = level1dat_time[["camera_phi", "camera_theta", "camera_Ofz"]].sel(
-        camera_rotation="mean").groupby_bins("time", timeIndex1, right=False, squeeze=False).mean()
+        camera_rotation="mean")
+    rotDat = rotDat.isel(track_id = ~np.isnan(rotDat.time).values)
+    rotDat = rotDat.groupby_bins("time", timeIndex1, right=False, squeeze=False).mean()
     rotDat = rotDat.rename(time_bins="time")
     # we want time stamps not intervals
     rotDat["time"] = [a.left for a in rotDat["time"].values]
