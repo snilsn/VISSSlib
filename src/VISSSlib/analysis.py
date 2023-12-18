@@ -1,29 +1,29 @@
 # -*- coding: utf-8 -*-
 
 
+import datetime
 import os
 import sys
-import datetime
-
 from copy import deepcopy
 
+import ipywidgets as widgets
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
-import matplotlib.pyplot as plt
-from IPython.display import display, Image, clear_output
-import ipywidgets as widgets
+from IPython.display import Image, clear_output, display
 
 try:
     import cv2
 except ImportError:
     warnings.warn("opencv not available!")
+import logging
+
 import skimage
 
-from . import __version__
 from . import *
+from . import __version__
 
-import logging
 log = logging.getLogger(__name__)
 
 
@@ -36,8 +36,17 @@ log = logging.getLogger(__name__)
 
 
 class _stereoViewMatch(object):
-    def __init__(self, case, config, version=__version__, markParticles=True, increaseContrast=True, showTracks=False, skipNonMatched=False, lv1match=None):
-
+    def __init__(
+        self,
+        case,
+        config,
+        version=__version__,
+        markParticles=True,
+        increaseContrast=True,
+        showTracks=False,
+        skipNonMatched=False,
+        lv1match=None,
+    ):
         self.case = case
         self.config = config
         self.version = version
@@ -52,10 +61,10 @@ class _stereoViewMatch(object):
         self.rr = 0
 
     def open(self):
-
-        fL = files.FindFiles(self.case, self.config.leader,
-                             self.config, self.version)
-        assert(len(fL.listFiles("level0")) == 1), f"Please select case so that this {fL.fnamesPattern.level0} results only in one file"
+        fL = files.FindFiles(self.case, self.config.leader, self.config, self.version)
+        assert (
+            len(fL.listFiles("level0")) == 1
+        ), f"Please select case so that this {fL.fnamesPattern.level0} results only in one file"
         fL1 = files.Filenames(fL.listFiles("level0")[0], self.config)
 
         #  open all the files
@@ -70,50 +79,58 @@ class _stereoViewMatch(object):
         fnames0F = fL1.filenamesOtherCamera(graceInterval=-1, level="level0")
         if len(fnames0F) > 1:
             print(
-                "Cannot handle camera restarts yet, taking only first file, omitting", fnames0F[1:])
+                "Cannot handle camera restarts yet, taking only first file, omitting",
+                fnames0F[1:],
+            )
             fnames0F = fnames0F[:1]
         fnamesLv0[self.config.follower] = fnames0F[0]
 
         self.meta[self.config.leader] = tools.open_mfmetaFrames(
-            fL.listFiles("metaFrames"), self.config)
+            fL.listFiles("metaFrames"), self.config
+        )
         self.lv1detect[self.config.leader] = tools.open_mflevel1detect(
-            fL.listFiles("level1detect"), self.config)
+            fL.listFiles("level1detect"), self.config
+        )
         try:
-            self.imagesL1detect[self.config.leader] = fL.listFiles("imagesL1detect")[
-                0]
+            self.imagesL1detect[self.config.leader] = fL.listFiles("imagesL1detect")[0]
         except:
             self.imagesL1detect[self.config.leader] = None
-        fnamesMF = fL1.filenamesOtherCamera(
-            graceInterval=-1, level="metaFrames")
+        fnamesMF = fL1.filenamesOtherCamera(graceInterval=-1, level="metaFrames")
         if len(fnamesMF) > 1:
             print(
-                "Cannot handle camera restarts yet, taking only first file, omitting", fnamesMF[1:])
+                "Cannot handle camera restarts yet, taking only first file, omitting",
+                fnamesMF[1:],
+            )
             fnamesMF = fnamesMF[:1]
-        fnames1F = fL1.filenamesOtherCamera(
-            graceInterval=-1, level="level1detect")
+        fnames1F = fL1.filenamesOtherCamera(graceInterval=-1, level="level1detect")
         if len(fnames1F) > 1:
             print(
-                "Cannot handle camera restarts yet, taking only first file, omitting", fnames1F[1:])
+                "Cannot handle camera restarts yet, taking only first file, omitting",
+                fnames1F[1:],
+            )
             fnames1F = fnames1F[:1]
 
-        self.meta[self.config.follower] = tools.open_mfmetaFrames(
-            fnamesMF, self.config)
+        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config)
         self.lv1detect[self.config.follower] = tools.open_mflevel1detect(
-            fnames1F, self.config)
+            fnames1F, self.config
+        )
 
         if self.lv1match is None:
             if not self.showTracks:
                 self.lv1match = tools.open_mflevel1match(
-                    fL.listFiles("level1match"), self.config)
+                    fL.listFiles("level1match"), self.config
+                )
             else:
                 self.lv1match = tools.open_mflevel1match(
-                    fL.listFiles("level1track"), self.config)
+                    fL.listFiles("level1track"), self.config
+                )
         else:
-            self.lv1match = self.lv1match.rename({"pair_id":"fpair_id"})
+            self.lv1match = self.lv1match.rename({"pair_id": "fpair_id"})
             self.lv1match["pair_id"] = self.lv1match.fpair_id
         try:
             self.imagesL1detect[self.config.follower] = fL1.filenamesOtherCamera(
-                graceInterval=-1, level="imagesL1detect")[0]
+                graceInterval=-1, level="imagesL1detect"
+            )[0]
         except:
             self.imagesL1detect[self.config.follower] = None
 
@@ -123,7 +140,8 @@ class _stereoViewMatch(object):
         # self.idDiffs[self.config.follower] = self.idDiff
         # assert  self.idDiff == idDiff2, "estimateCaptureIdDiff did not come to same result for metaFrames and lv1detect"
         self.idDiffs[self.config.follower] = self.idDiff = int(
-            self.lv1match.capture_id.diff("camera").values.flatten()[0])
+            self.lv1match.capture_id.diff("camera").values.flatten()[0]
+        )
         self.idDiffs[self.config.leader] = 0
 
         # remove non moving data
@@ -131,9 +149,12 @@ class _stereoViewMatch(object):
         for camera in self.cameras:
             nChangedPixel = self.meta[camera].nMovingPixel.values
             passesThreshold = nChangedPixel >= minMovingPixels
-            print(f"{passesThreshold.any(1).sum()/len(self.meta[camera].capture_time)*100}% frames are moving")
+            print(
+                f"{passesThreshold.any(1).sum()/len(self.meta[camera].capture_time)*100}% frames are moving"
+            )
             self.meta[camera] = self.meta[camera].isel(
-                capture_time=passesThreshold.any(1))
+                capture_time=passesThreshold.any(1)
+            )
 
         self.uniqueCaptureIds = xr.DataArray(
             np.sort(
@@ -141,17 +162,15 @@ class _stereoViewMatch(object):
                     np.concatenate(
                         (
                             self.meta[self.config.leader].capture_id,
-                            self.meta[self.config.follower].capture_id -
-                            self.idDiff
+                            self.meta[self.config.follower].capture_id - self.idDiff,
                         )
                     )
                 )
             ),
-            dims=["merged_record_id"]
+            dims=["merged_record_id"],
         )
         self.captureTimes = {}
         for camera in self.cameras:
-
             self.videos[camera] = av.VideoReaderMeta(
                 fnamesLv0[camera],
                 self.meta[camera],
@@ -160,12 +179,12 @@ class _stereoViewMatch(object):
                 imagesL1detect=self.imagesL1detect[camera],
                 config=self.config,
                 safeMode=False,
-                skipNonMatched = self.skipNonMatched,
+                skipNonMatched=self.skipNonMatched,
             )
             self.captureTimes[camera] = xr.DataArray(
                 self.meta[camera].capture_time,
                 coords=[self.meta[camera].capture_id],
-                dims=["capture_id"]
+                dims=["capture_id"],
             )
 
     def get(self, rr):
@@ -180,13 +199,18 @@ class _stereoViewMatch(object):
         for camera in self.cameras:
             particles[camera] = []
             if (thisID + self.idDiffs[camera]) in self.meta[camera].capture_id:
-                captureTime = self.captureTimes[camera].sel(
-                    capture_id=thisID + self.idDiffs[camera]).values
-#                 captureTime = 0
+                captureTime = (
+                    self.captureTimes[camera]
+                    .sel(capture_id=thisID + self.idDiffs[camera])
+                    .values
+                )
+                #                 captureTime = 0
                 # print(f"found record {rr} in {camera} data at {captureTime}")
 
                 # print(camera, captureTime)
-                res, self.frame1, meta1, meta2, meta3, particle1 = self.videos[camera].getFrameByCaptureTimeWithParticles(
+                res, self.frame1, meta1, meta2, meta3, particle1 = self.videos[
+                    camera
+                ].getFrameByCaptureTimeWithParticles(
                     captureTime,
                     markParticles=self.markParticles,
                     highlightPid="meta",
@@ -234,26 +258,34 @@ class _stereoViewMatch(object):
 
                 else:
                     frame.append(
-                        np.zeros((
-                            self.config.frame_height+self.config.height_offset,
-                            self.config.frame_width,
-                            3
-                        ), dtype=int) + 130
+                        np.zeros(
+                            (
+                                self.config.frame_height + self.config.height_offset,
+                                self.config.frame_width,
+                                3,
+                            ),
+                            dtype=int,
+                        )
+                        + 130
                     )
             else:
                 # print(camera, "not found",(thisID + self.idDiffs[camera]) )
                 # print(f"did not find record {rr} in {camera} data")
                 frame.append(
-                    np.zeros((
-                        self.config.frame_height+self.config.height_offset,
-                        self.config.frame_width,
-                        3
-                    ), dtype=int)
+                    np.zeros(
+                        (
+                            self.config.frame_height + self.config.height_offset,
+                            self.config.frame_width,
+                            3,
+                        ),
+                        dtype=int,
+                    )
                 )
                 meta1 = meta2 = meta3 = None
 
             frameBorder = np.zeros(
-                (self.config.frame_height+self.config.height_offset, 10, 3), dtype=int)
+                (self.config.frame_height + self.config.height_offset, 10, 3), dtype=int
+            )
 
             frame.append(frameBorder)
             metaFrames.append(meta1)
@@ -270,14 +302,14 @@ class _stereoViewMatch(object):
         return frame, metaFrames, lv1detects, lv1matches, particles
 
     def next(self):
-        newrr = self.rr+1
+        newrr = self.rr + 1
         if newrr >= len(self.uniqueCaptureIds):
             print("end of movie file")
             return None, None, None, None, None
         return self.get(newrr)
 
     def previous(self):
-        newrr = self.rr-1
+        newrr = self.rr - 1
         if newrr < 0:
             print("beginning of movie file")
             return None, None, None, None, None
@@ -304,7 +336,7 @@ class _stereoViewMatch(object):
 
     def nextMatch(self):
         rr = self.rr
-        rrs = range(rr+1, len(self.uniqueCaptureIds))
+        rrs = range(rr + 1, len(self.uniqueCaptureIds))
         if len(rrs) == 0:
             print("end of movie file")
             return None, None, None, None, None
@@ -316,7 +348,7 @@ class _stereoViewMatch(object):
 
     def previousMatch(self):
         rr = self.rr
-        rrs = range(rr-1, -1, -1)
+        rrs = range(rr - 1, -1, -1)
         if len(rrs) == 0:
             print("start of movie file")
             return None, None, None, None, None
@@ -326,21 +358,38 @@ class _stereoViewMatch(object):
                 break
         return self.get(newrr)
 
-    def close(self, ):
+    def close(
+        self,
+    ):
         for camera in self.cameras:
             self.meta[camera].close()
             self.lv1detect[camera].close()
             self.videos[camera].release()
 
 
-class matchGUI():
-    def __init__(self, case, config, 
-        markParticles=True, increaseContrast=False, showTracks=False, 
-        skipNonMatched=False, showVars=["Dmax"], lv1match=None, 
-        showParticles=False, scale=0.5):
-
-        self.sv = _stereoViewMatch(case, config, markParticles=markParticles,
-                                   increaseContrast=increaseContrast, showTracks=showTracks, skipNonMatched=skipNonMatched, lv1match=lv1match)
+class matchGUI:
+    def __init__(
+        self,
+        case,
+        config,
+        markParticles=True,
+        increaseContrast=False,
+        showTracks=False,
+        skipNonMatched=False,
+        showVars=["Dmax"],
+        lv1match=None,
+        showParticles=False,
+        scale=0.5,
+    ):
+        self.sv = _stereoViewMatch(
+            case,
+            config,
+            markParticles=markParticles,
+            increaseContrast=increaseContrast,
+            showTracks=showTracks,
+            skipNonMatched=skipNonMatched,
+            lv1match=lv1match,
+        )
         self.showVars = showVars
         self.showParticles = showParticles
         self.scale = scale
@@ -351,7 +400,6 @@ class matchGUI():
         return self.updateHandles(*self.sv.get(fid))
 
     def updateHandles(self, frame, metaFrames, lv1detects, lv1matches, particles):
-
         self.metaFrames = metaFrames
         self.lv1detects = lv1detects
         self.lv1matches = lv1matches
@@ -359,7 +407,6 @@ class matchGUI():
         cc = 0
         mII = []
         if (self.lv1detects is not None) and (self.lv1detects[cc] is not None):
-
             for pid in self.lv1detects[cc].pid.values:
                 mm = np.where(self.sv.lv1match.isel(camera=cc).pid == pid)[0]
                 if len(mm) > 0:
@@ -369,23 +416,25 @@ class matchGUI():
         else:
             lv1match = None
 
-        _, frame = cv2.imencode('.jpg',
-            skimage.transform.resize(frame,
-                               (np.array(frame.shape[:2])*self.scale).astype(int),
-                               mode='edge',
-                               anti_aliasing=True,
-                               preserve_range=True,
-                               order=0) 
-            )
+        _, frame = cv2.imencode(
+            ".jpg",
+            skimage.transform.resize(
+                frame,
+                (np.array(frame.shape[:2]) * self.scale).astype(int),
+                mode="edge",
+                anti_aliasing=True,
+                preserve_range=True,
+                order=0,
+            ),
+        )
         try:
             self.display_handle.update(Image(data=frame.tobytes()))
         except AttributeError:
-            self.display_handle = display(
-                Image(data=frame.tobytes()), display_id=True)
+            self.display_handle = display(Image(data=frame.tobytes()), display_id=True)
 
         try:
             self.setNN(self.sv.rr)
-        except AttributeError: #if no GUI available
+        except AttributeError:  # if no GUI available
             pass
         with self.out:
             self.out.clear_output()
@@ -401,16 +450,27 @@ class matchGUI():
             if metaFrames[0] is None:
                 c0, i0, r0 = "n/a", "n/a", "n/a"
             else:
-                c0, i0, r0 = metaFrames[0].capture_time.values, metaFrames[0].capture_id.values, metaFrames[0].record_id.values
+                c0, i0, r0 = (
+                    metaFrames[0].capture_time.values,
+                    metaFrames[0].capture_id.values,
+                    metaFrames[0].record_id.values,
+                )
             if metaFrames[1] is None:
                 c1, i1, r1 = "n/a", "n/a", "n/a"
             else:
-                c1, i1, r1 = metaFrames[1].capture_time.values, metaFrames[1].capture_id.values, metaFrames[1].record_id.values
+                c1, i1, r1 = (
+                    metaFrames[1].capture_time.values,
+                    metaFrames[1].capture_id.values,
+                    metaFrames[1].record_id.values,
+                )
 
             print("leader:", c0, i0, "follower:", c1, i1)
             if lv1match is not None:
-                Zdiff = lv1match.position3D_centroid.isel(
-                    dim3D=[2, 3], drop=True).diff("dim3D").values.flatten()
+                Zdiff = (
+                    lv1match.position3D_centroid.isel(dim3D=[2, 3], drop=True)
+                    .diff("dim3D")
+                    .values.flatten()
+                )
                 # print(
                 #     lv1match.pair_id.values.flatten(),
                 #     ["%.7f score" % (l) for l in lv1match.matchScore.values],
@@ -424,13 +484,27 @@ class matchGUI():
                 # )
                 for var in self.showVars:
                     print(var, lv1match[var].values)
-                print("#"*100)
-            if (lv1detects[0] is not None) and (lv1detects[1] is not None) and (lv1detects[0]["pid"].shape == lv1detects[1]["pid"].shape):
-                print(f"{'pid'.ljust(20)}: D {'X'.ljust(23)}, L {str(lv1detects[0]['pid'].values).ljust(23)}, F {str(lv1detects[1]['pid'].values).ljust(23)}")
+                print("#" * 100)
+            if (
+                (lv1detects[0] is not None)
+                and (lv1detects[1] is not None)
+                and (lv1detects[0]["pid"].shape == lv1detects[1]["pid"].shape)
+            ):
+                print(
+                    f"{'pid'.ljust(20)}: D {'X'.ljust(23)}, L {str(lv1detects[0]['pid'].values).ljust(23)}, F {str(lv1detects[1]['pid'].values).ljust(23)}"
+                )
                 for i in lv1detects[0].data_vars:
-                    if i in ["touchesBorder", "pixPercentiles", "nThread", "record_id", "cnt"]:
+                    if i in [
+                        "touchesBorder",
+                        "pixPercentiles",
+                        "nThread",
+                        "record_id",
+                        "cnt",
+                    ]:
                         continue
-                    print(f"{i.ljust(20)}: D {str(lv1detects[0][i].values - lv1detects[1][i].values).ljust(23)}, L {str(lv1detects[0][i].values).ljust(23)}, F {str(lv1detects[1][i].values).ljust(23)}")
+                    print(
+                        f"{i.ljust(20)}: D {str(lv1detects[0][i].values - lv1detects[1][i].values).ljust(23)}, L {str(lv1detects[0][i].values).ljust(23)}, F {str(lv1detects[1][i].values).ljust(23)}"
+                    )
 
     def getNN(self):
         nn = int(self.texts[0].get_interact_value())
@@ -440,44 +514,45 @@ class matchGUI():
         self.texts[0].value = str(nn)
 
     def createGUI(self, pid=0, startId=0):
-
         self.out = widgets.Output()
         # set width and height
-        layout = widgets.Layout(width='auto', height='30px')
+        layout = widgets.Layout(width="auto", height="30px")
 
-        buttonNextMatch = widgets.Button(description='>>>', layout=layout)
-        buttonPrevMatch = widgets.Button(description='<<<', layout=layout)
-        buttonNextMatch.on_click(
-            lambda x: self.updateHandles(*self.sv.nextMatch()))
-        buttonPrevMatch.on_click(
-            lambda x: self.updateHandles(*self.sv.previousMatch()))
+        buttonNextMatch = widgets.Button(description=">>>", layout=layout)
+        buttonPrevMatch = widgets.Button(description="<<<", layout=layout)
+        buttonNextMatch.on_click(lambda x: self.updateHandles(*self.sv.nextMatch()))
+        buttonPrevMatch.on_click(lambda x: self.updateHandles(*self.sv.previousMatch()))
 
-        buttonNext = widgets.Button(description='>>', layout=layout)
-        buttonPrev = widgets.Button(description='<<', layout=layout)
-        buttonNext.on_click(
-            lambda x: self.updateHandles(*self.sv.nextCommon()))
-        buttonPrev.on_click(lambda x: self.updateHandles(
-            *self.sv.previousCommon()))
+        buttonNext = widgets.Button(description=">>", layout=layout)
+        buttonPrev = widgets.Button(description="<<", layout=layout)
+        buttonNext.on_click(lambda x: self.updateHandles(*self.sv.nextCommon()))
+        buttonPrev.on_click(lambda x: self.updateHandles(*self.sv.previousCommon()))
 
-        buttonNextFrame = widgets.Button(description='>', layout=layout)
-        buttonPrevFrame = widgets.Button(description='<', layout=layout)
+        buttonNextFrame = widgets.Button(description=">", layout=layout)
+        buttonPrevFrame = widgets.Button(description="<", layout=layout)
         buttonNextFrame.on_click(lambda x: self.updateHandles(*self.sv.next()))
-        buttonPrevFrame.on_click(
-            lambda x: self.updateHandles(*self.sv.previous()))
+        buttonPrevFrame.on_click(lambda x: self.updateHandles(*self.sv.previous()))
 
-        buttons = [buttonPrevMatch, buttonNextMatch, buttonPrev,
-                   buttonNext, buttonPrevFrame, buttonNextFrame]
+        buttons = [
+            buttonPrevMatch,
+            buttonNextMatch,
+            buttonPrev,
+            buttonNext,
+            buttonPrevFrame,
+            buttonNextFrame,
+        ]
         self.texts = []
 
-        self.texts.append(widgets.Text(
-            value=str(pid),
-            description=f"{len(self.sv.uniqueCaptureIds)} tot. ids",
-            disabled=False,
-            width='auto',
-        )
+        self.texts.append(
+            widgets.Text(
+                value=str(pid),
+                description=f"{len(self.sv.uniqueCaptureIds)} tot. ids",
+                disabled=False,
+                width="auto",
+            )
         )
 
-        load = widgets.Button(description='Load', layout=layout)
+        load = widgets.Button(description="Load", layout=layout)
         load.on_click(lambda x: self.updateHandlesId(self.getNN()))
         self.texts.append(load)
 
@@ -499,7 +574,6 @@ class matchGUI():
 
 class _stereoViewDetect(object):
     def __init__(self, case, config, version=__version__, markParticles=True):
-
         self.case = case
         self.config = config
         self.version = version
@@ -513,10 +587,10 @@ class _stereoViewDetect(object):
         self.open()
 
     def open(self):
-
-        fL = files.FindFiles(self.case, self.config.leader,
-                             self.config, self.version)
-        assert(len(fL.listFiles("level0")) == 1), f"Please select case so that this {fL.fnamesPattern.level0} results only in one file"
+        fL = files.FindFiles(self.case, self.config.leader, self.config, self.version)
+        assert (
+            len(fL.listFiles("level0")) == 1
+        ), f"Please select case so that this {fL.fnamesPattern.level0} results only in one file"
         fL1 = files.Filenames(fL.listFiles("level0")[0], self.config)
 
         #  open all the files
@@ -530,32 +604,38 @@ class _stereoViewDetect(object):
         fnames0F = fL1.filenamesOtherCamera(graceInterval=-1, level="level0")
         if len(fnames0F) > 1:
             print(
-                "Cannot handle camera restarts yet, taking only first file, omitting", fnames0F[1:])
+                "Cannot handle camera restarts yet, taking only first file, omitting",
+                fnames0F[1:],
+            )
             fnames0F = fnames0F[:1]
         fnamesLv0[self.config.follower] = fnames0F[0]
 
         self.meta[self.config.leader] = tools.open_mfmetaFrames(
-            fL.listFiles("metaFrames"), self.config)
+            fL.listFiles("metaFrames"), self.config
+        )
         self.lv1detect[self.config.leader] = tools.open_mflevel1detect(
-            fL.listFiles("level1detect"), self.config)
+            fL.listFiles("level1detect"), self.config
+        )
 
-        fnamesMF = fL1.filenamesOtherCamera(
-            graceInterval=-1, level="metaFrames")
+        fnamesMF = fL1.filenamesOtherCamera(graceInterval=-1, level="metaFrames")
         if len(fnamesMF) > 1:
             print(
-                "Cannot handle camera restarts yet, taking only first file, omitting", fnamesMF[1:])
+                "Cannot handle camera restarts yet, taking only first file, omitting",
+                fnamesMF[1:],
+            )
             fnamesMF = fnamesMF[:1]
-        fnames1F = fL1.filenamesOtherCamera(
-            graceInterval=-1, level="level1detect")
+        fnames1F = fL1.filenamesOtherCamera(graceInterval=-1, level="level1detect")
         if len(fnames1F) > 1:
             print(
-                "Cannot handle camera restarts yet, taking only first file, omitting", fnames1F[1:])
+                "Cannot handle camera restarts yet, taking only first file, omitting",
+                fnames1F[1:],
+            )
             fnames1F = fnames1F[:1]
 
-        self.meta[self.config.follower] = tools.open_mfmetaFrames(
-            fnamesMF, self.config)
+        self.meta[self.config.follower] = tools.open_mfmetaFrames(fnamesMF, self.config)
         self.lv1detect[self.config.follower] = tools.open_mflevel1detect(
-            fnames1F, self.config)
+            fnames1F, self.config
+        )
 
         self.index = {}
         for camera in self.cameras:
@@ -585,34 +665,46 @@ class _stereoViewDetect(object):
                 #                 captureTime = 0
                 # print(f"found record {rr} in {camera} data at {captureTime}")
 
-                res, self.frame1, meta1, meta2, _, _ = self.videos[camera].getFrameByIndexWithParticles(
-                    rr, markParticles=self.markParticles)
+                res, self.frame1, meta1, meta2, _, _ = self.videos[
+                    camera
+                ].getFrameByIndexWithParticles(rr, markParticles=self.markParticles)
                 if self.frame1 is not None:
                     frame.append(self.frame1)
                 else:
                     frame.append(
-                        np.zeros((
-                            self.config.frame_height+self.config.height_offset,
-                            self.config.frame_width,
-                            3
-                        ), dtype=int) + 130
+                        np.zeros(
+                            (
+                                self.config.frame_height + self.config.height_offset,
+                                self.config.frame_width,
+                                3,
+                            ),
+                            dtype=int,
+                        )
+                        + 130
                     )
                 self.this_capture_time[camera] = meta1.capture_time.values
                 self.this_record_time[camera] = meta1.record_time.values
             else:
                 print(f"did not find record {rr} in {camera} data")
                 frame.append(
-                    np.zeros((
-                        self.config.frame_height+self.config.height_offset,
-                        self.config.frame_width,
-                        3
-                    ), dtype=int)
+                    np.zeros(
+                        (
+                            self.config.frame_height + self.config.height_offset,
+                            self.config.frame_width,
+                            3,
+                        ),
+                        dtype=int,
+                    )
                 )
                 meta1 = meta2 = None
                 self.this_capture_time[camera] = None
                 self.this_record_time[camera] = None
-            frame.append(np.zeros((self.config.frame_height +
-                                   self.config.height_offset, 10, 3), dtype=int))
+            frame.append(
+                np.zeros(
+                    (self.config.frame_height + self.config.height_offset, 10, 3),
+                    dtype=int,
+                )
+            )
             metaFrames.append(meta1)
             lv1detects.append(meta2)
 
@@ -651,28 +743,29 @@ class _stereoViewDetect(object):
         refCam = tools.getOtherCamera(self.config, camera)
         nn = self.rrs
         tDiff = np.abs(
-            getattr(self, f"this_{time1}")[refCam] - self.meta[camera][time1].values)
+            getattr(self, f"this_{time1}")[refCam] - self.meta[camera][time1].values
+        )
         minII = np.argmin(tDiff)
         nn[camera] = minII
-#         print('found time difference', time1, camera, nn)
+        #         print('found time difference', time1, camera, nn)
 
         return self.get(nn)
 
-    def close(self, ):
+    def close(
+        self,
+    ):
         for camera in self.cameras:
             self.meta[camera].close()
             self.lv1detect[camera].close()
             self.videos[camera].release()
 
 
-class manualMatchGUI():
+class manualMatchGUI:
     def __init__(self, case, config, markParticles=True):
-
         self.sv = _stereoViewDetect(case, config, markParticles=markParticles)
         return
 
     def updateHandles(self, frame, metaFrames, lv1detects):
-
         self.metaFrames = metaFrames
         self.lv1detects = lv1detects
 
@@ -682,12 +775,11 @@ class manualMatchGUI():
         if frame is None:
             return
 
-        _, frame = cv2.imencode('.jpeg', frame)
+        _, frame = cv2.imencode(".jpeg", frame)
         try:
             self.display_handle.update(Image(data=frame.tobytes()))
         except AttributeError:
-            self.display_handle = display(
-                Image(data=frame.tobytes()), display_id=True)
+            self.display_handle = display(Image(data=frame.tobytes()), display_id=True)
 
         self.setNN(self.sv.rrs)
         with self.out:
@@ -695,20 +787,35 @@ class manualMatchGUI():
             if metaFrames[0] is None:
                 c0, i0 = "n/a", "n/a"
             else:
-                c0, i0 = metaFrames[0].capture_time.values, metaFrames[0].capture_id.values
+                c0, i0 = (
+                    metaFrames[0].capture_time.values,
+                    metaFrames[0].capture_id.values,
+                )
             if metaFrames[1] is None:
                 c1, i1 = "n/a", "n/a"
             else:
-                c1, i1 = metaFrames[1].capture_time.values, metaFrames[1].capture_id.values
+                c1, i1 = (
+                    metaFrames[1].capture_time.values,
+                    metaFrames[1].capture_id.values,
+                )
 
             print("leader:", c0, i0, "follower:", c1, i1)
 
             if (lv1detects[0] is not None) and (lv1detects[1] is not None):
-                print(f"{'pid'.ljust(20)}: D {'X'.ljust(23)}, L {str(lv1detects[0]['pid'].values).ljust(23)}, F {str(lv1detects[1]['pid'].values).ljust(23)}")
+                print(
+                    f"{'pid'.ljust(20)}: D {'X'.ljust(23)}, L {str(lv1detects[0]['pid'].values).ljust(23)}, F {str(lv1detects[1]['pid'].values).ljust(23)}"
+                )
                 for i in lv1detects[0].data_vars:
-                    if i in ["touchesBorder", "pixPercentiles", "nThread", "record_id", ]:
+                    if i in [
+                        "touchesBorder",
+                        "pixPercentiles",
+                        "nThread",
+                        "record_id",
+                    ]:
                         continue
-                    print(f"{i.ljust(20)}: D {str(lv1detects[0][i].values - lv1detects[1][i].values).ljust(23)}, L {str(lv1detects[0][i].values).ljust(23)}, F {str(lv1detects[1][i].values).ljust(23)}")
+                    print(
+                        f"{i.ljust(20)}: D {str(lv1detects[0][i].values - lv1detects[1][i].values).ljust(23)}, L {str(lv1detects[0][i].values).ljust(23)}, F {str(lv1detects[1][i].values).ljust(23)}"
+                    )
 
         return
 
@@ -723,41 +830,56 @@ class manualMatchGUI():
             self.texts[ii].value = str(nn[camera])
 
     def createGUI(self):
-
         self.out = widgets.Output()
 
         # set width and height
-        layout = widgets.Layout(width='auto', height='30px')
+        layout = widgets.Layout(width="auto", height="30px")
 
         buttons = []
 
-#             buttonNext = widgets.Button(description='>>', layout=layout)
-#             buttonPrev = widgets.Button(description='<<', layout=layout)
-#             buttonNext.on_click(lambda x: self.updateHandles(*self.sv.nextCommon()))
-#             buttonPrev.on_click(lambda x: self.updateHandles(*self.sv.previousCommon()))
+        #             buttonNext = widgets.Button(description='>>', layout=layout)
+        #             buttonPrev = widgets.Button(description='<<', layout=layout)
+        #             buttonNext.on_click(lambda x: self.updateHandles(*self.sv.nextCommon()))
+        #             buttonPrev.on_click(lambda x: self.updateHandles(*self.sv.previousCommon()))
 
-        buttonNextFrame = widgets.Button(description=f'>', layout=layout)
-        buttonPrevFrame = widgets.Button(description=f'<', layout=layout)
-        buttonNextFrame.on_click(
-            lambda x: self.updateHandles(*self.sv.next("all")))
-        buttonPrevFrame.on_click(
-            lambda x: self.updateHandles(*self.sv.previous("all")))
+        buttonNextFrame = widgets.Button(description=f">", layout=layout)
+        buttonPrevFrame = widgets.Button(description=f"<", layout=layout)
+        buttonNextFrame.on_click(lambda x: self.updateHandles(*self.sv.next("all")))
+        buttonPrevFrame.on_click(lambda x: self.updateHandles(*self.sv.previous("all")))
         buttons += [buttonPrevFrame, buttonNextFrame]
 
-        buttonNextFrame1 = widgets.Button(description=f'{self.sv.config.instruments[0]} >', layout=layout)
-        buttonPrevFrame1 = widgets.Button(description=f'{self.sv.config.instruments[0]} <', layout=layout)
-        buttonNextFrame1.on_click(lambda x: self.updateHandles(
-            *self.sv.next(deepcopy(self.sv.config.instruments[0]))))
-        buttonPrevFrame1.on_click(lambda x: self.updateHandles(
-            *self.sv.previous(deepcopy(self.sv.config.instruments[0]))))
+        buttonNextFrame1 = widgets.Button(
+            description=f"{self.sv.config.instruments[0]} >", layout=layout
+        )
+        buttonPrevFrame1 = widgets.Button(
+            description=f"{self.sv.config.instruments[0]} <", layout=layout
+        )
+        buttonNextFrame1.on_click(
+            lambda x: self.updateHandles(
+                *self.sv.next(deepcopy(self.sv.config.instruments[0]))
+            )
+        )
+        buttonPrevFrame1.on_click(
+            lambda x: self.updateHandles(
+                *self.sv.previous(deepcopy(self.sv.config.instruments[0]))
+            )
+        )
         buttons += [buttonPrevFrame1, buttonNextFrame1]
 
-        buttonNextFrame2 = widgets.Button(description=f'{self.sv.config.instruments[1]} >', layout=layout)
-        buttonPrevFrame2 = widgets.Button(description=f'{self.sv.config.instruments[1]} <', layout=layout)
-        buttonNextFrame2.on_click(lambda x: self.updateHandles(
-            *self.sv.next(self.sv.config.instruments[1])))
-        buttonPrevFrame2.on_click(lambda x: self.updateHandles(
-            *self.sv.previous(self.sv.config.instruments[1])))
+        buttonNextFrame2 = widgets.Button(
+            description=f"{self.sv.config.instruments[1]} >", layout=layout
+        )
+        buttonPrevFrame2 = widgets.Button(
+            description=f"{self.sv.config.instruments[1]} <", layout=layout
+        )
+        buttonNextFrame2.on_click(
+            lambda x: self.updateHandles(*self.sv.next(self.sv.config.instruments[1]))
+        )
+        buttonPrevFrame2.on_click(
+            lambda x: self.updateHandles(
+                *self.sv.previous(self.sv.config.instruments[1])
+            )
+        )
         buttons += [buttonPrevFrame2, buttonNextFrame2]
 
         self.texts = []
@@ -776,32 +898,48 @@ class manualMatchGUI():
             # w.observe(lambda x: self.updateHandles(*self.sv.get(self.getNN()))) #doesnt work?!
             self.texts.append(w)
 
-        load = widgets.Button(description='Load', layout=layout)
+        load = widgets.Button(description="Load", layout=layout)
         load.on_click(lambda x: self.updateHandles(*self.sv.get(self.getNN())))
         self.texts.append(load)
 
         matching = []
 
-        match1 = widgets.Button(description='Match CT of %s' %
-                                self.sv.config.instruments[0], layout=layout)
-        match1.on_click(lambda _: self.updateHandles(
-            *self.sv.matchTime('capture_time', self.sv.config.instruments[0])))
+        match1 = widgets.Button(
+            description="Match CT of %s" % self.sv.config.instruments[0], layout=layout
+        )
+        match1.on_click(
+            lambda _: self.updateHandles(
+                *self.sv.matchTime("capture_time", self.sv.config.instruments[0])
+            )
+        )
         matching.append(match1)
-        match1a = widgets.Button(description='Match CT of %s' %
-                                 self.sv.config.instruments[1], layout=layout)
-        match1a.on_click(lambda _: self.updateHandles(
-            *self.sv.matchTime('capture_time', self.sv.config.instruments[1])))
+        match1a = widgets.Button(
+            description="Match CT of %s" % self.sv.config.instruments[1], layout=layout
+        )
+        match1a.on_click(
+            lambda _: self.updateHandles(
+                *self.sv.matchTime("capture_time", self.sv.config.instruments[1])
+            )
+        )
         matching.append(match1a)
 
-        match2 = widgets.Button(description='Match RT of %s' %
-                                self.sv.config.instruments[0], layout=layout)
-        match2.on_click(lambda _: self.updateHandles(
-            *self.sv.matchTime('record_time', self.sv.config.instruments[0])))
+        match2 = widgets.Button(
+            description="Match RT of %s" % self.sv.config.instruments[0], layout=layout
+        )
+        match2.on_click(
+            lambda _: self.updateHandles(
+                *self.sv.matchTime("record_time", self.sv.config.instruments[0])
+            )
+        )
         matching.append(match2)
-        match2a = widgets.Button(description='Match RT of %s' %
-                                 self.sv.config.instruments[1], layout=layout)
-        match2a.on_click(lambda _: self.updateHandles(
-            *self.sv.matchTime('record_time', self.sv.config.instruments[1])))
+        match2a = widgets.Button(
+            description="Match RT of %s" % self.sv.config.instruments[1], layout=layout
+        )
+        match2a.on_click(
+            lambda _: self.updateHandles(
+                *self.sv.matchTime("record_time", self.sv.config.instruments[1])
+            )
+        )
         matching.append(match2a)
 
         display_handle = None
@@ -818,7 +956,4 @@ class manualMatchGUI():
 
         display(widgets.VBox([statusH, buttonsH, matchingH, self.out]))
 
-        return 
-
-
-
+        return
