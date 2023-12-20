@@ -625,7 +625,11 @@ class detectedParticles(object):
         dim2D = ["x", "y"]
         dim3D = ["x", "y", "z"]
         self.particleProps = xr.Dataset(
-            coords={"pid": list(self.all.keys()), "percentiles": range(10, 100, 10)}
+            coords={
+                "pid": list(self.all.keys()),
+                "percentiles": range(10, 100, 10),
+                "FFTfreqs": self.lastParticle.FFTfreqs,
+            }
         )
         for key in [
             "Dmax",
@@ -652,7 +656,8 @@ class detectedParticles(object):
             "nThread",
             "aspectRatio",
             "position_centroid",
-            #'pixCenter'
+            "pixCenter",
+            "contourFFTsum",
         ]:
             arr = []
             for i in self.all.values():
@@ -744,6 +749,13 @@ class detectedParticles(object):
         self.particleProps["pixPercentiles"] = xr.DataArray(
             np.array(percentiles).astype(np.float32),
             coords=[self.particleProps.pid, self.particleProps.percentiles],
+        )
+        FFTs = []
+        for i in self.all.values():
+            FFTs.append(getattr(i, "contourFFT"))
+        self.particleProps["contourFFT"] = xr.DataArray(
+            np.array(FFTs).astype(np.float32),
+            coords=[self.particleProps.pid, self.particleProps.FFTfreqs],
         )
         return self.particleProps
 
@@ -1053,7 +1065,17 @@ class singleParticle(object):
         # https://pyimagesearch.com/2015/09/07/blur-detection-with-opencv/
         self.blur = cv2.Laplacian(self.particleBox, cv2.CV_64F).var(ddof=1)
 
-        # texture
+        # FFT
+        cnt1 = self.cnt - self.position_centroid
+        r, theta = tools.cart2pol(cnt1[:, 0, 0], cnt1[:, 0, 1])
+        N = 180  # what is a smart choise??
+        maxFFT = 16
+        newTheta = np.linspace(0, 2 * np.pi, num=N)
+        newR = np.interp(newTheta, theta, r, period=2 * np.pi)
+        contourFFT = np.fft.fft(newR / newR.mean())
+        self.contourFFTsum = self.contourFFT.sum()
+        self.FFTfreqs = np.fft.fftfreq(N, 1 / N)[1:, maxFFT + 1]
+        self.contourFFT = contourFFT[1:, maxFFT + 1]
 
         # remove mask from particle
         particleMasked = self.particleBox
