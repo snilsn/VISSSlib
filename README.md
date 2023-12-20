@@ -2,7 +2,7 @@
 
 Install conda/mamba dependencies
 
-    conda install numpy  scipy  xarray  dask[complete]  pandas pyyaml matplotlib bottleneck pillow  addict opencv Pillow netcdf4 ipywidgets trimesh scikit-image tqdm filterpy flox portalocker numba
+    conda install numpy  scipy  xarray  dask[complete]  pandas pyyaml matplotlib bottleneck pillow  addict opencv Pillow netcdf4 ipywidgets trimesh scikit-image tqdm filterpy flox portalocker numba xarray-extras
 
 Note that trimesh also requires Blender or OpenSCAD which is not available through conda. 
 

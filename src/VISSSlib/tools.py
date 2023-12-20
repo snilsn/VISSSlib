@@ -702,9 +702,10 @@ def finishNc(dat, site, visssGen, extra={}):
         if (dat[k].dtype == object) or (dat[k].dtype == str):
             dat[k] = dat[k].astype("U")
 
-        dat[k].encoding = {}
-        dat[k].encoding["zlib"] = True
-        dat[k].encoding["complevel"] = 5
+        if not str(dat[k].dtype).startswith("<U"):
+            dat[k].encoding = {}
+            dat[k].encoding["zlib"] = True
+            dat[k].encoding["complevel"] = 5
         # need to overwrite units becuase leting xarray handle that might lead to inconsistiencies
         # due to mixing of milli and micro seconds
         if k.endswith("time") or k.endswith("time_orig") or k.endswith("time_even"):
@@ -911,3 +912,11 @@ def linreg(x, y):
     # calculate c = y_mean - m * mean_x / n
     intercept = mean_y - slope * mean_x
     return slope, intercept
+
+
+def cart2pol(x, y):
+    """coordinate transform"""
+
+    rho = np.sqrt(x**2 + y**2)
+    phi = np.arctan2(y, x)
+    return (rho, phi)

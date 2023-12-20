@@ -1042,8 +1042,7 @@ def matchParticles(
 
     fClass = [files.FilenamesFromLevel(f, config) for f in fnames1F]
     fCases = np.unique([f.case.split("-")[0] for f in fClass])
-
-    # just in case
+    just in case
     metadata.createEvent(
         ffl1.case.split("-")[0], config.leader, config, skipExisting=True
     )
