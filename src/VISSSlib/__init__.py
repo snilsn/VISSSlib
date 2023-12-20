@@ -15,12 +15,15 @@
 # __version__ = '20221024' # bug fixes: blur, angle. more blocking bins 4 event file. using canny for particle detection, added cnt, perimeterEroded to nc file.
 # images in tar file, alpha channel shows applied mask, particles touching border noct procesed
 # __version__ = '20230106' # Dmax bugfix, clean up of variables, position_centroid missing until jan 31st!!
+# __version__ = '20231116' #adapted detection (lower thresholds), first workign tracking version
+# __version__ = '1.0.0' # new  version number scheme to allow better control about reprocessin, added FFT contour
+
 
 # Version is pulled from git tag!!
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = ".".join(version("VISSSlib").split(".")[:3])
+    __version__ = ".".join(version("VISSSlib").split(".")[:2])
     __versionFull__ = version("VISSSlib")
 except PackageNotFoundError:
     # package is not installed

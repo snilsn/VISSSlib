@@ -1073,10 +1073,10 @@ def loopCreateBatch(
     nCPU=None,
     products=[
         "level1detect",
-        "level1match",
-        "level2match",
-        "level1track",
-        "level2track",
+        # "level1match",
+        # "level2match",
+        # "level1track",
+        # "level2track",
     ],
     doPlot=True,
 ):  #
