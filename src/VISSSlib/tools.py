@@ -668,7 +668,7 @@ def createParentDir(file):
             os.makedirs(dirname)
         except FileExistsError:
             pass
-        finally:
+        else:
             log.info(f"Created directory {dirname}")
     return
 

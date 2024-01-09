@@ -1042,7 +1042,7 @@ def matchParticles(
 
     fClass = [files.FilenamesFromLevel(f, config) for f in fnames1F]
     fCases = np.unique([f.case.split("-")[0] for f in fClass])
-    just in case
+    # just in case
     metadata.createEvent(
         ffl1.case.split("-")[0], config.leader, config, skipExisting=True
     )
@@ -1676,6 +1676,11 @@ def createMetaRotation(
 ):
     # find files
     fl = files.FindFiles(case, config.leader, config, version)
+
+    # just in case it is missing
+    metadata.createEvent(
+        fl.case.split("-")[0], config.leader, config, skipExisting=True
+    )
 
     if len(fl.listFiles("metaEvents")) == 0:
         print("No event files", case, config.leader, fl.fnamesPattern.metaEvents)

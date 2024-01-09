@@ -537,7 +537,7 @@ def _getMetaData1(
                 ret, frame = inVid.read()
 
                 try:
-                    subFrame = frame[height_offset:, :, 0]
+                    subFrame = frame[config.height_offset :, :, 0]
                 except TypeError:  # frame is None at the end of the file
                     break
                 try:
@@ -992,7 +992,11 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
             else:
                 log.info(
                     tools.concat(
-                        "Missing files, redoing event file", nFiles, "of", len(fnames0)
+                        "redoing event file, missing",
+                        nFiles,
+                        "of",
+                        len(fnames0),
+                        "files",
                     )
                 )
                 eventDat.close()

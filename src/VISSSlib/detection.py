@@ -247,7 +247,7 @@ class detectedParticles(object):
         else:
             fgMask4Contours = self.fgMask
         cnts, _ = cv2.findContours(
-            fgMask4Contours, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            fgMask4Contours, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
         )
 
         self.cnts = list()
@@ -351,7 +351,7 @@ class detectedParticles(object):
                     tools.displayImage(fgMaskCanny, rescale=4)
 
                 cnts = cv2.findContours(
-                    fgMaskCanny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    fgMaskCanny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
                 )[0]
                 fgMaskCanny = cv2.fillPoly(fgMaskCanny, pts=cnts, color=255)
                 fgMaskCanny = cv2.erode(
@@ -360,7 +360,7 @@ class detectedParticles(object):
 
             else:
                 cnts = cv2.findContours(
-                    fgMaskCanny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    fgMaskCanny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
                 )[0]
                 fgMaskCanny = cv2.fillPoly(fgMaskCanny, pts=cnts, color=255)
 
@@ -402,6 +402,10 @@ class detectedParticles(object):
             fgBoxMaskPlus, xOffset, yOffset, extraRoi = extractRoi(
                 roi, fgMask, extra=extra
             )
+
+            # single pixels will be modified, make sure we do not change the full frame
+            particleBoxPlus = deepcopy(particleBoxPlus)
+            fgBoxMaskPlus = deepcopy(fgBoxMaskPlus)
             particleBoxMaskPlus = self.applyCannyFilter(particleBoxPlus, fgBoxMaskPlus)
 
             if np.sum(particleBoxMaskPlus) == 0:
@@ -409,7 +413,7 @@ class detectedParticles(object):
                     print("canny filter did not detect anything")
                 return False
             cnts, hierarchy = cv2.findContours(
-                particleBoxMaskPlus, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+                particleBoxMaskPlus, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE
             )
             cnts, cntChildren = splitUpConours(cnts, hierarchy)
 
@@ -440,8 +444,12 @@ class detectedParticles(object):
                 self.record_time,
                 self.nThread,
                 self.pp,
-                frame4sp,
-                mask4sp,
+                deepcopy(
+                    frame4sp
+                ),  # single pixels will be modified, make sure we do not change the full frame
+                deepcopy(
+                    mask4sp
+                ),  # single pixels will be modified, make sure we do not change the full frame
                 cnt,
                 cntChild,
                 xOffset,
@@ -449,6 +457,7 @@ class detectedParticles(object):
                 self.testing,
                 **kwargs,
             )
+
             # except ZeroDivisionError:
             #     self.lastParticle = None
             #     return added, self.lastParticle
@@ -658,6 +667,7 @@ class detectedParticles(object):
             "position_centroid",
             "pixCenter",
             "contourFFTsum",
+            "contourFFTstd",
         ]:
             arr = []
             for i in self.all.values():
@@ -807,7 +817,7 @@ class singleParticle(object):
         self.roi = np.array([int(b) for b in cv2.boundingRect(self.cnt)])
         # self.Cx, self.Cy, self.Dx, self.Dy = self.roi
 
-        if parent.joinCannyEdges:  # edges are joined too randomly...
+        if parent.joinCannyEdges:  # diosabled, edges are joined too randomly...
             # particleBoxMask1 has neighbouring particles removed, but internal holes closed
             particleBoxMask1 = cv2.fillPoly(np.zeros_like(frame1), pts=[cnt], color=255)
             print("complete contour")
@@ -932,7 +942,7 @@ class singleParticle(object):
         # looking into how perimeter changes during erosion
         erodeMask = cv2.erode(np.pad(self.particleBoxMask, 1), None, 1)
         cntsAfter = cv2.findContours(
-            erodeMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            erodeMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
         )[0]
 
         if len(cntsAfter) > 0:
@@ -1068,18 +1078,21 @@ class singleParticle(object):
         # FFT
         cnt1 = self.cnt - self.position_centroid
         r, theta = tools.cart2pol(cnt1[:, 0, 0], cnt1[:, 0, 1])
-        N = 180  # what is a smart choise??
+        N = 64  # what is a smart choise??
         maxFFT = 16
         newTheta = np.linspace(0, 2 * np.pi, num=N)
         newR = np.interp(newTheta, theta, r, period=2 * np.pi)
         contourFFT = np.fft.fft(newR / newR.mean())
-        self.contourFFTsum = self.contourFFT.sum()
-        self.FFTfreqs = np.fft.fftfreq(N, 1 / N)[1:, maxFFT + 1]
-        self.contourFFT = contourFFT[1:, maxFFT + 1]
+        # normalize
+        contourFFT = np.abs(contourFFT[1 : int(N / 2)]) / newR.mean()
+        self.contourFFTsum = contourFFT.sum()
+        self.contourFFTstd = contourFFT.std()
+        self.contourFFT = contourFFT[:maxFFT]
+        self.FFTfreqs = np.fft.fftfreq(N, 1 / N)[1 : maxFFT + 1]
 
         # remove mask from particle
-        particleMasked = self.particleBox
-        particleMasked[self.particleBoxMask == 0] = 255
+        # particleMasked = self.particleBox
+        # particleMasked[self.particleBoxMask == 0] = 255
 
         self.success = True
 
@@ -1750,6 +1763,7 @@ def detectParticles(
                 img = np.hstack((part.particleBox, part.particleBoxCropped))
                 tools.displayImage(img, rescale=4)
             if "annotatedParticle" in testing:
+                print("annotated particle")
                 annotatedParticle = part.getAnnotatedParticle(frame[height_offset:])
                 tools.displayImage(annotatedParticle, rescale=4)
 
@@ -1757,7 +1771,10 @@ def detectParticles(
 
     if writeImg:
         nFiles = len(imagesL1detect.namelist())
-        imagesL1detect.close()
+        try:
+            imagesL1detect.close()
+        except OSError:
+            pass  #  Stale file handle
         log.info("closing %s" % fn.fname.imagesL1detect)
         if nFiles == 0:
             os.remove(fn.fname.imagesL1detect)

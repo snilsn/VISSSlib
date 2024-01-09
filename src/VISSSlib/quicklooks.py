@@ -586,7 +586,7 @@ def createLevel1detectQuicklook(
 
     draw = ImageDraw.Draw(new_im)
     draw.text((0, 0), title, (0, 0, 0), font=font)
-    width, height = draw.textsize(title, font=font)
+    width = draw.textlength(title, font=font)
 
     draw.line((width + 15, 30, width + 15 + round(tenmm), 30), fill=0, width=5)
 
@@ -2690,7 +2690,7 @@ def createLevel1matchParticlesQuicklook(
 
     draw = ImageDraw.Draw(new_im)
     draw.text((0, 0), title, (0, 0, 0), font=font)
-    width, height = draw.textsize(title, font=font)
+    width = draw.textlength(title, font=font)
 
     draw.line((width + 15, 30, width + 15 + round(tenmm), 30), fill=0, width=5)
 

@@ -842,9 +842,10 @@ class FilenamesFromLevel(Filenames):
         month = case[4:6]
         day = case[6:8]
 
-        outpath0 = "%s/%s_visss_%s/%s/%s/%s" % (
+        outpath0 = "%s/%s_%s_%s/%s/%s/%s" % (
             config["path"].format(level="level0", site=site, version=version),
             computer,
+            visssGen,
             camera,
             year,
             month,
