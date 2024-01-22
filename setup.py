@@ -46,6 +46,7 @@ setuptools.setup(
         "numba",
         "vg",
         "xarray_extras",
+        "manifold3d",
     ],
     setup_requires=["setuptools_scm"],
 )

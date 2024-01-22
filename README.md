@@ -4,11 +4,9 @@ Install conda/mamba dependencies
 
     conda install numpy  scipy  xarray  dask[complete]  pandas pyyaml matplotlib bottleneck pillow  addict opencv Pillow netcdf4 ipywidgets trimesh scikit-image tqdm filterpy flox portalocker numba xarray-extras
 
-Note that trimesh also requires Blender or OpenSCAD which is not available through conda. 
-
 Install PIP dependencies
 
-    pip install image-packer flatten_dict pyOptimalEstimation vg
+    pip install image-packer flatten_dict pyOptimalEstimation vg manifold3d==2.2.2
 
 Clone the library with 
 

@@ -68,12 +68,11 @@ class detectedParticles(object):
         cropImage=None,  # (offsetX, offsetY)
         backSubKW={"dist2Threshold": 400, "detectShadows": False, "history": 100},
         backSub=cv2.createBackgroundSubtractorKNN,
-        applyCanny2Particle=True,  # much faster than 2 whole Frame!
+        applyCanny2Particle=True,  # canny filter gets edges better
         dilateIterations=1,
         blurSigma=1,
         minAspectRatio=None,  # testing only
         dilateErodeFgMask=False,
-        joinCannyEdges=False,
         check4childCntLength=True,
         doubleDynamicRange=True,
         dilateFgMask4Contours=True,
@@ -118,7 +117,6 @@ class detectedParticles(object):
         self.minAspectRatio = minAspectRatio
         self.dilateErodeFgMask = dilateErodeFgMask
         self.doubleDynamicRange = doubleDynamicRange
-        self.joinCannyEdges = joinCannyEdges
         self.check4childCntLength = check4childCntLength
         self.dilateFgMask4Contours = dilateFgMask4Contours
 
@@ -333,40 +331,30 @@ class detectedParticles(object):
             print("canny filter fgMaskCanny")
             tools.displayImage(fgMaskCanny, rescale=4)
 
-        if self.joinCannyEdges:
-            # note that contour is NOT filled in this case
-            fgMaskCanny = joinEdges(fgMaskCanny)
+        if self.dilateIterations > 0:
+            # close gaps by finding contours, dillate, fill, and erode them
+            fgMaskCanny = cv2.dilate(
+                fgMaskCanny, None, iterations=self.dilateIterations
+            )
             if "debugCanny" in self.testing:
-                print("canny filter fgMaskCanny joinEdges2")
+                print("canny filter fgMaskCanny dilate")
                 tools.displayImage(fgMaskCanny, rescale=4)
 
+            cnts = cv2.findContours(
+                fgMaskCanny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+            )[0]
+            fgMaskCanny = cv2.fillPoly(fgMaskCanny, pts=cnts, color=255)
+            fgMaskCanny = cv2.erode(fgMaskCanny, None, iterations=self.dilateIterations)
+
         else:
-            if self.dilateIterations > 0:
-                # close gaps by finding contours, dillate, fill, and erode them
-                fgMaskCanny = cv2.dilate(
-                    fgMaskCanny, None, iterations=self.dilateIterations
-                )
-                if "debugCanny" in self.testing:
-                    print("canny filter fgMaskCanny dilate")
-                    tools.displayImage(fgMaskCanny, rescale=4)
+            cnts = cv2.findContours(
+                fgMaskCanny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+            )[0]
+            fgMaskCanny = cv2.fillPoly(fgMaskCanny, pts=cnts, color=255)
 
-                cnts = cv2.findContours(
-                    fgMaskCanny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
-                )[0]
-                fgMaskCanny = cv2.fillPoly(fgMaskCanny, pts=cnts, color=255)
-                fgMaskCanny = cv2.erode(
-                    fgMaskCanny, None, iterations=self.dilateIterations
-                )
-
-            else:
-                cnts = cv2.findContours(
-                    fgMaskCanny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
-                )[0]
-                fgMaskCanny = cv2.fillPoly(fgMaskCanny, pts=cnts, color=255)
-
-            # and condition, i.e. make sure both filters detected something
-            if fgMask is not None:
-                fgMaskCanny = (fgMask // 255) * fgMaskCanny
+        # and condition, i.e. make sure both filters detected something
+        if fgMask is not None:
+            fgMaskCanny = (fgMask // 255) * fgMaskCanny
 
         if "debugCanny" in self.testing:
             print("final result fgMaskCanny")
@@ -817,97 +805,46 @@ class singleParticle(object):
         self.roi = np.array([int(b) for b in cv2.boundingRect(self.cnt)])
         # self.Cx, self.Cy, self.Dx, self.Dy = self.roi
 
-        if parent.joinCannyEdges:  # diosabled, edges are joined too randomly...
-            # particleBoxMask1 has neighbouring particles removed, but internal holes closed
-            particleBoxMask1 = cv2.fillPoly(np.zeros_like(frame1), pts=[cnt], color=255)
-            print("complete contour")
-            tools.displayImage(particleBoxMask1, rescale=4)
+        particleBoxMask1 = cv2.fillPoly(np.zeros_like(frame1), pts=[cnt], color=255)
 
-            # thre is always one child
-            if len(cntChild) > 1:
-                for cc, cntChild1 in enumerate(cntChild):
-                    # skip tiny ones
-                    if len(cntChild1) < minCntSize:
-                        continue
+        for cc, cntChild1 in enumerate(cntChild):
+            # dont be bothered by too small holes
+            if parent.check4childCntLength and (
+                (len(cntChild1) < minCntSize) or (cv2.contourArea(cntChild1) <= 4)
+            ):
+                continue
+                # particleBoxHoles is the opposite to particleBoxMask1, internal holes (from movement detection) are open, but neighbor particles are present
+                # use child cnts to make mask with children
+            particleBoxHoles = cv2.fillPoly(
+                np.zeros_like(frame1) + 255, pts=[cntChild1], color=0
+            )
 
-                    childMask = cv2.fillPoly(
-                        np.zeros_like(mask1), pts=[cntChild1], color=255
-                    )
-                    childCnt = cv2.drawContours(
-                        np.zeros_like(mask1),
-                        [cntChild1],
-                        -1,
-                        np.array((255.0, 255.0, 255.0)),
-                        1,
-                    )
+            if "debugCanny" in self.testing:
+                print(
+                    "particleBoxHoles",
+                    cc,
+                    len(cntChild1),
+                    cv2.contourArea(cntChild1),
+                )
+                tools.displayImage(particleBoxHoles, rescale=4)
 
-                    meanBrightnessMask = np.mean(frame1[childMask == 255])
-                    meanBrightnessCnt = np.mean(frame1[childCnt == 255])
-
-                    if meanBrightnessMask > (meanBrightnessCnt + 5) and (
-                        cv2.contourArea(cntChild1) > 2
-                    ):
-                        print(
-                            cc,
-                            "hole!",
-                            meanBrightnessMask,
-                            meanBrightnessCnt,
-                            len(cntChild1),
-                            cv2.contourArea(cntChild1),
-                        )
-                        particleBoxMask1 = particleBoxMask1 & (255 - childMask)
-                        tools.displayImage(childMask, rescale=4)
-                        tools.displayImage(
-                            cv2.bitwise_and(frame1, frame1, mask=childMask), rescale=4
-                        )
-                        tools.displayImage(
-                            cv2.bitwise_and(frame1, frame1, mask=~childMask), rescale=4
-                        )
-
-            self.particleBoxMask, xo, yo, _ = extractRoi(self.roi, particleBoxMask1)
-            self.particleBox, xo, yo, _ = extractRoi(self.roi, frame1)
-
-        else:
-            particleBoxMask1 = cv2.fillPoly(np.zeros_like(frame1), pts=[cnt], color=255)
-
-            for cc, cntChild1 in enumerate(cntChild):
-                # dont be bothered by too small holes
-                if parent.check4childCntLength and (
-                    (len(cntChild1) < minCntSize) or (cv2.contourArea(cntChild1) <= 4)
-                ):
-                    continue
-                    # particleBoxHoles is the opposite to particleBoxMask1, internal holes (from movement detection) are open, but neighbor particles are present
-                    # use child cnts to make mask with children
-                particleBoxHoles = cv2.fillPoly(
-                    np.zeros_like(frame1) + 255, pts=[cntChild1], color=0
+            # remove single pixel holes
+            if not parent.check4childCntLength:
+                particleBoxHoles = cv2.erode(
+                    cv2.dilate(particleBoxHoles, None, iterations=1),
+                    None,
+                    iterations=1,
                 )
 
-                if "debugCanny" in self.testing:
-                    print(
-                        "particleBoxHoles",
-                        cc,
-                        len(cntChild1),
-                        cv2.contourArea(cntChild1),
-                    )
-                    tools.displayImage(particleBoxHoles, rescale=4)
+            # combine masks, this is the final mask
+            particleBoxMask1 = ((particleBoxMask1 / 255) * particleBoxHoles).astype(
+                np.uint8
+            )
 
-                # remove single pixel holes
-                if not parent.check4childCntLength:
-                    particleBoxHoles = cv2.erode(
-                        cv2.dilate(particleBoxHoles, None, iterations=1),
-                        None,
-                        iterations=1,
-                    )
+            self.cntChild.append(cntChild1)
 
-                # combine masks, this is the final mask
-                particleBoxMask1 = ((particleBoxMask1 / 255) * particleBoxHoles).astype(
-                    np.uint8
-                )
-
-                self.cntChild.append(cntChild1)
-
-            self.particleBoxMask, xo, yo, _ = extractRoi(self.roi, particleBoxMask1)
-            self.particleBox, xo, yo, _ = extractRoi(self.roi, frame1)
+        self.particleBoxMask, xo, yo, _ = extractRoi(self.roi, particleBoxMask1)
+        self.particleBox, xo, yo, _ = extractRoi(self.roi, frame1)
 
         if "particleMask" in parent.testing:
             print("particleBoxMask")
@@ -1309,7 +1246,6 @@ def detectParticles(
     minDmax=0,
     dilateErodeFgMask=False,
     doubleDynamicRange=True,
-    joinCannyEdges=False,
     check4childCntLength=True,
     dilateFgMask4Contours=True,
     minContrast=20,
@@ -1343,7 +1279,7 @@ def detectParticles(
     backSub : [type], optional
         [description] (the default is cv2.createBackgroundSubtractorKNN)
     applyCanny2Particle : bool, optional
-        this is a must, canny to the whole image is too expensive (the default is True)
+        canny filter gets the edges better than the movement detection (the default is True)
     dilateIterations : number, optional
         to close gaps in canny edges (the default is 1 whic is sufficient)
     blurSigma : number, optional
@@ -1360,8 +1296,6 @@ def detectParticles(
          turns out to be not so smart because it makes holes insides particles smaller (the default is False)
     doubleDynamicRange : bool, optional
         [description] (the default is True)
-    joinCannyEdges : bool, optional
-        novel way to close canny edges, nice idea but closes them to often in teh wrong way (the default is False)
     check4childCntLength : bool, optional
         discard short child contours instead of dilate/erose (the default is True)
     stopAfter : [type], optional
@@ -1585,7 +1519,6 @@ def detectParticles(
         minAspectRatio=config.level1detect.minAspectRatio,
         dilateErodeFgMask=dilateErodeFgMask,
         doubleDynamicRange=doubleDynamicRange,
-        joinCannyEdges=joinCannyEdges,
         check4childCntLength=check4childCntLength,
         minContrast=minContrast,
         dilateFgMask4Contours=dilateFgMask4Contours,
