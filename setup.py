@@ -24,10 +24,31 @@ setuptools.setup(
     package_dir={"": "src"},
     packages=setuptools.find_packages(where="src"),
     python_requires=">=3.6",
-    install_requires=['numpy', 'scipy', 'xarray', 'dask[complete]', 'pandas', "pyyaml", "trimesh","flatten_dict",
-                   "matplotlib", "ipywidgets", "bottleneck", "pillow", "image-packer", "addict", "pyOptimalEstimation", "filterpy",
-                   "flox", "portalocker", "numba", "vg"],
-    setup_requires=['setuptools_scm'],
+    install_requires=[
+        "numpy",
+        "scipy",
+        "xarray",
+        "dask[complete]",
+        "pandas",
+        "pyyaml",
+        "trimesh",
+        "flatten_dict",
+        "matplotlib",
+        "ipywidgets",
+        "bottleneck",
+        "pillow",
+        "image-packer",
+        "addict",
+        "pyOptimalEstimation",
+        "filterpy",
+        "flox",
+        "portalocker",
+        "numba",
+        "vg",
+        "xarray_extras",
+        "manifold3d",
+    ],
+    setup_requires=["setuptools_scm"],
 )
- # "opencv-python" -> conda version is not recongnized
- # https://stackoverflow.com/questions/57821903/setup-py-with-dependecies-installed-by-conda-not-pip
+# "opencv-python" -> conda version is not recongnized
+# https://stackoverflow.com/questions/57821903/setup-py-with-dependecies-installed-by-conda-not-pip

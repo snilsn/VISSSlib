@@ -124,7 +124,7 @@ class TestRotation(object):
         Of_z = 3#np.random.random(nSample)* 100
 
         L_x, L_y, L_z = shiftRotate_F2L(F_x, F_y, F_z, phi, theta, psi, Ol_x, Of_y, Of_z)
-        L_z_test = calc_L_z_withOffsets(L_x, F_y, F_z, phi=phi, theta=theta, psi=psi, Of_y=Of_y, Of_z=Of_z, Ol_x=Ol_x)
+        L_z_test = calc_L_z_withOffsets(L_x, F_y, F_z, camera_phi=phi, camera_theta=theta, camera_psi=psi, camera_Ofy=Of_y, camera_Ofz=Of_z, camera_Olx=Ol_x)
 
         print(L_z_test- L_z)
 
