@@ -21,8 +21,20 @@ import logging
 
 import skimage
 
-from . import *
-from . import __version__
+from . import (
+    __version__,
+    av,
+    detection,
+    distributions,
+    files,
+    fixes,
+    matching,
+    metadata,
+    quicklooks,
+    scripts,
+    tools,
+    tracking,
+)
 
 log = logging.getLogger(__name__)
 
