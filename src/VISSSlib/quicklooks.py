@@ -228,7 +228,7 @@ def createLevel1detectQuicklook(
 
     if not ff.isCompleteL1detect:
         print(
-            "NOT COMPLETE YET %i of %i %s"
+            "NOT COMPLETE YET %i of %i L1detect %s "
             % (
                 len(ff.listFilesExt("level1detect")),
                 len(ff.listFiles("level0txt")),
@@ -905,7 +905,7 @@ def metaFramesQuicklook(
 
     if plotCompleteOnly and not ff.isCompleteMetaFrames:
         print(
-            "NOT COMPLETE YET %i of %i %s"
+            "NOT COMPLETE YET %i of %i MetaFrames %s"
             % (
                 len(ff.listFilesExt("metaFrames")),
                 len(ff.listFiles("level0txt")),
@@ -1224,7 +1224,7 @@ def createLevel1matchQuicklook(
 
     if plotCompleteOnly and not fl.isCompleteL1match:
         print(
-            "NOT COMPLETE YET %i of %i %s"
+            "NOT COMPLETE YET %i of %i L1match %s"
             % (
                 len(fl.listFilesExt("level1match")),
                 len(fl.listFiles("level0txt")),
@@ -1551,15 +1551,33 @@ def metaRotationYearlyQuicklook(year, config, version=__version__, skipExisting=
         config = tools.readSettings(config)
 
     ff = files.FindFiles(f"{year}0101", config.leader, config, version)
+    ff1 = files.FindFiles(f"{int(year)-1}0101", config.leader, config, version)
     fOut = ff.quicklook.metaRotation
     fOut = fOut.replace("0101.png", ".png")
 
-    if skipExisting and (int(year) != int(datetime.datetime.utcnow().year)):
-        print(year, "skip exisiting")
+    if (
+        skipExisting
+        and os.path.isfile(fOut)
+        and (
+            int(year)
+            < int((datetime.datetime.utcnow() - datetime.timedelta(days=60)).year)
+        )
+    ):
+        print(f"{year} skip exisiting {fOut}")
         return None, None
 
     rotFiles = ff.fnamesPattern.metaRotation.replace("0101.nc", "*.nc")
-    rotDat = xr.open_mfdataset(rotFiles, combine="nested")
+    rotDat = xr.open_mfdataset(rotFiles, combine="by_coords")
+
+    # handle current year a bit differently
+    if int(year) == int(datetime.datetime.utcnow().year):
+        rotFiles1 = ff1.fnamesPattern.metaRotation.replace("0101.nc", "*.nc")
+        rotDat1 = xr.open_mfdataset(rotFiles1, combine="by_coords")
+        rotDat = xr.concat((rotDat1, rotDat), dim="file_starttime")
+        lastYear = np.datetime64(
+            datetime.datetime.utcnow() - datetime.timedelta(days=365)
+        )
+        rotDat = rotDat.isel(file_starttime=(rotDat.file_starttime > lastYear))
 
     fig, (ax1, ax2, ax3) = plt.subplots(
         3, figsize=(20, 15), gridspec_kw={"hspace": 0.0}, sharex=True
@@ -1630,9 +1648,8 @@ def metaRotationYearlyQuicklook(year, config, version=__version__, skipExisting=
         try:
             shutil.copy(fOut, ff.quicklookCurrent.metaRotation)
         except PermissionError:
-            log.error(f"No permission to write {fOut}")
+            log.error(f"No permission to write {ff.quicklookCurrent.metaRotation}")
 
-    fOut = fOut.replace("0101.png", ".png")
     return fOut, fig
 
 
@@ -1677,7 +1694,7 @@ def metaRotationQuicklook(case, config, version=__version__, skipExisting=True):
         return None, None
 
     if len(ff.listFiles("metaRotation")) == 0:
-        print(f"mo metaRotation data yet")
+        print(f"no metaRotation data yet")
         return None, None
 
     try:
@@ -2330,7 +2347,7 @@ def createLevel1matchParticlesQuicklook(
 
     if not ff.isCompleteL1match:
         print(
-            "NOT COMPLETE YET %i of %i %s"
+            "NOT COMPLETE YET %i of %i L1match %s "
             % (
                 len(ff.listFilesExt("level1match")),
                 len(ff.listFiles("level0txt")),

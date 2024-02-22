@@ -1002,6 +1002,7 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
                 "camera_rotation",
                 "dim2D",
                 "percentiles",
+                "FFTfreqs",
             ]
         )
 
@@ -1021,7 +1022,7 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
         )
     ]
 
-    # try to find and remove edges in the tracks,
+    # try to find and remove edges in the tracks
     tracksCut = 0
     for kk in range(2):
         log.info(f"try to find and remove edges in the tracks {kk}")
