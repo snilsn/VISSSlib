@@ -22,7 +22,6 @@ dailyLevels = [
     "metaEvents",
     "metaRotation",
     "level2match",
-    "level2match",
     "level2track",
 ]
 hourlyLevels = []

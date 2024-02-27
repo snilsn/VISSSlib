@@ -45,6 +45,7 @@ def _preprocess(dat):
             "perimeter",
             "position3D_center",
             "position3D_centroid",
+            "position_centroid",
             "camera_phi",
             "camera_theta",
             "camera_Ofz",
@@ -81,7 +82,7 @@ _select = {
 def createLevel2match(
     case,
     config,
-    freq="1T",
+    freq="1min",
     minMatchScore=1e-3,
     DbinsPixel=range(301),
     sizeDefinitions=["Dmax", "Dequiv"],
@@ -112,7 +113,7 @@ def createLevel2match(
 def createLevel2track(
     case,
     config,
-    freq="1T",
+    freq="1min",
     DbinsPixel=range(301),
     sizeDefinitions=["Dmax", "Dequiv"],
     endTime=np.timedelta64(1, "D"),
@@ -142,7 +143,7 @@ def createLevel2track(
 def createLevel2(
     case,
     config,
-    freq="1T",
+    freq="1min",
     minMatchScore=1e-3,
     DbinsPixel=range(301),
     sizeDefinitions=["Dmax", "Dequiv"],
@@ -205,10 +206,10 @@ def createLevel2(
 
     lv1Files = fL.listFilesWithNeighbors(f"level1{sublevel}")
 
-    if len(lv1Files) == 0:
-        log.error("level1 NOT AVAILABLE %s" % lv2File)
-        log.error("look at %s" % fL.fnamesPatternExt[f"level1{sublevel}"])
-        return None, None
+    # if len(lv1Files) == 0:
+    #     log.error("level1 NOT AVAILABLE %s" % lv2File)
+    #     log.error("look at %s" % fL.fnamesPatternExt[f"level1{sublevel}"])
+    #     return None, None
 
     timeIndex = pd.date_range(
         start=case, end=fL.datetime64 + endTime, freq=freq, inclusive="left"
@@ -446,7 +447,7 @@ def createLevel2(
 def createLevel2part(
     case,
     config,
-    freq="1T",
+    freq="1min",
     minMatchScore=1e-3,
     DbinsPixel=range(301),
     sizeDefinitions=["Dmax", "Dequiv"],
@@ -516,9 +517,10 @@ def createLevel2part(
         level1dat = level1dat.isel(pair_id=matchCond)
 
         if len(level1dat.matchScore) == 0:
-            log.warning("no data remians after matchScore filtering %s" % lv2File)
+            log.warning("no data remains after matchScore filtering %s" % lv2File)
             return None
 
+    # only for debuging
     for aa, applyFilter in enumerate(applyFilters):
         assert (
             len(applyFilter) == 5
@@ -539,7 +541,7 @@ def createLevel2part(
 
         if len(level1dat.matchScore) == 0:
             log.warning(
-                "no data remians after additional filtering %s %s" % applyFilter,
+                "no data remains after additional filtering %s %s" % applyFilter,
                 lv2File,
             )
             return None
@@ -547,7 +549,7 @@ def createLevel2part(
     sizeCond = (level1dat.Dmax < max(DbinsPixel)).all("camera").values
     level1dat = level1dat.isel(pair_id=sizeCond)
     if len(level1dat.matchScore) == 0:
-        log.warning("no data remians after size filtering %s" % lv2File)
+        log.warning("no data remains after size filtering %s" % lv2File)
         return None
 
     # remove particles too close to the edge
@@ -578,11 +580,56 @@ def createLevel2part(
 
     level1dat = level1dat.isel(pair_id=farEnoughFromBorder)
     if len(level1dat.pair_id) == 0:
-        log.warning("no data remians after farEnoughFromBorder filtering %s" % lv2File)
+        log.warning("no data remains after farEnoughFromBorder filtering %s" % lv2File)
         return None
 
-    log.info("loading data")
+    if config.correctForSmallOnes and "maxSharpness" in config.keys():
+        # remove small particles that are not in the very sharpest region
+        # leader
+        log.info("removing small particles outsides of most sharp volume")
+        isOutsideSharp = False
+        l1datL = level1dat.position_centroid.sel(
+            dim2D="x", camera=config.leader, drop=True
+        ).drop_vars("pid")
+        l1datF = level1dat.position_centroid.sel(
+            dim2D="x", camera=config.follower, drop=True
+        ).drop_vars("pid")
+        for size in config.maxSharpness.leader.keys():
+            isSize = (level1dat.Dmax.max("camera") >= size) & (
+                level1dat.Dmax.max("camera") < size + 1
+            )
+            outsideLeader = isSize & (
+                (l1datL < config.maxSharpness.leader[size][0])
+                | (l1datL > config.maxSharpness.leader[size][1])
+            )
+            outsideFollower = isSize & (
+                (l1datF < config.maxSharpness.follower[size][0])
+                | (l1datF > config.maxSharpness.follower[size][1])
+            )
+            isOutsideSharp = isOutsideSharp | outsideLeader | outsideFollower
+
+        isOutsideSharp = isOutsideSharp.compute()
+        del l1datL, l1datF
+
+        log.info(
+            tools.concat(
+                "isOutsideSharp applies NOT to",
+                100 - (isOutsideSharp.sum() / len(isOutsideSharp)).values * 100,
+                "% of data",
+            )
+        )
+
+        level1dat = level1dat.isel(pair_id=~isOutsideSharp)
+        if len(level1dat.pair_id) == 0:
+            log.warning("no data remains after isOutsideSharp filtering %s" % lv2File)
+            return None
+    else:
+        log.info(f"do not remove particles outside of most sharp area")
+    level1dat = level1dat.drop_vars("position_centroid")
+
+    # done with filtering the data
     # the following code is much faster with a loaded netcdf object
+    log.info("loading data")
     level1dat.load()
 
     if sublevel == "match":
@@ -638,9 +685,11 @@ def createLevel2part(
             _,
         ) = getPerTrackStatistics(level1dat)
 
-        # because there are no weighted groupby operations, we have to improvise and broadcast the results
-        # again to a shape including track_step - then the mean etc. values are dublicated as per track length
-        # and the result is weighted when averaging with timme
+        # because there are no weighted groupby operations
+        # https://github.com/pydata/xarray/issues/3937, we have to improvise
+        # and broadcast the results again to a shape including track_step
+        # - then the mean etc. values are dublicated as per track length
+        # and the result is weighted when averaging with time
         data_vars = [
             "Dmax",
             "area",
@@ -959,6 +1008,10 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
     level1dat["track_mi"] = xr.DataArray(track_mi, coords=[level1dat.pair_id])
     level1dat = level1dat.swap_dims(pair_id="track_mi")
 
+    # very very rarely, there are duplicate values in the index, reason is unclear
+    _, uniqueII = np.unique(level1dat.track_id, return_index=True)
+    level1dat = level1dat.isel(track_mi=uniqueII)
+
     # this costs a lot of memeory but I do not know a better way
     level1dat_time = level1dat.unstack("track_mi")
     # promote capture_time to coordimnate for later
@@ -977,35 +1030,22 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
         level1dat_time = level1dat_time.isel(track_step=slice(40))
 
     log.info(f"estimate track mean values")
-    # fix order
-    try:
-        level1dat_track2D = level1dat_time.transpose(
-            *[
-                "track_id",
-                "track_step",
-                "camera",
-                "dim3D",
-                "fitMethod",
-                "camera_rotation",
-            ]
-        )
-    except (
-        ValueError
-    ):  # sometimes function is called for testing purposes with more variables:
-        level1dat_track2D = level1dat_time.transpose(
-            *[
-                "track_id",
-                "track_step",
-                "camera",
-                "dim3D",
-                "fitMethod",
-                "camera_rotation",
-                "dim2D",
-                "percentiles",
-                "FFTfreqs",
-            ]
-        )
 
+    # fix order
+    orderedCoords = [
+        "track_id",
+        "track_step",
+        "camera",
+        "dim3D",
+        "fitMethod",
+        "camera_rotation",
+    ]
+    datCoords = level1dat_time.reset_coords(drop=True).coords
+    remainingCoords = list(set(datCoords) - set(orderedCoords))
+    orderedCoords = orderedCoords + remainingCoords
+    level1dat_track2D = level1dat_time.transpose(*orderedCoords)
+
+    # which variables do we need?
     level1dat_track2D = level1dat_track2D[
         set(
             [
@@ -1022,7 +1062,7 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
         )
     ]
 
-    # try to find and remove edges in the tracks
+    # try to find and remove edges in the tracks,
     tracksCut = 0
     for kk in range(2):
         log.info(f"try to find and remove edges in the tracks {kk}")
@@ -1136,10 +1176,35 @@ def estimateObservationVolume(level1dat_time, config, DbinsPixel, timeIndex1):
 
     """
 
+    if config.correctForSmallOnes:
+        log.info("adjust observation volujme for smallest particles")
+
+        assert np.all(
+            np.array(config.maxSharpness.leader.keys())
+            == np.array(config.maxSharpness.follower.keys())
+        )
+        maxSharpnessSizes = (tuple(config.maxSharpness.leader.keys()),)
+        maxSharpnessLeader = (
+            tuple(tuple(c) for c in config.maxSharpness.leader.values()),
+        )
+        maxSharpnessFollower = (
+            tuple(tuple(c) for c in config.maxSharpness.follower.values()),
+        )
+
+    else:
+        log.info("do NOT adjust observation volujme for smallest particles")
+        maxSharpnessSizes = tuple()
+        maxSharpnessLeader = tuple()
+        maxSharpnessFollower = tuple()
+
     rotDat = level1dat_time[["camera_phi", "camera_theta", "camera_Ofz"]].sel(
         camera_rotation="mean"
     )
-    rotDat = rotDat.isel(track_id=~np.isnan(rotDat.time).values)
+    try:
+        rotDat = rotDat.isel(track_id=~np.isnan(rotDat.time).values)
+    except ValueError:
+        rotDat = rotDat.isel(pair_id=~np.isnan(rotDat.time).values)
+
     rotDat = rotDat.groupby_bins("time", timeIndex1, right=False, squeeze=False).mean()
     rotDat = rotDat.rename(time_bins="time")
     # we want time stamps not intervals
@@ -1164,10 +1229,14 @@ def estimateObservationVolume(level1dat_time, config, DbinsPixel, timeIndex1):
         Ds, volume = estimateVolumes(
             config.frame_width,
             config.frame_height,
+            config.correctForSmallOnes,
             float(rotDat1.camera_phi.values),
             float(rotDat1.camera_theta.values),
             float(rotDat1.camera_Ofz.values),
-            sizeBins=DbinsPixel,
+            DbinsPixel,
+            maxSharpnessSizes,
+            maxSharpnessLeader,
+            maxSharpnessFollower,
         )
 
         volumes.append(volume[1:])
@@ -1335,7 +1404,7 @@ def _createBox(p1, p2, p3, p4, p5, p6, p7, p8):
     return trimesh.Trimesh(vertices=vertices, faces=faces)
 
 
-def createLeaderBox(width, height, delta=0):
+def createLeaderBox(width, height, delta=0, deltaExtra1=0, deltaExtra2=0):
     """get trimesh representing the leader observation volume
 
     Parameters
@@ -1345,7 +1414,11 @@ def createLeaderBox(width, height, delta=0):
     height : int
         image height
     delta : number, optional
-        distance to the edges (the default is 0)
+        distance to all edges (the default is 0)
+    deltaExtra1 : number, optional
+        distance to left vertical edge (the default is 0)
+    deltaExtra2 : number, optional
+        distance to right vertical edge (the default is 0)
 
     Returns
     -------
@@ -1355,8 +1428,8 @@ def createLeaderBox(width, height, delta=0):
 
     X0 = -width
     X1 = 2 * width
-    Y0 = 0 + delta
-    Y1 = width - delta
+    Y0 = 0 + max(delta, deltaExtra1)
+    Y1 = width - max(delta, deltaExtra2)
     Z0 = 0 + delta
     Z1 = height - delta
 
@@ -1372,7 +1445,16 @@ def createLeaderBox(width, height, delta=0):
     return _createBox(p1, p2, p3, p4, p5, p6, p7, p8)
 
 
-def createFollowerBox(width, height, camera_phi, camera_theta, camera_Ofz, delta=0):
+def createFollowerBox(
+    width,
+    height,
+    camera_phi,
+    camera_theta,
+    camera_Ofz,
+    delta=0,
+    deltaExtra1=0,
+    deltaExtra2=0,
+):
     """get trimesh representing the follower observation volume
 
     Parameters
@@ -1388,15 +1470,19 @@ def createFollowerBox(width, height, camera_phi, camera_theta, camera_Ofz, delta
     camera_Ofz : float
         offset in z direction
     delta : number, optional
-        distance to the edges (the default is 0)
+        distance to all edges (the default is 0)
+    deltaExtra1 : number, optional
+        distance to left vertical edge (the default is 0)
+    deltaExtra2 : number, optional
+        distance to right vertical edge (the default is 0)
 
     Returns
     -------
     trimesh
         trimesh object
     """
-    X0 = 0 + delta
-    X1 = width - delta
+    X0 = 0 + max(delta, deltaExtra1)
+    X1 = width - max(delta, deltaExtra2)
     Y0 = -width
     Y1 = 2 * width
     Z0 = 0 + delta
@@ -1432,7 +1518,18 @@ def createFollowerBox(width, height, camera_phi, camera_theta, camera_Ofz, delta
     return _createBox(p1, p2, p3, p4, p5, p6, p7, p8)
 
 
-def estimateVolume(width, height, camera_phi, camera_theta, camera_Ofz, delta=0):
+def estimateVolume(
+    width,
+    height,
+    camera_phi,
+    camera_theta,
+    camera_Ofz,
+    delta=0,
+    deltaLeaderExtra1=0,
+    deltaLeaderExtra2=0,
+    deltaFollowerExtra1=0,
+    deltaFollowerExtra2=0,
+):
     """estimate intersecting volume of leader and follower
 
 
@@ -1449,7 +1546,15 @@ def estimateVolume(width, height, camera_phi, camera_theta, camera_Ofz, delta=0)
     camera_Ofz : float
         offset in z direction
     delta : number, optional
-        distance to the edges (the default is 0)
+        distance to left vertical edge (the default is 0)
+    deltaLeaderExtra1 : number, optional
+        distance to left vertical edge (the default is 0)
+    deltaLeaderExtra2 : number, optional
+        distance to right vertical edge (the default is 0)
+    deltaFollowerExtra1 : number, optional
+        distance to left vertical edge (the default is 0)
+    deltaFollowerExtra2 : number, optional
+        distance to right vertical edge (the default is 0)
 
     Returns
     -------
@@ -1458,9 +1563,22 @@ def estimateVolume(width, height, camera_phi, camera_theta, camera_Ofz, delta=0)
     """
 
     follower = createFollowerBox(
-        width, height, camera_phi, camera_theta, camera_Ofz, delta=delta
+        width,
+        height,
+        camera_phi,
+        camera_theta,
+        camera_Ofz,
+        delta=delta,
+        deltaExtra1=deltaFollowerExtra1,
+        deltaExtra2=deltaFollowerExtra2,
     )
-    leader = createLeaderBox(width, height, delta=delta)
+    leader = createLeaderBox(
+        width,
+        height,
+        delta=delta,
+        deltaExtra1=deltaLeaderExtra1,
+        deltaExtra2=deltaLeaderExtra2,
+    )
 
     volume = leader.intersection(follower).volume
 
@@ -1471,10 +1589,14 @@ def estimateVolume(width, height, camera_phi, camera_theta, camera_Ofz, delta=0)
 def estimateVolumes(
     width,
     height,
+    correctForSmallOnes,
     camera_phi,
     camera_theta,
     camera_Ofz,
     sizeBins,
+    maxSharpnessSizes,
+    maxSharpnessLeader,
+    maxSharpnessFollower,
     nSteps=5,
     interpolate=True,
 ):
@@ -1507,27 +1629,62 @@ def estimateVolumes(
     array
         volumes of corresponding distances
     """
-
-    # distance to the edge is only half of the particle size!
-    Ds = np.ceil(np.array(sizeBins) / 2).astype(int)
-
+    # print(1)
     if np.any(np.isnan((camera_phi, camera_theta, camera_Ofz))):
         volumes = np.full(len(sizeBins), np.nan)
     else:
         volumes = []
         # select only nStep distances and interpolate rest
-        iiInter = np.linspace(0, len(sizeBins) - 1, nSteps, endpoint=True, dtype=int)
-        for ii in iiInter:
+        ddInter = np.linspace(0, len(sizeBins) - 1, nSteps, endpoint=True, dtype=int)
+        # for the smallest one we use an extra large distance to the edge, so interpolation won't work
+
+        # add one  point which won't be limited for interpolation
+        limtedDs = list(maxSharpnessSizes)
+        try:
+            limtedDs = limtedDs + [max(maxSharpnessSizes) + 1]
+        except ValueError:  # ie maxSharpnessSizes empty
+            pass
+        ddInter = sorted(set(list(ddInter) + limtedDs))
+
+        for ii, dd in enumerate(ddInter):
+            if correctForSmallOnes:
+                try:
+                    ss = np.where(np.array(maxSharpnessSizes) == dd)[0][0]
+                except IndexError:  # i.e. dd not in maxSharpnessSizes
+                    leaderExtra = [0, 0]
+                    followerExtra = [0, 0]
+                else:
+                    leaderExtra = np.array(maxSharpnessLeader[ss])
+                    followerExtra = np.array(maxSharpnessFollower[ss])
+                    leaderExtra[1] = width - leaderExtra[1]
+                    followerExtra[1] = width - followerExtra[1]
+            else:
+                leaderExtra = [0, 0]
+                followerExtra = [0, 0]
+
+                # distance to the edge is only half of the particle size!
+            delta = np.ceil(dd / 2).astype(int)
+
             volumes.append(
                 estimateVolume(
-                    width, height, camera_phi, camera_theta, camera_Ofz, delta=Ds[ii]
+                    width,
+                    height,
+                    camera_phi,
+                    camera_theta,
+                    camera_Ofz,
+                    delta=delta,
+                    deltaLeaderExtra1=leaderExtra[0],
+                    deltaLeaderExtra2=leaderExtra[1],
+                    deltaFollowerExtra1=followerExtra[0],
+                    deltaFollowerExtra2=followerExtra[1],
                 )
             )
+            print(ii, dd, delta, leaderExtra, followerExtra, volumes[-1])
 
         if interpolate:
-            Ds_inter, volumes = interpolateVolumes(Ds, Ds[iiInter], volumes)
-            assert np.all(Ds_inter == Ds)
-    return Ds, np.array(volumes)
+            Ds_inter, volumes = interpolateVolumes(np.array(sizeBins), ddInter, volumes)
+            assert np.all(Ds_inter == np.array(sizeBins))
+    return np.array(sizeBins), np.array(volumes)
 
 
 def interpolateVolumes(Dfull, Dstep, volumes1):

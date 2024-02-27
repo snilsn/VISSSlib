@@ -2162,6 +2162,8 @@ def createLevel2trackQuicklook(
         ax=ax1a,
         cbar_kwargs={"label": "Particle Sedimentation velocity [m/s]"},
         cbar_ax=bx1a,
+        vmin=0,
+        vmax=3,
     )
     ax1a.set_ylabel("Dmax [m]")
 

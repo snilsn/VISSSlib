@@ -33,6 +33,7 @@ from numba import jit
 
 # settings that stay mostly constant
 DEFAULT_SETTINGS = {
+    "correctForSmallOnes": False,
     "height_offset": 64,
     "minMovingPixels": [20, 10, 5, 2, 2, 2, 2],
     "threshs": [20, 30, 40, 60, 80, 100, 120],
@@ -682,7 +683,7 @@ def ncAttrs(site, visssGen, extra={}):
         "title": f"Video In Situ Snowfall Sensor (VISSS) observations at {site}",
         "source": f"{visssGen} observations at {site}",
         "history": f"{str(datetime.datetime.utcnow())}: created with VISSSlib {__versionFull__} and OpenCV {cv2.__version__} on {socket.getfqdn()}{user}",
-        "references": "Maahn, M., Moisseev, D., Steinke, I., Maherndl, N., and Shupe, M. D.: Introducing the Video In Situ Snowfall Sensor (VISSS), EGUsphere [preprint], https://doi.org/10.5194/egusphere-2023-655, 2023.",
+        "references": "Maahn, M., D. Moisseev, I. Steinke, N. Maherndl, and M. D. Shupe, 2024: Introducing the Video In Situ Snowfall Sensor (VISSS). Atmospheric Measurement Techniques, 17, 899–919, https://doi.org/10.5194/amt-17-899-2024.",
     }
 
     attrs.update(extra)
@@ -872,7 +873,10 @@ def to_netcdf2(dat, file, **kwargs):
     createParentDir(file)
     if os.path.isfile(file):
         log.info(f"remove old version of {file}")
-        os.remove(file)
+        try:
+            os.remove(file)
+        except:
+            pass
 
     tmpFile = f"{file}.{np.random.randint(0, 99999 + 1)}.tmp.cdf"
     with warnings.catch_warnings():

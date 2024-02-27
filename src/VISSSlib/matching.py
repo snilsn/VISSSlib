@@ -1708,7 +1708,7 @@ def createMetaRotation(
 
     if completeDaysOnly and not fl.isCompleteL1detect:
         print(
-            "NOT COMPLETE YET %i of %i"
+            "L1 NOT COMPLETE YET %i of %i "
             % (len(fl.listFilesExt("level1detect")), len(fl.listFiles("level0txt")))
         )
         return None, None
