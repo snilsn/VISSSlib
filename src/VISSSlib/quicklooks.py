@@ -1881,7 +1881,7 @@ def createLevel2matchQuicklook(
         config = tools.readSettings(config)
 
     camera = config.leader
-
+    nodata = False
     # get level 0 file names
     ff = files.FindFiles(case, camera, config, version)
     fOut = ff.quicklook.level2match
@@ -1894,8 +1894,11 @@ def createLevel2matchQuicklook(
 
     lv2match = ff.listFiles("level2match")
     if len(lv2match) == 0:
-        log.error(f"{case} lv2match data not found")
-        return None, None
+        if len(ff.listFilesExt("level2match")) == 0:
+            log.error(f"{case} level2match data not found")
+            return None, None
+        else:
+            nodata = True
     else:
         lv2match = lv2match[0]
 
@@ -1904,25 +1907,6 @@ def createLevel2matchQuicklook(
         return None, None
 
     log.info(f"running {case} {fOut}")
-
-    dat2 = xr.open_dataset(lv2match)
-    fEvents1 = ff.listFiles("metaEvents")[0]
-    fEvents2 = files.FilenamesFromLevel(fEvents1, config).filenamesOtherCamera(
-        level="metaEvents"
-    )[0]
-
-    try:
-        events1 = xr.open_dataset(fEvents1)
-    except:
-        print(f"{fEvents1} broken")
-        return None, None
-    try:
-        events2 = xr.open_dataset(fEvents2)
-    except:
-        print(f"{fEvents2} broken")
-        return None, None
-
-    events = xr.concat((events1, events2), dim="file_starttime")
 
     fig, axs = plt.subplots(
         nrows=4,
@@ -1947,118 +1931,139 @@ def createLevel2matchQuicklook(
         fontweight="bold",
         x=mid,
     )
+    if nodata:
+        axs[0, 0].set_title("no data")
+    else:
+        dat2 = xr.open_dataset(lv2match)
+        fEvents1 = ff.listFiles("metaEvents")[0]
+        fEvents2 = files.FilenamesFromLevel(fEvents1, config).filenamesOtherCamera(
+            level="metaEvents"
+        )[0]
 
-    (ax1, ax2, ax3, ax4) = axs[:, 0]
-    (bx1, bx2, bx3, bx4) = axs[:, 1]
+        try:
+            events1 = xr.open_dataset(fEvents1)
+        except:
+            print(f"{fEvents1} broken")
+            return None, None
+        try:
+            events2 = xr.open_dataset(fEvents2)
+        except:
+            print(f"{fEvents2} broken")
+            return None, None
 
-    (dat2.PSD.sel(camera="max", size_definition="Dmax")).T.plot(
-        ax=ax1,
-        norm=mpl.colors.LogNorm(vmin=1, vmax=dat2.PSD.max()),
-        cbar_kwargs={"label": "Particle Size Distribution [1/m^4]"},
-        cbar_ax=bx1,
-    )
-    ax1.set_ylabel("Dmax [m]")
+        events = xr.concat((events1, events2), dim="file_starttime")
 
-    # (dat2.aspectRatio_dist.sel(camera="max", size_definition="Dmax", fitMethod="cv2.fitEllipseDirect")).T.plot(ax=ax2, vmin=0,vmax=1, cbar_kwargs={"label":"aspect ratio [-]"})
-    dat2.Dmax_mean.sel(camera="max").plot(ax=ax2, label="mean Dmax")
-    dat2.D32.sel(camera="max", size_definition="Dmax").plot(ax=ax2, label="D32")
-    dat2.D43.sel(camera="max", size_definition="Dmax").plot(ax=ax2, label="D43")
-    ax2.set_ylabel("Size [m]")
-    ax2.legend()
+        (ax1, ax2, ax3, ax4) = axs[:, 0]
+        (bx1, bx2, bx3, bx4) = axs[:, 1]
 
-    dat2.complexityBW_mean.sel(camera="max").plot(ax=ax3, label="complexity")
-    dat2.aspectRatio_mean.sel(camera="max", fitMethod="cv2.fitEllipseDirect").plot(
-        ax=ax3, label="aspect ratio"
-    )
-    ax3.set_ylabel("Shape [-]")
-    ax3.legend()
-
-    dat2.counts.sel(camera="max", size_definition="Dmax").sum("D_bins").plot(
-        label="observed particles [1/min]", ax=ax4
-    )
-    dat2.matchScore_mean.sel(camera="max").plot(label="match score [-]", ax=ax4)
-    ax4.set_yscale("log")
-    ax4.set_ylabel("Performance")
-    ax4.legend()
-
-    for ax in axs[:, 0]:
-        ax.set_title(None)
-
-        ylim = ax.get_ylim()
-        cond = dat2.time.where(dat2.recordingFailed)
-        if cond.notnull().any():
-            ax.fill_between(
-                cond,
-                [ylim[0]] * len(dat2.time),
-                [ylim[1]] * len(dat2.time),
-                color="pink",
-                alpha=0.25,
-                label="cameras off",
-            )
-        cond = dat2.time.where(dat2.processingFailed)
-        if cond.notnull().any():
-            ax.fill_between(
-                cond,
-                [ylim[0]] * len(dat2.time),
-                [ylim[1]] * len(dat2.time),
-                color="purple",
-                alpha=0.25,
-                label="processing failed",
-            )
-        cond = dat2.time.where(dat2.blockedPixelRatio.sel(camera="max") > 0.1)
-        if cond.notnull().any():
-            ax.fill_between(
-                cond,
-                [ylim[0]] * len(dat2.time),
-                [ylim[1]] * len(dat2.time),
-                color="red",
-                alpha=0.25,
-                label="camera blocked > 10%",
-            )
-        cond = dat2.time.where(dat2.blowingSnowRatio.sel(camera="max") > 0.1)
-        if cond.notnull().any():
-            ax.fill_between(
-                cond,
-                [ylim[0]] * len(dat2.time),
-                [ylim[1]] * len(dat2.time),
-                color="orange",
-                alpha=0.25,
-                label="blowing snow > 10%",
-            )  # , hatch='///')
-        ax.set_ylim(ylim)
-
-        ax.tick_params(axis="both", labelsize=15)
-        ax.grid()
-        ax.set_xlim(
-            np.datetime64(f"{ff.year}-{ff.month}-{ff.day}" + "T00:00"),
-            np.datetime64(f"{ff.year}-{ff.month}-{ff.day}" + "T00:00")
-            + np.timedelta64(1, "D"),
+        (dat2.PSD.sel(camera="max", size_definition="Dmax")).T.plot(
+            ax=ax1,
+            norm=mpl.colors.LogNorm(vmin=1, vmax=dat2.PSD.max()),
+            cbar_kwargs={"label": "Particle Size Distribution [1/m^4]"},
+            cbar_ax=bx1,
         )
+        ax1.set_ylabel("Dmax [m]")
 
-    for ax in axs[:-1, 0]:
-        ax.set_xticklabels([])
+        # (dat2.aspectRatio_dist.sel(camera="max", size_definition="Dmax", fitMethod="cv2.fitEllipseDirect")).T.plot(ax=ax2, vmin=0,vmax=1, cbar_kwargs={"label":"aspect ratio [-]"})
+        dat2.Dmax_mean.sel(camera="max").plot(ax=ax2, label="mean Dmax")
+        dat2.D32.sel(camera="max", size_definition="Dmax").plot(ax=ax2, label="D32")
+        dat2.D43.sel(camera="max", size_definition="Dmax").plot(ax=ax2, label="D43")
+        ax2.set_ylabel("Size [m]")
+        ax2.legend()
 
-    # mark relaunch
-    firstEvent = True
-    for event in events.event:
-        if str(event.values).startswith("start") or str(event.values).startswith(
-            "launch"
-        ):
-            for ax in axs[:, 0]:
-                if firstEvent:
-                    label = "restarted"
-                    firstEvent = False
-                else:
-                    label = None
-                ax.axvline(
-                    event.file_starttime.values, color="red", ls=":", label=label
+        dat2.complexityBW_mean.sel(camera="max").plot(ax=ax3, label="complexity")
+        dat2.aspectRatio_mean.sel(camera="max", fitMethod="cv2.fitEllipseDirect").plot(
+            ax=ax3, label="aspect ratio"
+        )
+        ax3.set_ylabel("Shape [-]")
+        ax3.legend()
+
+        dat2.counts.sel(camera="max", size_definition="Dmax").sum("D_bins").plot(
+            label="observed particles [1/min]", ax=ax4
+        )
+        dat2.matchScore_mean.sel(camera="max").plot(label="match score [-]", ax=ax4)
+        ax4.set_yscale("log")
+        ax4.set_ylabel("Performance")
+        ax4.legend()
+
+        for ax in axs[:, 0]:
+            ax.set_title(None)
+
+            ylim = ax.get_ylim()
+            cond = dat2.time.where(dat2.recordingFailed)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(dat2.time),
+                    [ylim[1]] * len(dat2.time),
+                    color="pink",
+                    alpha=0.25,
+                    label="cameras off",
                 )
+            cond = dat2.time.where(dat2.processingFailed)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(dat2.time),
+                    [ylim[1]] * len(dat2.time),
+                    color="purple",
+                    alpha=0.25,
+                    label="processing failed",
+                )
+            cond = dat2.time.where(dat2.blockedPixelRatio.sel(camera="max") > 0.1)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(dat2.time),
+                    [ylim[1]] * len(dat2.time),
+                    color="red",
+                    alpha=0.25,
+                    label="camera blocked > 10%",
+                )
+            cond = dat2.time.where(dat2.blowingSnowRatio.sel(camera="max") > 0.1)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(dat2.time),
+                    [ylim[1]] * len(dat2.time),
+                    color="orange",
+                    alpha=0.25,
+                    label="blowing snow > 10%",
+                )  # , hatch='///')
+            ax.set_ylim(ylim)
 
-    ax1.legend()
-    ax4.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+            ax.tick_params(axis="both", labelsize=15)
+            ax.grid()
+            ax.set_xlim(
+                np.datetime64(f"{ff.year}-{ff.month}-{ff.day}" + "T00:00"),
+                np.datetime64(f"{ff.year}-{ff.month}-{ff.day}" + "T00:00")
+                + np.timedelta64(1, "D"),
+            )
 
-    for bx in axs[1:, 1]:
-        bx.axis("off")
+        for ax in axs[:-1, 0]:
+            ax.set_xticklabels([])
+
+        # mark relaunch
+        firstEvent = True
+        for event in events.event:
+            if str(event.values).startswith("start") or str(event.values).startswith(
+                "launch"
+            ):
+                for ax in axs[:, 0]:
+                    if firstEvent:
+                        label = "restarted"
+                        firstEvent = False
+                    else:
+                        label = None
+                    ax.axvline(
+                        event.file_starttime.values, color="red", ls=":", label=label
+                    )
+
+        ax1.legend()
+        ax4.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+
+        for bx in axs[1:, 1]:
+            bx.axis("off")
 
     fig.tight_layout()
     tools.createParentDir(fOut)
@@ -2077,7 +2082,7 @@ def createLevel2trackQuicklook(
         config = tools.readSettings(config)
 
     camera = config.leader
-
+    nodata = False
     # get level 0 file names
     ff = files.FindFiles(case, camera, config, version)
     fOut = ff.quicklook.level2track
@@ -2090,8 +2095,11 @@ def createLevel2trackQuicklook(
 
     lv2track = ff.listFiles("level2track")
     if len(lv2track) == 0:
-        log.error(f"{case} lv2track data not found")
-        return None, None
+        if len(ff.listFilesExt("level2track")) == 0:
+            log.error(f"{case} lv2track data not found")
+            return None, None
+        else:
+            nodata = True
     else:
         lv2track = lv2track[0]
 
@@ -2100,26 +2108,6 @@ def createLevel2trackQuicklook(
         return None, None
 
     log.info(f"running {case} {fOut}")
-
-    dat2 = xr.open_dataset(lv2track)
-    print(lv2track)
-    fEvents1 = ff.listFiles("metaEvents")[0]
-    fEvents2 = files.FilenamesFromLevel(fEvents1, config).filenamesOtherCamera(
-        level="metaEvents"
-    )[0]
-
-    try:
-        events1 = xr.open_dataset(fEvents1)
-    except:
-        print(f"{fEvents1} broken")
-        return None, None
-    try:
-        events2 = xr.open_dataset(fEvents2)
-    except:
-        print(f"{fEvents2} broken")
-        return None, None
-
-    events = xr.concat((events1, events2), dim="file_starttime")
 
     fig, axs = plt.subplots(
         nrows=5,
@@ -2144,129 +2132,159 @@ def createLevel2trackQuicklook(
         fontweight="bold",
         x=mid,
     )
+    if nodata:
+        axs[0, 0].set_title("no data")
+    else:
+        dat2 = xr.open_dataset(lv2track)
+        print(lv2track)
+        fEvents1 = ff.listFiles("metaEvents")[0]
+        fEvents2 = files.FilenamesFromLevel(fEvents1, config).filenamesOtherCamera(
+            level="metaEvents"
+        )[0]
 
-    (ax1, ax1a, ax2, ax3, ax4) = axs[:, 0]
-    (bx1, bx1a, bx2, bx3, bx4) = axs[:, 1]
+        try:
+            events1 = xr.open_dataset(fEvents1)
+        except:
+            print(f"{fEvents1} broken")
+            return None, None
+        try:
+            events2 = xr.open_dataset(fEvents2)
+        except:
+            print(f"{fEvents2} broken")
+            return None, None
 
-    (dat2.PSD.sel(cameratrack="max", size_definition="Dmax")).T.plot(
-        ax=ax1,
-        norm=mpl.colors.LogNorm(vmin=1, vmax=dat2.PSD.max()),
-        cbar_kwargs={"label": "Particle Size Distribution [1/m^4]"},
-        cbar_ax=bx1,
-    )
-    ax1.set_ylabel("Dmax [m]")
+        events = xr.concat((events1, events2), dim="file_starttime")
 
-    (
-        dat2.velocity_dist.sel(cameratrack="mean", size_definition="Dmax", dim3D="z")
-    ).T.plot(
-        ax=ax1a,
-        cbar_kwargs={"label": "Particle Sedimentation velocity [m/s]"},
-        cbar_ax=bx1a,
-        vmin=0,
-        vmax=3,
-    )
-    ax1a.set_ylabel("Dmax [m]")
+        (ax1, ax1a, ax2, ax3, ax4) = axs[:, 0]
+        (bx1, bx1a, bx2, bx3, bx4) = axs[:, 1]
 
-    # (dat2.aspectRatio_dist.sel(cameratrack="max", size_definition="Dmax", fitMethod="cv2.fitEllipseDirect")).T.plot(ax=ax2, vmin=0,vmax=1, cbar_kwargs={"label":"aspect ratio [-]"})
-    dat2.Dmax_mean.sel(cameratrack="max").plot(ax=ax2, label="mean Dmax")
-    dat2.D32.sel(cameratrack="max", size_definition="Dmax").plot(ax=ax2, label="D32")
-    dat2.D43.sel(cameratrack="max", size_definition="Dmax").plot(ax=ax2, label="D34")
-    ax2.set_ylabel("Size [m]")
-    ax2.legend()
-
-    dat2.complexityBW_mean.sel(cameratrack="max").plot(ax=ax3, label="complexity")
-    dat2.aspectRatio_mean.sel(cameratrack="min", fitMethod="cv2.fitEllipseDirect").plot(
-        ax=ax3, label="aspect ratio"
-    )
-    ax3.set_ylabel("Shape [-]")
-    ax3.legend()
-
-    dat2.counts.sel(cameratrack="max", size_definition="Dmax").sum("D_bins").plot(
-        label="observed particles [1/min]", ax=ax4
-    )
-    dat2.matchScore_mean.sel(cameratrack="max").plot(label="match score [-]", ax=ax4)
-    ax4.set_yscale("log")
-    ax4.set_ylabel("Performance")
-    ax4.legend()
-
-    for ax in axs[:, 0]:
-        ax.set_title(None)
-
-        ylim = ax.get_ylim()
-        cond = dat2.time.where(dat2.recordingFailed)
-        if cond.notnull().any():
-            ax.fill_between(
-                cond,
-                [ylim[0]] * len(dat2.time),
-                [ylim[1]] * len(dat2.time),
-                color="pink",
-                alpha=0.25,
-                label="cameras off",
-            )
-        cond = dat2.time.where(dat2.processingFailed)
-        if cond.notnull().any():
-            ax.fill_between(
-                cond,
-                [ylim[0]] * len(dat2.time),
-                [ylim[1]] * len(dat2.time),
-                color="purple",
-                alpha=0.25,
-                label="processing failed",
-            )
-        cond = dat2.time.where(dat2.blockedPixelRatio.max("camera") > 0.1)
-        if cond.notnull().any():
-            ax.fill_between(
-                cond,
-                [ylim[0]] * len(dat2.time),
-                [ylim[1]] * len(dat2.time),
-                color="red",
-                alpha=0.25,
-                label="camera blocked > 10%",
-            )
-        cond = dat2.time.where(dat2.blowingSnowRatio.max("camera") > 0.1)
-        if cond.notnull().any():
-            ax.fill_between(
-                cond,
-                [ylim[0]] * len(dat2.time),
-                [ylim[1]] * len(dat2.time),
-                color="orange",
-                alpha=0.25,
-                label="blowing snow > 10%",
-            )  # , hatch='///')
-        ax.set_ylim(ylim)
-
-        ax.tick_params(axis="both", labelsize=15)
-        ax.grid()
-        ax.set_xlim(
-            np.datetime64(f"{ff.year}-{ff.month}-{ff.day}" + "T00:00"),
-            np.datetime64(f"{ff.year}-{ff.month}-{ff.day}" + "T00:00")
-            + np.timedelta64(1, "D"),
+        (dat2.PSD.sel(cameratrack="max", size_definition="Dmax")).T.plot(
+            ax=ax1,
+            norm=mpl.colors.LogNorm(vmin=1, vmax=dat2.PSD.max()),
+            cbar_kwargs={"label": "Particle Size Distribution [1/m^4]"},
+            cbar_ax=bx1,
         )
+        ax1.set_ylabel("Dmax [m]")
 
-    for ax in axs[:-1, 0]:
-        ax.set_xticklabels([])
+        (
+            dat2.velocity_dist.sel(
+                cameratrack="mean", size_definition="Dmax", dim3D="z"
+            )
+        ).T.plot(
+            ax=ax1a,
+            cbar_kwargs={"label": "Particle Sedimentation velocity [m/s]"},
+            cbar_ax=bx1a,
+            vmin=0,
+            vmax=3,
+        )
+        ax1a.set_ylabel("Dmax [m]")
 
-    # mark relaunch
-    firstEvent = True
-    for event in events.event:
-        if str(event.values).startswith("start") or str(event.values).startswith(
-            "launch"
-        ):
-            for ax in axs[:, 0]:
-                if firstEvent:
-                    label = "restarted"
-                    firstEvent = False
-                else:
-                    label = None
-                ax.axvline(
-                    event.file_starttime.values, color="red", ls=":", label=label
+        # (dat2.aspectRatio_dist.sel(cameratrack="max", size_definition="Dmax", fitMethod="cv2.fitEllipseDirect")).T.plot(ax=ax2, vmin=0,vmax=1, cbar_kwargs={"label":"aspect ratio [-]"})
+        dat2.Dmax_mean.sel(cameratrack="max").plot(ax=ax2, label="mean Dmax")
+        dat2.D32.sel(cameratrack="max", size_definition="Dmax").plot(
+            ax=ax2, label="D32"
+        )
+        dat2.D43.sel(cameratrack="max", size_definition="Dmax").plot(
+            ax=ax2, label="D34"
+        )
+        ax2.set_ylabel("Size [m]")
+        ax2.legend()
+
+        dat2.complexityBW_mean.sel(cameratrack="max").plot(ax=ax3, label="complexity")
+        dat2.aspectRatio_mean.sel(
+            cameratrack="min", fitMethod="cv2.fitEllipseDirect"
+        ).plot(ax=ax3, label="aspect ratio")
+        ax3.set_ylabel("Shape [-]")
+        ax3.legend()
+
+        dat2.counts.sel(cameratrack="max", size_definition="Dmax").sum("D_bins").plot(
+            label="observed particles [1/min]", ax=ax4
+        )
+        dat2.matchScore_mean.sel(cameratrack="max").plot(
+            label="match score [-]", ax=ax4
+        )
+        ax4.set_yscale("log")
+        ax4.set_ylabel("Performance")
+        ax4.legend()
+
+        for ax in axs[:, 0]:
+            ax.set_title(None)
+
+            ylim = ax.get_ylim()
+            cond = dat2.time.where(dat2.recordingFailed)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(dat2.time),
+                    [ylim[1]] * len(dat2.time),
+                    color="pink",
+                    alpha=0.25,
+                    label="cameras off",
                 )
+            cond = dat2.time.where(dat2.processingFailed)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(dat2.time),
+                    [ylim[1]] * len(dat2.time),
+                    color="purple",
+                    alpha=0.25,
+                    label="processing failed",
+                )
+            cond = dat2.time.where(dat2.blockedPixelRatio.max("camera") > 0.1)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(dat2.time),
+                    [ylim[1]] * len(dat2.time),
+                    color="red",
+                    alpha=0.25,
+                    label="camera blocked > 10%",
+                )
+            cond = dat2.time.where(dat2.blowingSnowRatio.max("camera") > 0.1)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(dat2.time),
+                    [ylim[1]] * len(dat2.time),
+                    color="orange",
+                    alpha=0.25,
+                    label="blowing snow > 10%",
+                )  # , hatch='///')
+            ax.set_ylim(ylim)
 
-    ax1.legend()
-    ax4.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+            ax.tick_params(axis="both", labelsize=15)
+            ax.grid()
+            ax.set_xlim(
+                np.datetime64(f"{ff.year}-{ff.month}-{ff.day}" + "T00:00"),
+                np.datetime64(f"{ff.year}-{ff.month}-{ff.day}" + "T00:00")
+                + np.timedelta64(1, "D"),
+            )
 
-    for bx in axs[2:, 1]:
-        bx.axis("off")
+        for ax in axs[:-1, 0]:
+            ax.set_xticklabels([])
+
+        # mark relaunch
+        firstEvent = True
+        for event in events.event:
+            if str(event.values).startswith("start") or str(event.values).startswith(
+                "launch"
+            ):
+                for ax in axs[:, 0]:
+                    if firstEvent:
+                        label = "restarted"
+                        firstEvent = False
+                    else:
+                        label = None
+                    ax.axvline(
+                        event.file_starttime.values, color="red", ls=":", label=label
+                    )
+
+        ax1.legend()
+        ax4.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+
+        for bx in axs[2:, 1]:
+            bx.axis("off")
 
     fig.tight_layout()
     tools.createParentDir(fOut)

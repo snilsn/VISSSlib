@@ -218,7 +218,8 @@ def createLevel2(
         start=case, end=fL.datetime64 + endTime, freq=freq, inclusive="both"
     )
 
-    if len(case) > 6:
+    allEmpty = False
+    if len(case) > 8:
         lv2Dat = createLevel2part(
             case,
             config,
@@ -235,6 +236,8 @@ def createLevel2(
             log.info(f"load data for {case}")
             with ProgressBar():
                 lv2Dat.load()
+        else:
+            allEmpty = True
 
     else:
         # due to performance reasons, split into hourly chunks and process sperately
@@ -260,7 +263,17 @@ def createLevel2(
                 with ProgressBar():
                     lv2Dat.append(lv2Dat1.load())
 
-        lv2Dat = xr.concat(lv2Dat, dim="time")
+        try:
+            lv2Dat = xr.concat(lv2Dat, dim="time")
+        except:
+            allEmpty = True
+
+    if allEmpty:
+        with tools.open2("%s.nodata" % lv2File, "w") as f:
+            f.write("no data for %s" % case)
+        log.warning("no data for %s" % case)
+        return lv2Dat, lv2File
+
     # fill up missing data
     lv2Dat.reindex(time=timeIndex)
 
