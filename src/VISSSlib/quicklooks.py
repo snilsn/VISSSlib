@@ -587,7 +587,13 @@ def createLevel1detectQuicklook(
     draw = ImageDraw.Draw(new_im)
     draw.text((0, 0), title, (0, 0, 0), font=font)
     width = draw.textlength(title, font=font)
-
+    # Call textbbox to get the bounding box
+    bbox = draw.textbbox((0, 0), title, font=font)
+    
+    # Extract top and bottom values from the returned tuple
+    left, top, right, bottom = bbox
+    height=top-bottom
+    #width, height = draw.textsize(title, font=font)##Depricated 
     draw.line((width + 15, 30, width + 15 + round(tenmm), 30), fill=0, width=5)
 
     new_im.save(ffOut)
