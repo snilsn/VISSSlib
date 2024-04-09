@@ -2,9 +2,8 @@
 *.egg-info
 build
 dist
-docs/_build
+docs/build
 *~
-pyOptimalEstimation/examples/*.png
 .pytest_cache
 .coverage
 .DS_Store

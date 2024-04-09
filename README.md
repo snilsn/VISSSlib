@@ -1,4 +1,15 @@
-# VISSS processing library
+[![Documentation Status](https://readthedocs.org/projects/vissslib/badge/?version=latest)](https://vissslib.readthedocs.io/en/latest/?badge=latest)
+
+
+# VISSS (Video In Situ Snowfall Sensor) processing library
+
+This repository contains the VISSS data acquisition software. Please see also
+* VISSS data acquisition software https://github.com/maahn/VISSS
+* VISSS2 hardware plans https://zenodo.org/doi/10.5281/zenodo.7640820
+* VISSS3 hardware plans https://zenodo.org/doi/10.5281/zenodo.10526897
+
+
+## Installation
 
 Install conda/mamba dependencies
 
