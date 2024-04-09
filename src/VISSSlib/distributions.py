@@ -172,6 +172,15 @@ def createLevel2(
             print("SKIPPING - file exists", lv2File)
             return None, None
 
+    if os.path.isfile("%s.nodata" % lv2File) and skipExisting:
+        if os.path.getmtime("%s.nodata" % lv2File) < os.path.getmtime(
+            fL.listFiles("metaEvents")[0]
+        ):
+            print("file exists but older than event file, redoing", lv2File)
+        else:
+            print("SKIPPING - nodata file exists", lv2File)
+            return None, None
+
     #    if len(fL.listFiles("metaFrames")) > len(fL.listFiles("level0")):
     #        print("DATA TRANSFER INCOMPLETE ", lv2File)
     #        print(len(fL.listFiles("level0")), "of", len(fL.listFiles("metaFrames")), "transmitted")
@@ -267,11 +276,11 @@ def createLevel2(
             lv2Dat = xr.concat(lv2Dat, dim="time")
         except:
             allEmpty = True
-
     if allEmpty:
         with tools.open2("%s.nodata" % lv2File, "w") as f:
             f.write("no data for %s" % case)
         log.warning("no data for %s" % case)
+        log.warning("written: %s.nodata" % lv2File)
         return lv2Dat, lv2File
 
     # fill up missing data
@@ -491,8 +500,8 @@ def createLevel2part(
     lv1Files = fL.listFilesWithNeighbors(f"level1{sublevel}")
 
     if len(lv1Files) == 0:
-        log.error("level1 NOT AVAILABLE %s" % lv2File)
-        log.error("look at %s" % fL.fnamesPatternExt[f"level1{sublevel}"])
+        log.warning("level1 NOT AVAILABLE %s (might be nodata)" % lv2File)
+        log.warning("look at %s" % fL.fnamesPatternExt[f"level1{sublevel}"])
         return None
 
     timeIndex = pd.date_range(
@@ -1022,7 +1031,7 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
     level1dat = level1dat.swap_dims(pair_id="track_mi")
 
     # very very rarely, there are duplicate values in the index, reason is unclear
-    _, uniqueII = np.unique(level1dat.track_id, return_index=True)
+    _, uniqueII = np.unique(level1dat.track_mi, return_index=True)
     level1dat = level1dat.isel(track_mi=uniqueII)
 
     # this costs a lot of memeory but I do not know a better way
@@ -1075,10 +1084,10 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
         )
     ]
 
-    # try to find and remove edges in the tracks,
+    # try to find and remove sudden turns in the tracks,
     tracksCut = 0
     for kk in range(2):
-        log.info(f"try to find and remove edges in the tracks {kk}")
+        log.info(f"try to find and remove sudden turns in the tracks {kk}")
         level1dat_track2D, nCuts = removeTrackEdges(level1dat_track2D, maxAngleDiff)
         tracksCut += nCuts
 

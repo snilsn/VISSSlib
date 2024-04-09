@@ -30,10 +30,10 @@ _reference_slopes = {
         "visss2": 0.089,
         "visss3": 0.089,
     },
-    "pixSum": {
+    "pixSum": {  # yes, these values should be visss specific but the effect of particle type is much larger than visss resolution
         "visss": 0.6983828315318985,
-        # "visss2":0.089,
-        # "visss3":0.089,
+        "visss2": 0.6983828315318985,
+        "visss3": 0.6983828315318985,
     },
 }
 
@@ -44,10 +44,10 @@ _reference_intercepts = {
         "visss2": 1.463,
         "visss3": 1.441,
     },
-    "pixSum": {
+    "pixSum": {  # yes, these values should be visss specific but the effect of particle type is much larger than visss resolution
         "visss": -0.5487112497963409,
-        # "visss2":1.463,
-        # "visss3":1.441,
+        "visss2": -0.5487112497963409,
+        "visss3": -0.5487112497963409,
     },
 }
 
@@ -366,7 +366,7 @@ class Tracker(object):
         else:
             self.velGuess_intercept = velIntercept
 
-        # use only a fraction of the backSteps for reference dtaa ppoints
+        # use only a fraction of the backSteps for reference data ppoints
         if self.sizeVariable == "pixSum":
             Dlog = np.linspace(1, 4, self.backStepsMin)
         else:
@@ -825,7 +825,9 @@ class Tracker(object):
                     log.debug(
                         f"fit results in slope {self.velGuess_slope} and intercept {self.velGuess_intercept}"
                     )
-
+                # print(
+                #     f"fit results in slope {self.velGuess_slope} and intercept {self.velGuess_intercept}"
+                # )
                 # print(repr(sizes))
                 # print(repr(zVels))
 
@@ -1010,6 +1012,7 @@ def trackParticles(
         verbosity=verbosity,
     )
     lv1track, velSlope, velIntercept = trackTrainer.updateAll()
+    print("final slope and intercept", velSlope, velIntercept)
 
     lv1track = tools.finishNc(lv1track, config.site, config.visssGen)
     lv1track.load()

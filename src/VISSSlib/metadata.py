@@ -951,7 +951,9 @@ def getEvents(fnames0, config, fname0status=None):
     return metaDats
 
 
-def createEvent(case, camera, config, skipExisting=True, version=__version__):
+def createEvent(
+    case, camera, config, skipExisting=True, quiet=False, version=__version__
+):
     fn = files.FindFiles(case, camera, config, version)
     fnames0 = fn.listFiles("level0txt")
 
@@ -985,7 +987,7 @@ def createEvent(case, camera, config, skipExisting=True, version=__version__):
                 )
                 nFiles = int(nFiles.values)
 
-            if nFiles == len(fnames0):
+            if (not quiet) and (nFiles == len(fnames0)):
                 log.info(tools.concat("Skipping", case, eventFile))
                 eventDat.close()
                 return None

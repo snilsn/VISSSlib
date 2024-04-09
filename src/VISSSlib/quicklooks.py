@@ -2158,25 +2158,31 @@ def createLevel2trackQuicklook(
         (ax1, ax1a, ax2, ax3, ax4) = axs[:, 0]
         (bx1, bx1a, bx2, bx3, bx4) = axs[:, 1]
 
-        (dat2.PSD.sel(cameratrack="max", size_definition="Dmax")).T.plot(
-            ax=ax1,
-            norm=mpl.colors.LogNorm(vmin=1, vmax=dat2.PSD.max()),
-            cbar_kwargs={"label": "Particle Size Distribution [1/m^4]"},
-            cbar_ax=bx1,
-        )
+        plotDat = (dat2.PSD.sel(cameratrack="max", size_definition="Dmax")).T
+        if np.any(plotDat.notnull()):
+            plotDat.plot(
+                ax=ax1,
+                norm=mpl.colors.LogNorm(vmin=1, vmax=dat2.PSD.max()),
+                cbar_kwargs={"label": "Particle Size Distribution [1/m^4]"},
+                cbar_ax=bx1,
+            )
+
         ax1.set_ylabel("Dmax [m]")
 
-        (
+        plotDat = (
             dat2.velocity_dist.sel(
                 cameratrack="mean", size_definition="Dmax", dim3D="z"
             )
-        ).T.plot(
-            ax=ax1a,
-            cbar_kwargs={"label": "Particle Sedimentation velocity [m/s]"},
-            cbar_ax=bx1a,
-            vmin=0,
-            vmax=3,
-        )
+        ).T
+        if np.any(plotDat.notnull()):
+            plotDat.plot(
+                ax=ax1a,
+                cbar_kwargs={"label": "Particle Sedimentation velocity [m/s]"},
+                cbar_ax=bx1a,
+                vmin=0,
+                vmax=3,
+            )
+
         ax1a.set_ylabel("Dmax [m]")
 
         # (dat2.aspectRatio_dist.sel(cameratrack="max", size_definition="Dmax", fitMethod="cv2.fitEllipseDirect")).T.plot(ax=ax2, vmin=0,vmax=1, cbar_kwargs={"label":"aspect ratio [-]"})

@@ -1044,10 +1044,12 @@ def matchParticles(
     fCases = np.unique([f.case.split("-")[0] for f in fClass])
     # just in case
     metadata.createEvent(
-        ffl1.case.split("-")[0], config.leader, config, skipExisting=True
+        ffl1.case.split("-")[0], config.leader, config, quiet=True, skipExisting=True
     )
     for fCase in fCases:
-        metadata.createEvent(fCase, config.follower, config, skipExisting=True)
+        metadata.createEvent(
+            fCase, config.follower, config, quiet=True, skipExisting=True
+        )
 
     lEvents = ffl1.fname.metaEvents
     lEvents = xr.open_dataset(lEvents)
@@ -1368,20 +1370,36 @@ def matchParticles(
                 leader1D4rot = leader1D4rot.isel(fpid=slice(nSamples4rot * 10))
                 dataTruncated4rot = True
             elif len(leader1D4rot.fpid) < minSamples4rot:
-                log.error(tools.concat("not enough leader data to estimate rotation"))
+                log.error(
+                    "not enough leader data to estimate rotation %i"
+                    % len(leader1D4rot.fpid)
+                )
                 doRot = False
 
             if len(follower1D4rot.fpid) > nSamples4rot * 10:
                 follower1D4rot = follower1D4rot.isel(fpid=slice(nSamples4rot * 10))
                 dataTruncated4rot = True
             elif len(follower1D4rot.fpid) < minSamples4rot:
-                log.error(tools.concat("not enough follower data to estimate rotation"))
+                log.error(
+                    "not enough follower data to estimate rotation %i"
+                    % len(follower1D4rot.fpid)
+                )
                 doRot = False
 
         # iterate to rotation coeeficients in max. 20 steps
         if doRot:
             for ii in range(20):
-                log.info(tools.concat("rotation coefficients iteration", ii, "of 20"))
+                log.info(
+                    tools.concat(
+                        "rotation coefficients iteration",
+                        ii,
+                        "of 20 with",
+                        len(leader1D4rot.fpid),
+                        "and",
+                        len(follower1D4rot.fpid),
+                        "data points",
+                    )
+                )
                 # in here is all the magic
                 res = doMatchSlicer(
                     leader1D4rot,
@@ -1395,8 +1413,11 @@ def matchParticles(
                     testing=testing,
                 )
                 if res is None:
-                    log.error(tools.concat("doMatchSlicer 4 rot failed"))
-                    continue
+                    log.error(
+                        "doMatchSlicer 4 rot failed %s"
+                        % str(leader1D4rot.capture_time.values[0])
+                    )
+                    break
                 matchedDat, disputedPairs, new_sigma, new_mu = res
 
                 if len(matchedDat.pair_id) >= minSamples4rot:
@@ -1679,7 +1700,7 @@ def createMetaRotation(
 
     # just in case it is missing
     metadata.createEvent(
-        fl.case.split("-")[0], config.leader, config, skipExisting=True
+        fl.case.split("-")[0], config.leader, config, skipExisting=True, quiet=True
     )
 
     if len(fl.listFiles("metaEvents")) == 0:
@@ -1775,47 +1796,63 @@ def createMetaRotation(
             print("NO leader DATA", fname1L)
             continue
 
-        try:
-            _, _, rot, rot_err = matchParticles(
-                fname1L,
-                config,
-                y_cov_diag=y_cov_diag,
-                chunckSize=chunckSize,
-                rotate=rotate_default,
-                rotate_err=rotate_err_default,
-                maxDiffMs=maxDiffMs,
-                rotationOnly=True,
-                nPoints=nPoints,
-                sigma=sigma,
-                minDMax4rot=minDMax4rot,
-                nSamples4rot=nSamples4rot,
-                minSamples4rot=minSamples4rot,
-                testing=testing,
-                singleParticleFramesOnly=True,
-                doRot=True,
+        rotate_config, rotate_time_config = tools.getPrevRotationEstimate(
+            ffl1.datetime64, "transformation", config
+        )
+        assert len(rotate_config) != 0
+        if np.abs(rotate_time_config - ffl1.datetime64) < np.timedelta64(1, "s"):
+            log.warning(
+                "taking rotation estimate directly from config file instead of calculating %s"
+                % rotate_time_config
             )
-
-            # metaRotation.append(xr.DataArray([rot], ))
-            # metaRotationErr.append(xr.DataArray())
-
-        except (RuntimeError, AssertionError) as e:
-            print("matchParticles FAILED", fnameMetaRotation)
-            print(str(e))
+            rot = pd.Series(rotate_config)
+            rot_err, rotate_time_config = tools.getPrevRotationEstimate(
+                ffl1.datetime64, "transformation_err", config
+            )
+            rot_err = pd.Series(rot_err)
 
         else:
-            if rot is not None:
-                metaRotation1 = {}
-                for k in rot.keys():
-                    metaRotation1[k] = xr.DataArray(
-                        np.ones((1, 2)) * np.array([rot[k], rot_err[k]]),
-                        dims=["file_starttime", "camera_rotation"],
-                        coords=[[ffl1.datetime64], np.array(["mean", "err"])],
-                    )
-                metaRotation.append(xr.Dataset(metaRotation1))
+            try:
+                _, _, rot, rot_err = matchParticles(
+                    fname1L,
+                    config,
+                    y_cov_diag=y_cov_diag,
+                    chunckSize=chunckSize,
+                    rotate=rotate_default,
+                    rotate_err=rotate_err_default,
+                    maxDiffMs=maxDiffMs,
+                    rotationOnly=True,
+                    nPoints=nPoints,
+                    sigma=sigma,
+                    minDMax4rot=minDMax4rot,
+                    nSamples4rot=nSamples4rot,
+                    minSamples4rot=minSamples4rot,
+                    testing=testing,
+                    singleParticleFramesOnly=True,
+                    doRot=True,
+                )
 
-                # update defautl
-                rotate_default = rot
-                rotate_err_default = rot_err
+                # metaRotation.append(xr.DataArray([rot], ))
+                # metaRotationErr.append(xr.DataArray())
+
+            except (RuntimeError, AssertionError) as e:
+                print("matchParticles FAILED", fnameMetaRotation)
+                print(str(e))
+                continue
+
+        if rot is not None:
+            metaRotation1 = {}
+            for k in rot.keys():
+                metaRotation1[k] = xr.DataArray(
+                    np.ones((1, 2)) * np.array([rot[k], rot_err[k]]),
+                    dims=["file_starttime", "camera_rotation"],
+                    coords=[[ffl1.datetime64], np.array(["mean", "err"])],
+                )
+            metaRotation.append(xr.Dataset(metaRotation1))
+
+            # update defautl
+            rotate_default = rot
+            rotate_err_default = rot_err
 
     if len(metaRotation) > 0:
         metaRotation = xr.concat(metaRotation, dim="file_starttime")
