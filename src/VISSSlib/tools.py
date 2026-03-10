@@ -362,7 +362,7 @@ def readSettings(fname):
         # check for relative paths (with respect to the yaml file and make them absolute
         for key in ["path", "pathOut", "pathQuicklooks"]:
             if not config[key].startswith("/"):
-                config[key] = f"{config["dirname"]}/{config[key]}"
+                config[key] = f"{config.dirname}/{config[key]}"
             config[key] = config[key].replace("$HOSTNAME", socket.gethostname())
         return config
     else:  # is already config
