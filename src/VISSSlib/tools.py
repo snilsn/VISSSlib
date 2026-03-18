@@ -842,6 +842,7 @@ def identifyBlockedBlowingSnowData(fnames, config, timeIndex1, sublevel):
 
     # print("starting identifyBlowingSnowData", cam)
     movingObjects = []
+
     for fna in fnames:
         movingObjects.append(xr.open_dataset(fna).movingObjects)
     movingObjects = xr.concat(movingObjects, dim="capture_time")
