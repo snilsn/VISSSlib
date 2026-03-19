@@ -1143,7 +1143,7 @@ class Tracker(object):
         return
 
 
-@log.catch
+@log.catch(reraise=True)
 def trackParticles(
     fnameLv1Detect,
     config,

@@ -9,7 +9,7 @@ import numpy as np
 import xarray as xr
 from loguru import logger as log
 
-from . import *
+from . import files, tools
 
 __all__ = ["VideoReader", "VideoReaderMeta"]
 

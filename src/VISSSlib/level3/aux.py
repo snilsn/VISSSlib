@@ -6,7 +6,7 @@ import numpy as np
 import xarray as xr
 from loguru import logger as log
 
-from . import __version__, files, tools
+from .. import __version__, files, tools
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
@@ -600,7 +600,9 @@ def getRadarDataCloudnetCategorize(case, config, fn):
 
     # fix Cloudnet bug - solid precipitation at the ground should never need a melting layer attenuation correction
     # https://github.com/actris-cloudnet/cloudnetpy/issues/121
-    dat1["Ze"] = dat1["Ze"] - dat.radar_melting_atten
+    dat1["Ze"] = dat1["Ze"] - dat.radar_melting_atten.fillna(0)
+    # The correction does not hurt becuase after bugfix, radar_melting_atten is zero!
+    # Could be only problematic for perip around 0°C
 
     try:
         altitude = dat.altitude.values[0]
@@ -779,7 +781,7 @@ def getRadarDataARMarsclkazr1kollias(case, config, fn):
     return dat1, frq
 
 
-def downloadPangaea1(config, path, type):
+def _downloadPangaea1(config, path, type):
     """
     Download data from Pangaea for a specific type and save it locally.
 
@@ -852,7 +854,7 @@ def downloadPangaea(config, path, type):
 
     ds = PanDataSet(config.aux.meteo.doi)
     for doi in ds.collection_members:
-        fname = downloadPangaea1(config, path, type)
+        fname = _downloadPangaea1(config, path, type)
     return
 
 

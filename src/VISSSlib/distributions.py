@@ -394,6 +394,12 @@ def _createLevel2(
     #        print(len(fL.listFiles("level0")), "of", len(fL.listFiles("metaFrames")), "transmitted")
     #        return None, None
 
+    # is that smart??
+    noLevel0 = len(fL.listFilesExt(f"level0txt")) == 0
+    if noLevel0:
+        with tools.open2("%s.nodata" % lv2File, "w") as f:
+            f.write("no level 0 data for %s" % case)
+
     if sublevel == "match":
         if not fL.isCompleteL1match:
             log.error(
@@ -3173,7 +3179,7 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
 
     # this costs a lot of memeory but I do not know a better way
     level1dat_time = level1dat.unstack("track_mi")
-    # promote capture_time to coordimnate for later
+    # promote capture_time to coordinate for later
     level1dat_time = level1dat_time.assign_coords(
         time=xr.DataArray(
             level1dat_time.capture_time.isel(camera=0, track_step=0).values,
@@ -3238,7 +3244,6 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
 
     # velocity in px/s
     level1dat_track2D["velocity"] = distSpace / distTime
-    del level1dat_track2D["capture_time"]
 
     # save for later
     individualDataPoints = level1dat_track2D.track_id
@@ -3250,28 +3255,36 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
     del level1dat_track2D["position3D_centroid"]
 
     # estimate max, mean and min for tracks by reducing track_step
+    level1dat_track2D_4ave = (
+        level1dat_track2D.copy()
+    )  # copy required becuase std of time does not work
+    del level1dat_track2D_4ave["capture_time"]
     trackOps = ["max", "mean", "min", "std"]
     level1dat_trackAve = (
-        level1dat_track2D.max(["track_step", "camera"]),
-        level1dat_track2D.mean(["track_step", "camera"]),
-        level1dat_track2D.min(["track_step", "camera"]),
-        level1dat_track2D.std(["track_step", "camera"]),
+        level1dat_track2D_4ave.max(["track_step", "camera"]),
+        level1dat_track2D_4ave.mean(["track_step", "camera"]),
+        level1dat_track2D_4ave.min(["track_step", "camera"]),
+        level1dat_track2D_4ave.std(["track_step", "camera"]),
     )
     level1dat_trackAve = xr.concat(level1dat_trackAve, dim="cameratrack")
     level1dat_trackAve["cameratrack"] = trackOps
 
     # fix  circular mean & std for angle
-    level1dat_trackAve["angle"].loc["mean"] = level1dat_track2D["angle"].reduce(
+    level1dat_trackAve["angle"].loc["mean"] = level1dat_track2D_4ave["angle"].reduce(
         scipy.stats.circmean, ["track_step", "camera"], high=360, nan_policy="omit"
     )
-    level1dat_trackAve["angle"].loc["std"] = level1dat_track2D["angle"].reduce(
+    level1dat_trackAve["angle"].loc["std"] = level1dat_track2D_4ave["angle"].reduce(
         scipy.stats.circstd, ["track_step", "camera"], high=360, nan_policy="omit"
     )
 
     # use Dmax as arbitrary variable with only one dimension
     level1dat_trackAve["track_length"] = (
-        level1dat_track2D.Dmax.isel(camera=0, drop=True).notnull().sum("track_step")
+        level1dat_track2D_4ave.Dmax.isel(camera=0, drop=True)
+        .notnull()
+        .sum("track_step")
     )
+
+    del level1dat_track2D_4ave
 
     return (
         level1dat_trackAve,

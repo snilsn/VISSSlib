@@ -1098,7 +1098,7 @@ def doMatchSlicer(
         return None, len(leader1D.fpid), len(follower1D.fpid), nMatched
 
 
-@log.catch
+@log.catch(reraise=True)
 def matchParticles(
     fnameLv1Detect,
     config,
@@ -2032,6 +2032,7 @@ def createMetaRotation(
     stopOnFailure=False,
     maxAgeDaysPrevFile=1,
     doPlots=True,
+    tryAgain=True,
 ):
     """
     Create meta rotation data for camera alignment.
@@ -2084,6 +2085,7 @@ def createMetaRotation(
     """
     import pandas as pd
 
+    nError = 0
     nL = None
     nF = None
     nM = None
@@ -2104,6 +2106,11 @@ def createMetaRotation(
 
     # output file
     fnameMetaRotation = fflM.fname["metaRotation"]
+
+    isBad, reason = tools.isBadPeriod(case, config, product="metaRotation")
+
+    if isBad:
+        raise RuntimeError(f"metaRotation data marked as broken due to: {reason}")
 
     # check whether output exists
     if skipExisting and tools.checkForExisting(
@@ -2287,9 +2294,21 @@ def createMetaRotation(
                 # metaRotationErr.append(xr.DataArray())
 
             except (RuntimeError, AssertionError) as e:
-                log.error("matchParticles FAILED %s" % fnameMetaRotation)
+                log.error(
+                    "matchParticles FAILED %s, we try to fix it" % fnameMetaRotation
+                )
                 log.error(str(e))
-                continue
+                ## as a last resort, try to fix it from scratch:
+                try:
+                    _, _, rot, rot_err, nL, nF, nM, errors = manualRotationEstimate(
+                        cases, settings, returnResultOnly=False
+                    )
+                except (RuntimeError, AssertionError) as e:
+                    log.error("fixing attempt FAILED %s" % fnameMetaRotation)
+                    log.error(str(e))
+                    nError += 1
+
+                    continue
 
         # avoid division by zero
         if (nL == 0) or (nL is None):
@@ -2337,24 +2356,57 @@ def createMetaRotation(
                 tools.rotDict2Xr(rotate_default, rotate_err_default, ffl1.datetime64)
             )
 
-    # merge results
-    if len(metaRotation) > 0:
-        metaRotation = xr.concat(metaRotation, dim="file_starttime")
+    if tryAgain and (nError > 0):
+        # lets simply try to run it again in case it failed
+        # we assume the last rotate_default and rotate_err_default were ok
+        return createMetaRotation(
+            case,
+            config,
+            skipExisting=skipExisting,
+            version=version,
+            y_cov_diag=y_cov_diag,
+            chunckSize=chunckSize,
+            rotate=rotate_default,
+            rotate_err=rotate_err_default,
+            maxDiffMs=maxDiffMs,
+            nPoints=nPoints,
+            sigma=sigma,
+            minDMax4rot=minDMax4rot,
+            nSamples4rot=nSamples4rot,
+            minSamples4rot=minSamples4rot,
+            testing=testing,
+            completeDaysOnly=completeDaysOnly,
+            writeNc=writeNc,
+            stopOnFailure=stopOnFailure,
+            maxAgeDaysPrevFile=maxAgeDaysPrevFile,
+            doPlots=doPlots,
+            tryAgain=False,
+        )
+    else:
+        # merge results
+        if len(metaRotation) > 0:
+            metaRotation = xr.concat(metaRotation, dim="file_starttime")
 
-    if writeNc:
-        metaRotation = tools.finishNc(metaRotation, config.site, config.visssGen)
-        tools.to_netcdf2(metaRotation, config, fnameMetaRotation)
-    log.debug("DONE", fnameMetaRotation)
+        if writeNc:
+            metaRotation = tools.finishNc(metaRotation, config.site, config.visssGen)
+            tools.to_netcdf2(metaRotation, config, fnameMetaRotation)
+        log.debug("DONE", fnameMetaRotation)
 
-    if doPlots:
-        quicklooks.metaRotationQuicklook(case, config, skipExisting=skipExisting)
+        if doPlots:
+            quicklooks.metaRotationQuicklook(case, config, skipExisting=skipExisting)
 
-    return metaRotation, fnameMetaRotation
+        return metaRotation, fnameMetaRotation
 
 
-@log.catch
+@log.catch(reraise=True)
+@tools.loopify
 def manualRotationEstimate(
-    cases, settings, nPoints=1000, iterations=4, minSamples4rot=90
+    case,
+    settings,
+    nPoints=1000,
+    iterations=4,
+    minSamples4rot=90,
+    returnResultOnly=True,
 ):
     """
     Estimate camera rotation parameters through iterative particle matching.
@@ -2394,7 +2446,6 @@ def manualRotationEstimate(
     import pandas as pd
     import yaml
 
-    config = tools.readSettings(settings)
     results = {}  # Initialize results dictionary
     rotate_default = pd.Series(
         {"camera_phi": 0.0, "camera_theta": 0.0, "camera_Ofz": 0}
@@ -2402,99 +2453,111 @@ def manualRotationEstimate(
     rotate_err_default = pd.Series(
         {"camera_phi": 1, "camera_theta": 1, "camera_Ofz": 50}
     )
-    for case in cases:
-        log.info("#" * 80)
-        log.info(case)
+    log.warning("#" * 80)
+    log.warning(f"trying to fix {case}")
+    log.warning("#" * 80)
 
-        fl = files.FindFiles(case, config.leader, config)
-        fname1L = fl.listFiles("level1detect")[0]
+    fl = files.FindFiles(case, config.leader, config)
+    fname1L = fl.listFiles("level1detect")[0]
 
-        # Precompute minSize once per case
-        with xr.open_dataset(fname1L) as l1dat:
-            try:
-                minSize = np.sort(l1dat.isel(pid=(l1dat.blur > 100)).Dmax)[-500 * 10]
-            except IndexError:
-                minSize = 15
-        log.info("minSize %i" % minSize)
+    # Precompute minSize once per case
+    with xr.open_dataset(fname1L) as l1dat:
+        try:
+            minSize = np.sort(l1dat.isel(pid=(l1dat.blur > 100)).Dmax)[-500 * 10]
+        except IndexError:
+            minSize = 15
+    log.info("minSize %i" % minSize)
 
-        # Initialize rotation parameters
-        current_rot = rotate_default
-        current_rot_err = rotate_err_default
-        results[case] = None  # Default if case fails
+    # Initialize rotation parameters
+    current_rot = rotate_default
+    current_rot_err = rotate_err_default
+    results[case] = None  # Default if case fails
 
-        # Loop through matchParticles calls (up to 4 iterations)
-        for i in range(iterations):
-            # Configure parameters per iteration
-            kwargs = {
-                "doRot": True,
-                "rotationOnly": True,
-                "rotate": current_rot,
-                "rotate_err": current_rot_err,
-                "nPoints": nPoints,
-            }
+    # Loop through matchParticles calls (up to 4 iterations)
+    for i in range(iterations):
+        # Configure parameters per iteration
+        kwargs = {
+            "doRot": True,
+            "rotationOnly": True,
+            "rotate": current_rot,
+            "rotate_err": current_rot_err,
+            "nPoints": nPoints,
+        }
 
-            if i == 0:  # First iteration has special parameters
-                kwargs.update(
-                    {
-                        "maxDiffMs": "config",
-                        "chunckSize": 1000,
-                        "minSamples4rot": minSamples4rot,
-                        "minDMax4rot": minSize,
-                        "singleParticleFramesOnly": True,
-                        "nSamples4rot": 2000,
-                        "sigma": {"H": 1.2, "T": 1e-4},
-                    }
-                )
-            else:  # Subsequent iterations
-                kwargs.update({"minSamples4rot": 30})
-
-            # Execute matching
-            (
-                fout,
-                matchedDat,
-                new_rot,
-                new_rot_err,
-                nL,
-                nF,
-                nM,
-                _,
-            ) = matchParticles(fname1L, config, **kwargs)
-
-            # Validation checks
-            if not nL:
-                log.warning("Too little leader data!")
-                break
-            if not nM:
-                log.warning("NO MATCHED DATA!")
-                break
-            try:
-                if nL / nM < 0.05:
-                    log.warning("Too little matched data!")
-                    break
-            except ZeroDivisionError:
-                log.warning("NO MATCHED DATA!")
-                break
-            if (new_rot is None) or (new_rot.get("camera_phi") == 0):
-                log.warning(f"Rotation invalid at iteration {i+1}")
-                break
-
-            # Update rotation for next iteration
-            current_rot, current_rot_err = new_rot, new_rot_err
-            log.info(f"Iteration {i+1}: MATCHED {nM/nL:.2f}, Leader particles: {nL}")
-            log.info(current_rot)
-
-            # Final iteration processing
-            if i == 3:
-                matchScoreMedian = matchedDat.matchScore.median().values
-                if matchScoreMedian < config.quality.minMatchScore:
-                    log.warning(f"Low match score: {matchScoreMedian}")
-                    break
-
-                # Store successful result
-                results[case] = {
-                    "transformation": current_rot.round(6).to_dict(),
-                    "transformation_err": current_rot_err.round(6).to_dict(),
+        if i == 0:  # First iteration has special parameters
+            kwargs.update(
+                {
+                    "maxDiffMs": "config",
+                    "chunckSize": 1000,
+                    "minSamples4rot": minSamples4rot,
+                    "minDMax4rot": minSize,
+                    "singleParticleFramesOnly": True,
+                    "nSamples4rot": 2000,
+                    "sigma": {"H": 1.2, "T": 1e-4},
                 }
-                log.info(results[case])
+            )
+        else:  # Subsequent iterations
+            kwargs.update({"minSamples4rot": 30})
 
-    return yaml.dump(results)
+        # Execute matching
+        (
+            fout,
+            matchedDat,
+            new_rot,
+            new_rot_err,
+            nL,
+            nF,
+            nM,
+            errors,
+        ) = matchParticles(fname1L, config, **kwargs)
+
+        # Validation checks
+        if not nL:
+            log.warning("Too little leader data!")
+            break
+        if not nM:
+            log.warning("NO MATCHED DATA!")
+            break
+        try:
+            if nL / nM < 0.05:
+                log.warning("Too little matched data!")
+                break
+        except ZeroDivisionError:
+            log.warning("NO MATCHED DATA!")
+            break
+        if (new_rot is None) or (new_rot.get("camera_phi") == 0):
+            log.warning(f"Rotation invalid at iteration {i+1}")
+            break
+
+        # Update rotation for next iteration
+        current_rot, current_rot_err = new_rot, new_rot_err
+        log.info(f"Iteration {i+1}: MATCHED {nM/nL:.2f}, Leader particles: {nL}")
+        log.info(current_rot)
+
+        # Final iteration processing
+        if i == 3:
+            matchScoreMedian = matchedDat.matchScore.median().values
+            if matchScoreMedian < config.quality.minMatchScore:
+                log.warning(f"Low match score: {matchScoreMedian}")
+                break
+
+            # Store successful result
+            results[case] = {
+                "transformation": current_rot.round(6).to_dict(),
+                "transformation_err": current_rot_err.round(6).to_dict(),
+            }
+            log.info(results[case])
+
+    if returnResultOnly:
+        return results
+    else:
+        return (
+            None,
+            None,
+            current_rot,
+            current_rot_err,
+            nL,
+            nF,
+            nM,
+            errors,
+        )

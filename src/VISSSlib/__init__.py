@@ -67,7 +67,6 @@ logger.add(
 
 from . import (
     analysis,
-    aux,
     av,
     detection,
     distributions,

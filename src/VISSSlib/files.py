@@ -3,6 +3,7 @@
 import datetime
 import functools
 import glob
+import json
 import logging
 import os
 import sys
@@ -423,6 +424,9 @@ class FindFiles(object):
                 f"level3combinedRiming{config.level3.combinedRiming.extraFileStr}",
             )
         )
+
+    def __repr__(self):
+        return json.dumps(self.fnamesPattern, indent=4)
 
     @property
     def yesterday(self):
@@ -1079,6 +1083,9 @@ class Filenames(object):
             )
         )
         return
+
+    def __repr__(self):
+        return json.dumps(self.fname, indent=4)
 
     @property
     def yesterday(self):

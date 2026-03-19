@@ -1199,20 +1199,20 @@ def metaFramesQuicklook(
 
     print("reading events")
     if len(ff.listFiles("metaEvents")) == 0:
-        print(f"event data not found")
+        log.error(f"event data not found")
         return None, None
     try:
         events = xr.open_dataset(ff.listFiles("metaEvents")[0])
     except:
-        print(f'{ff.listFiles("metaEvents")[0]} broken')
+        log.error(f'{ff.listFiles("metaEvents")[0]} broken')
         return None, None
 
     if len(events.data_vars) == 0:
-        print(f'{ff.listFiles("metaEvents")[0]} empty')
+        log.error(f'{ff.listFiles("metaEvents")[0]} empty')
         return None, None
 
     if not ff.isCompleteMetaFrames:
-        print(f"meta frames not complete")
+        log.warning(f"meta frames not complete")
         return None, None
 
     # iterate to get meta data
@@ -2104,7 +2104,7 @@ def metaRotationQuicklook(case, config, version=__version__, skipExisting=True):
 
     print("reading events")
     if len(ff.listFiles("metaEvents")) == 0:
-        print(f"event data not found")
+        log.error(f"event data not found")
         return None, None
 
     try:

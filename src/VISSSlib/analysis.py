@@ -87,7 +87,7 @@ class _stereoViewMatch(object):
             Level 1 match data (default: None)
         """
         self.case = case
-        self.config = config
+        self.config = tools.readSettings(config)
         self.version = version
         self.markParticles = markParticles
         self.increaseContrast = increaseContrast
@@ -809,7 +809,7 @@ class _stereoViewDetect(object):
             Whether to mark particles in the displayed frames (default: True)
         """
         self.case = case
-        self.config = config
+        self.config = tools.readSettings(config)
         self.version = version
         self.cameras = [config.leader, config.follower]
         self.version = version

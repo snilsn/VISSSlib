@@ -79,6 +79,7 @@ DEFAULT_SETTINGS = {
     "dirMode": 0o775,  # 509
     "fileMode": 0o664,  # 436
     "goodFiles": ["None", "None"],
+    "badData": [],
     "level1detect": {
         "applyCanny2Particle": True,  # canny filter gets edges better
         "backSub": "cv2.createBackgroundSubtractorKNN",
@@ -184,11 +185,6 @@ def loopify_with_camera(func=None, *, endYesterday=True):
     @loopify_with_camera
     def my_func(case, camera, config):
         pass
-
-    @loopify_with_camera()
-    def my_func(case, camera, config):
-        pass
-
     @loopify_with_camera(endYesterday=False)
     def my_func(case, camera, config):
         pass
@@ -196,8 +192,10 @@ def loopify_with_camera(func=None, *, endYesterday=True):
 
     def decorator(f):
         @wraps(f)
-        @log.catch  #catches exceptions from the wrapped function
-        def myinner(case, camera, settings, *args, **kwargs):
+        @log.catch(
+            reraise=True
+        )  # catches exceptions from the wrapped function
+        def loopify_with_camera_(case, camera, settings, *args, **kwargs):
             config = readSettings(settings)
             if camera == "all":
                 cameras = [config.leader, config.follower]
@@ -208,21 +206,21 @@ def loopify_with_camera(func=None, *, endYesterday=True):
             else:
                 cameras = [camera]
             cases = getCaseRange(case, config, endYesterday=endYesterday)
+            if len(cases) > 1:
+                log.info(f"Converted case string '{case}' to case range: {cases}")
             returns = list()
             for case1 in cases:
                 for camera1 in cameras:
                     log.info(
                         f"Processing {case1} with {f.__name__} for {camera1} at {config.basename}"
                     )
-                    returns.append(
-                        f(case1, camera1, config, *args, **kwargs)
-                    )
+                    returns.append(f(case1, camera1, config, *args, **kwargs))
             if len(returns) == 1:
                 return returns[0]
             else:
                 return returns
 
-        return myinner
+        return loopify_with_camera_
 
     if func is None:
         # Called with parentheses: @loopify_with_camera() or @loopify_with_camera(endYesterday=False)
@@ -253,10 +251,6 @@ def loopify(func=None, *, endYesterday=True):
     def my_func(case, config):
         pass
 
-    @loopify()
-    def my_func(case, config):
-        pass
-
     @loopify(endYesterday=False)
     def my_func(case, config):
         pass
@@ -264,10 +258,15 @@ def loopify(func=None, *, endYesterday=True):
 
     def decorator(f):
         @wraps(f)
-        @log.catch  #catches exceptions from the wrapped function
-        def myinner(case, settings, *args, **kwargs):
+        @log.catch(
+            reraise=True
+        )  # catches exceptions from the wrapped function
+        # catches exceptions from the wrapped function
+        def loopify_(case, settings, *args, **kwargs):
             config = readSettings(settings)
             cases = getCaseRange(case, config, endYesterday=endYesterday)
+            if len(cases) > 1:
+                log.info(f"Converted case string '{case}' to case range: {cases}")
             returns = list()
             for case1 in cases:
                 log.info(f"Processing {case1} with {f.__name__} at {config.basename}")
@@ -277,7 +276,7 @@ def loopify(func=None, *, endYesterday=True):
             else:
                 return returns
 
-        return myinner
+        return loopify_
 
     if func is None:
         # Called with parentheses: @loopify() or @loopify(endYesterday=False)
@@ -355,6 +354,7 @@ def readSettings(fname):
             config.update(loadedSettings)
         # unflatten again and convert to addict.Dict
         config = DictNoDefault(flatten_dict.unflatten(config))
+
         config["filename"] = fname
         config["basename"] = os.path.basename(fname)
         config["dirname"] = os.path.dirname(fname)
@@ -367,6 +367,61 @@ def readSettings(fname):
         return config
     else:  # is already config
         return fname
+        
+def isBadPeriod(case, config, product=None):
+    """
+    Check if a case falls within a bad data period.
+    
+    Parameters
+    ----------
+    case : str
+        Case identifier (YYYYMMDD or YYYYMMDD-HHMMSS)
+    config : dict
+        Configuration dictionary
+    product : str, optional
+        Product level to check. If None, returns True if case is bad for any product.
+    
+    Returns
+    -------
+    tuple(bool, str)
+        (is_bad, reason) where reason is empty string if not bad
+    """
+
+    config = readSettings(config)
+
+    if not hasattr(config, 'badData') or config.badData is None:
+        return False, ""
+    
+    #files.FindFiles(case, camera.leader, config).datetime
+    case_dt =  datetime.datetime.strptime(
+        case.ljust(15, "0"), "%Y%m%d-%H%M%S"
+    ) if '-' in case else datetime.datetime.strptime(case, "%Y%m%d")
+    
+    for period in config.badData:
+
+        if product in files.dailyLevels:
+            start = datetime.datetime.strptime(
+                str(period.start.split("-")[0]), "%Y%m%d"
+            )
+            end = datetime.datetime.strptime(
+                str(period.end.split("-")[0]), "%Y%m%d"
+            ) + datetime.timedelta(days=1)
+        else:
+            start = datetime.datetime.strptime(
+                str(period.start).ljust(15, "0"), "%Y%m%d-%H%M%S"
+            )
+            end = datetime.datetime.strptime(
+                str(period.end).ljust(15, "0"), "%Y%m%d-%H%M%S"
+            )
+
+
+        if not (start <= case_dt <= end):
+            continue
+        # Period matches time range - check product
+        if (period.products is None) or (product is None) or (product in period.products):
+            return True, period.reason
+    
+    return False, ""
 
 
 def getCaseRange(nDays, config, endYesterday=True):
@@ -437,7 +492,7 @@ def getDateRange(nDays, config, endYesterday=True):
         else:
             end2 = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
     else:
-        end = end2 = config["end"]
+        end = end2 = pd.Timestamp(config["end"], tz="UTC")
 
     if (type(nDays) is int) or type(nDays) is float:
         if nDays > 1000:
@@ -450,7 +505,6 @@ def getDateRange(nDays, config, endYesterday=True):
             start=pd.Timestamp(config["start"], tz="UTC"),
             end=end2,
             freq="1D",
-            tz="UTC",
             normalize=True,
             name=None,
             inclusive="both",
@@ -488,7 +542,6 @@ def getDateRange(nDays, config, endYesterday=True):
             end=end2,
             periods=nDays,
             freq="1D",
-            tz="UTC",
             normalize=True,
             name=None,
             inclusive="both",
@@ -2156,6 +2209,11 @@ def to_netcdf2(dat, config, file, **kwargs):
     if os.path.isfile(file):
         tryRemovingFile(file)
 
+    #xarray bug
+    for var in list(dat.coords) + list(dat.data_vars):
+        if hasattr(dat[var].dtype, 'na_value'):
+            dat[var] = dat[var].astype(object)
+
     tmpFile = f"{file}.{np.random.randint(0, 99999 + 1)}.tmp.cdf"
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -2832,5 +2890,11 @@ For information about the commands, run
     p.add_argument(
         "--n-jobs", type=int, default=None, help="Number of jobs (default: CPU count)"
     )
-
     return parser
+
+
+def ipython_debug(exception):
+    from IPython.core.debugger import Pdb
+
+    # exception.__traceback__ is the map back to the actual error
+    Pdb().interaction(None, exception.__traceback__)

@@ -5,7 +5,6 @@ import sys
 from loguru import logger as log
 
 from . import (
-    aux,
     av,
     detection,
     distributions,
@@ -21,7 +20,7 @@ from . import (
 )
 
 
-@log.catch
+@log.catch(reraise=True)
 def main():
     """Main entry point for the VISSS processing pipeline."""
 
