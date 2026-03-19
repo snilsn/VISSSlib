@@ -2759,8 +2759,8 @@ def reportLastFiles(
             foundLastFile, completeCase, lastFile, lastFileTime = files.findLastFile(
                 config, prod, camera
             )
-
-            output += f"{prod.ljust(14)} {(camera.split('_')[0]).ljust(8)} last full day:'{completeCase}' last file:'{lastFileTime}'"
+            camera_name = (camera.split('_')[0]).ljust(8)
+            output += f"{prod.ljust(14)} {camera_name} last full day:'{completeCase}' last file:'{lastFileTime}'"
             if nameFile:
                 output += f" {lastFile}"
             output += "\n"
