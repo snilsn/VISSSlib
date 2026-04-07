@@ -3573,7 +3573,7 @@ def calibrateData(level2dat, level1dat_time, config, DbinsPixel, timeIndex1):
 def _getDataQuality1(case, config, timeIndex, timeIndex1, sublevel, camera):
     """Estimate data quality for level2"""
 
-    f1 = files.FindFiles(case, camera, config, version='1.0')
+    f1 = files.FindFiles(case, camera, config, version='1.2')
 
     fname1 = f1.listFilesWithNeighbors("metaEvents")
 
