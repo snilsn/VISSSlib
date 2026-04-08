@@ -2,6 +2,7 @@
 
 import argparse
 import datetime
+import glob
 import io
 import json
 import multiprocessing
@@ -358,6 +359,7 @@ def readSettings(fname):
         config["filename"] = fname
         config["basename"] = os.path.basename(fname)
         config["dirname"] = os.path.dirname(fname)
+
         config["instruments"] = [config.leader, config.follower]
         # check for relative paths (with respect to the yaml file and make them absolute
         for key in ["path", "pathOut", "pathQuicklooks"]:
@@ -816,6 +818,18 @@ def open_mflevel1detect(
     dat.load()
     return dat
 
+def globList(fnames, search=None, replace=None):
+    if isinstance(fnames, list):
+        res = []
+        for fname in fnames:
+            res += globList(fname, search=search, replace=replace)
+    else:
+        if (search is not None) and (replace is not None):
+            fnames = fnames.replace(search, replace)
+        res = sorted(filter(os.path.isfile, glob.glob(fnames)))
+    return res
+
+
 
 def open_mflevel1match(fnamesExt, config, datVars="all"):
     """
@@ -999,6 +1013,32 @@ def removeBlockedBlowingData(dat1D, events, config, threshold=0.1):
         return None
     else:
         return dat1D
+
+def _aggregate(results):
+    if not results:
+        return results
+    first = results[0]
+    if isinstance(first, bool):
+        return all(results)
+    elif isinstance(first, int):
+        return sum(results)
+    elif isinstance(first, list):
+        seen = set()
+        out = []
+        for lst in results:
+            for item in lst:
+                if item not in seen:
+                    seen.add(item)
+                    out.append(item)
+        return out
+    elif isinstance(first, dict):
+        return {key: _aggregate([r[key] for r in results]) for key in first}
+    elif isinstance(first, pd.DataFrame):
+        return pd.concat(results).sort_index()
+    elif isinstance(first, str):
+        return results  # ← always a list, even if len==1
+    else:
+        return results
 
 
 def estimateCaptureIdDiff(

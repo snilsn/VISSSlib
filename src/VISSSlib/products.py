@@ -173,7 +173,25 @@ class DataProduct(object):
         else:
             raise ValueError(f"Do not understand {level}")
         if addRelatives:
-            self.addRelatives()
+            for parentCam in self.parentNames:
+                # save time by not adding a product more than once
+                if parentCam in self.childrensRelatives.keys():
+                    # print(f"{self.relatives}, found {parentCam} from other relative")
+                    self.parents[parentCam] = self.childrensRelatives[parentCam]
+                    assert self.case == self.childrensRelatives[parentCam].case
+                    continue
+                camera, parent = parentCam.split("_")
+                self.parents[parentCam] = DataProduct(
+                    parent,
+                    self.case,
+                    self.config,
+                    self.tq,
+                    camera,
+                    relatives=f"{self.relatives}",
+                    childrensRelatives=self.parents,
+                )
+                self.parents.update(self.parents[parentCam].parents)
+                self.childrensRelatives.update(self.parents)
 
     def __repr__(self):
         """
@@ -189,33 +207,6 @@ class DataProduct(object):
             f"using {self.camera} on {self.case}>"
         )
         return reprstr
-
-    def addRelatives(self):
-        """
-        Add relative products to the current product.
-
-        This method recursively adds parent products based on the parent names
-        defined for the current level.
-        """
-        for parentCam in self.parentNames:
-            # save time by not adding a product more than once
-            if parentCam in self.childrensRelatives.keys():
-                # print(f"{self.relatives}, found {parentCam} from other relative")
-                self.parents[parentCam] = self.childrensRelatives[parentCam]
-                assert self.case == self.childrensRelatives[parentCam].case
-                continue
-            camera, parent = parentCam.split("_")
-            self.parents[parentCam] = DataProduct(
-                parent,
-                self.case,
-                self.config,
-                self.tq,
-                camera,
-                relatives=f"{self.relatives}",
-                childrensRelatives=self.parents,
-            )
-            self.parents.update(self.parents[parentCam].parents)
-            self.childrensRelatives.update(self.parents)
 
     @log.catch(reraise=True)
     def generateAllCommands(self, skipExisting=True, withParents=True):
@@ -237,9 +228,9 @@ class DataProduct(object):
         # cache for this function
         isComplete = self.isComplete
 
-        if not self.dataAvailable:
+        if (not self.dataAvailable) and (self.config.end == "today"):
             log.warning(
-                f"{self.case} {self.relatives}: no data found in {self.fn.fnamesPattern.level0txt}"
+                f"{self.case} {self.relatives}: no data found (yet?) in {self.fn.fnamesPattern.level0txt}"
             )
             return []
 
@@ -881,13 +872,21 @@ class DataProduct(object):
         """
         for fname in self.listBroken():
             assert fname.endswith("broken.txt")
-            os.remove(fname)
-            log.warning(f"{fname} removed")
+            try:
+                os.remove(fname)
+            except FileNotFoundError:  # usally caused by caching listBroken
+                log.warning(f"{fname} not found")
+            else:
+                log.warning(f"{fname} removed")
         if withNoData:
             for fname in self.listNoData():
                 assert fname.endswith("nodata")
-                os.remove(fname)
-                log.warning(f"{fname} removed")
+                try:
+                    os.remove(fname)
+                except FileNotFoundError:  # usally caused by caching listBroken
+                    log.warning(f"{fname} not found")
+                else:
+                    log.warning(f"{fname} removed")
         if withParents:
             for name, parent in self.parents.items():
                 parent.cleanUpBroken(withParents=False, withNoData=withNoData)
@@ -1123,49 +1122,48 @@ class level0(DataProduct):
         super().__init__("level0", case, settings, fileQueue, camera)
 
 
-class DataProductRange(object):
-    @log.catch(reraise=True)
+class DataProductRange(DataProduct):
+    """Range of data products for multiple cases."""
+
     def __init__(
         self,
         level,
-        nDays,
+        cases,
         settings,
         fileQueue,
-        camera="leader",
+        camera,
+        relatives=None,
         addRelatives=True,
+        childrensRelatives=None,
     ):
-        """
-        Initialize a range of DataProducts for multiple days.
+        """Initialize DataProductRange instance.
 
         Parameters
         ----------
         level : str
             Processing level
-        nDays : int
-            Number of days going back or date string "YYYYMMDD" or "YYYYMMDD-YYYYMMDD"
-            or "YYYYMMDD,YYYYMMDD,YYYYMMDD".
+        cases : str or list
+            Case identifiers
         settings : str
             Path to settings file
         fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
+            File queue for task management
+        camera : str
             Camera identifier
+        relatives : str, optional
+            Relative path information
         addRelatives : bool, default True
-            Whether to add relatives of the corresponding product
+            Whether to add relatives
+        childrensRelatives : dict, optional
+            Children relatives dictionary
         """
         import taskqueue
 
-        self.settings = settings
+        self.cases = tools.getCaseRange(cases, settings)
         self.config = tools.readSettings(settings)
-        self.days = tools.getDateRange(nDays, self.config, endYesterday=False)
-        self.dailies = {}
-        self.level = level
-        self.camera = camera
-        self.allCommands = []
 
         if fileQueue is None:
             fileQueue = f"/tmp/visss_{''.join(random.choice(string.ascii_uppercase) for _ in range(10))}"
-
         if type(fileQueue) is str:
             self.fileQueue = fileQueue
             self.tq = taskqueue.TaskQueue(f"fq://{self.fileQueue}")
@@ -1173,257 +1171,190 @@ class DataProductRange(object):
             self.tq = fileQueue
             self.fileQueue = self.tq.path.path
 
-        for dd in self.days:
-            case = tools.timestamp2case(dd)
-            self.dailies[dd] = DataProduct(
+        self._instances = [
+            DataProduct(
                 level,
                 case,
-                settings,
+                self.config,
                 self.tq,
                 camera,
+                relatives=relatives,
                 addRelatives=addRelatives,
             )
+            for case in self.cases
+        ]
+        self.level = level
+        self.camera = camera
+        self.casesStr = str(cases)
 
-    @log.catch(reraise=True)
-    def generateAllCommands(self, skipExisting=True, withParents=True):
-        """
-        Generate all commands for the range of products.
+    def __getitem__(self, key):
+        """Get item by key.
 
         Parameters
         ----------
-        skipExisting : bool, default True
-            Whether to skip existing files
-        withParents : bool, default True
-            Whether to include parent commands
+        key : str or int
+            Key to retrieve
+
+        Returns
+        -------
+        DataProduct
+            Data product instance
+        """
+        if isinstance(key, str):
+            try:
+                return self._instances[self.cases.index(key)]
+            except ValueError:
+                raise KeyError(f"Case '{key}' not found. Available: {self.cases}")
+        return self._instances[key]
+
+    def __iter__(self):
+        """Iterate over instances.
+
+        Yields
+        ------
+        DataProduct
+            Data product instances
+        """
+        return iter(self._instances)
+
+    def __len__(self):
+        """Get length of instances.
+
+        Returns
+        -------
+        int
+            Number of instances
+        """
+        return len(self._instances)
+
+    def __dir__(self):
+        """Get directory of attributes.
 
         Returns
         -------
         list
-            List of commands to execute
+            List of attribute names
         """
-        for dd in self.days:
-            self.allCommands += self.dailies[dd].generateAllCommands(
-                skipExisting=skipExisting,
-                withParents=withParents,
-            )
-        return self.allCommands
+        own = set(super().__dir__())
+        instance_attrs = set(dir(self._instances[0])) if self._instances else set()
+        return sorted(own | instance_attrs)
 
-    @log.catch(reraise=True)
-    def process(
-        self,
-        skipExisting=True,
-        checkForDuplicates=False,
-        withParents=True,
-    ):
-        """
-        process the product for the range of cases. Runs submitCommands and
-        runWorkers. Sometimes, needs to be called multiple times until all parent
-        products are processed
+    def __getattr__(self, name):
+        """Get attribute value.
 
         Parameters
         ----------
-        skipExisting : bool, default True
-            Whether to skip existing files
-        checkForDuplicates : bool, default False
-            Whether to check for duplicate commands in the queue
-        withParents : bool, default True
-            Whether to include processing of product's parents
+        name : str
+            Attribute name
+
+        Returns
+        -------
+        object
+            Attribute value
         """
-        self.submitCommands(
-            skipExisting=skipExisting,
-            checkForDuplicates=checkForDuplicates,
-            withParents=withParents,
-        )
+        # Guard against calls during __init__ before _instances is set
+        if name == "_instances" or "_instances" not in self.__dict__:
+            raise AttributeError(name)
+        if not self._instances:
+            raise AttributeError(name)
+        attr = getattr(self._instances[0], name)
+        if callable(attr):
 
-        self.runWorkers()
+            def multi_method(*args, **kwargs):
+                results = [getattr(dp, name)(*args, **kwargs) for dp in self._instances]
+                return tools._aggregate(results)
 
-    @log.catch(reraise=True)
+            return multi_method
+        elif name == "config":  # the config is the same for all cases
+            return getattr(self._instances[0], name)
+        else:
+            results = [getattr(dp, name) for dp in self._instances]
+            return tools._aggregate(results)
+
+    # overwrite some functions
+    def listBroken(self):
+        """List broken files for all instances.
+
+        Returns
+        -------
+        list
+            List of broken file paths
+        """
+        return tools._aggregate([dp.listBroken() for dp in self._instances])
+
+    def listFiles(self):
+        """List files for all instances.
+
+        Returns
+        -------
+        list
+            List of file paths
+        """
+        return tools._aggregate([dp.listFiles() for dp in self._instances])
+
+    def listFilesExt(self):
+        """List files with extension for all instances.
+
+        Returns
+        -------
+        list
+            List of file paths
+        """
+        return tools._aggregate([dp.listFilesExt() for dp in self._instances])
+
+    def listNoData(self):
+        """List no-data files for all instances.
+
+        Returns
+        -------
+        list
+            List of no-data file paths
+        """
+        return tools._aggregate([dp.listNoData() for dp in self._instances])
+
     def submitCommands(
         self,
         skipExisting=True,
         checkForDuplicates=False,
         withParents=True,
+        runWorkers=False,
     ):
-        """
-        Submit commands for the range of products.
+        """Submit commands for all instances.
 
         Parameters
         ----------
         skipExisting : bool, default True
             Whether to skip existing files
         checkForDuplicates : bool, default False
-            Whether to check for duplicate commands in the queue
+            Whether to check for duplicate commands
         withParents : bool, default True
-            Whether to include processing of product's parents
+            Whether to include parent commands
+        runWorkers : bool, default False
+            Whether to run workers immediately
+        doNotWaitForMissingThreadFiles : bool, default False
+            Whether to wait for missing thread files
         """
-        if len(self.allCommands) == 0:
-            self.generateAllCommands(
-                skipExisting=skipExisting,
-                withParents=withParents,
-            )
-        if len(self.allCommands) == 0:
+        commands = tools._aggregate(
+            [
+                dp.generateAllCommands(
+                    skipExisting=skipExisting,
+                    withParents=withParents,
+                )
+                for dp in self._instances
+            ]
+        )
+
+        if not commands:
             log.error("nothing to submit")
             return
-
         if checkForDuplicates:
-            running = [t.args[0][0] for t in self.tq.tasks()]
-            commands = []
-            for command in self.allCommands:
-                if command[0] in running:
-                    continue
-                else:
-                    commands.append(command)
-        else:
-            commands = self.allCommands
-        if len(commands) == 0:
-            log.error("nothing to submit after checking for duplicates")
-            return
-
-        log.warning(f"adding {len(commands)} commands to {self.fileQueue}")
-        # region is SQS specific, green means cooperative threading
+            running = [t.args[0] for t in self.tq.tasks()]
+            commands = [c for c in commands if c[0] not in running]
+        log.warning(f"sending {len(commands)} commands to {self.fileQueue}")
         self.tq.insert([partial(runCommandInQueue, c) for c in commands])
         log.warning(f"{self.tq.enqueued} tasks in Queue")
-
-        return
-
-    @property
-    def isComplete(self):
-        """
-        Check if all products in the range are complete.
-
-        Returns
-        -------
-        bool
-            True if all products are complete, False otherwise
-        """
-        if len(self.days) == 0:
-            log.warning(f"Number of days is zero")
-        isComplete = True
-        for dd in self.days:
-            isComplete = isComplete and self.dailies[dd].isComplete
-        return isComplete
-
-    def runWorkers(self, nJobs=os.cpu_count(), waitTime=1):
-        """
-        Run worker processes for the range.
-
-        Parameters
-        ----------
-        nJobs : int, default os.cpu_count()
-            Number of jobs to run
-        """
-        tools.workers(self.fileQueue, nJobs=nJobs, waitTime=waitTime)
-
-    def deleteQueue(self):
-        """
-        Delete all tasks from the queue.
-        """
-        log.info(f"Deleting {self.tq.enqueued} tasks")
-        [self.tq.delete(t) for t in self.tq.tasks()]
-        return
-
-    def cleanUpBroken(self, withParents=False, withNoData=False):
-        """
-        Clean up broken files for the range.
-
-        Parameters
-        ----------
-        withParents : bool, default False
-            Whether to clean up parents too
-        withNoData : bool, default False
-            Whether to clean up no-data files too
-        """
-        for dd in self.days:
-            self.dailies[dd].cleanUpBroken(
-                withParents=withParents, withNoData=withNoData
-            )
-
-
-    def reportBroken(self, withParents=False, returnAllInformation=False):
-        import pandas as pd
-
-        results_data = []
-        for brokenFile in self.listBroken():
-            with open(brokenFile) as f:
-                lines = f.readlines()
-            if len(lines) == 1:
-                command = "n/a"
-                outfile = "n/a"
-                gist = lines[0].rstrip()
-                fullError = "".join(lines)
-            else:
-                command = lines[1][9:].split(";")[-1].strip()
-                outfile = lines[2][9:].rstrip()
-                gist = f"{lines[-2].rstrip(), lines[-1].rstrip()}"
-                fullError = "".join(lines[4:])
-            ff = files.FilenamesFromLevel(brokenFile, self.config)
-            index = f"{ff.camera.split("_")[0]}_{ff.case}_{self.level}"
-
-            # Create a dict and append it to the list
-            row = {
-                "index": index,
-                "command": command,
-                "outfile": outfile,
-                "gist": gist,
-                "fullError": fullError,
-            }
-            results_data.append(row)
-
-        if len(results_data) == 0:
-            df = pd.DataFrame(
-                columns=["index", "command", "outfile", "gist", "fullError"]
-            )
-        else:
-            df = pd.DataFrame(
-                results_data,
-            )
-
-        df = df.set_index("index")
-
-        if withParents:
-            df1 = [df]
-            for name, parent in self.parents.items():
-                df1.append(
-                    parent.reportBroken(
-                        withParents=False,
-                        returnAllInformation=returnAllInformation,
-                    )
-                )
-            df = pd.concat(df1)
-            #df = df.iloc[~df.index.duplicated()]
-            df = df.sort_index()
-
-        if returnAllInformation:
-            return df
-        else:
-            return df[["command", "gist"]]
-
-
-    def cleanUpDuplicates(self, withParents=False):
-        """
-        Clean up duplicate files for the range.
-
-        Parameters
-        ----------
-        withParents : bool, default False
-            Whether to clean up parents too
-        """
-        for dd in self.days:
-            self.dailies[dd].cleanUpDuplicates(withParents=withParents)
-
-    def reportBroken(self, withParents=False, returnAllInformation=False):
-        import pandas as pd
-
-        df = []
-        for dd in self.days:
-            #print(dd)
-            df.append(
-                self.dailies[dd].reportBroken(
-                    withParents=withParents, returnAllInformation=returnAllInformation
-                )
-            )
-        return pd.concat(df)
-
+        if runWorkers:
+            self.runWorkers()
 
 
 @log.catch(reraise=True)

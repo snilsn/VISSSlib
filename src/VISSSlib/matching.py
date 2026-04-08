@@ -2142,7 +2142,7 @@ def createMetaRotation(
     metaRotation = []
 
     # try to estimate first guess from previous data
-    if rotate == "config":
+    if isinstance(rotate, str) and (rotate == "config"):
         # get previous rotation filename
         prevFile = []
         flyesterday = fl.yesterdayObject
@@ -2306,8 +2306,6 @@ def createMetaRotation(
                 except (RuntimeError, AssertionError) as e:
                     log.error("fixing attempt FAILED %s" % fnameMetaRotation)
                     log.error(str(e))
-                    nError += 1
-
                     continue
 
         # avoid division by zero
@@ -2350,6 +2348,7 @@ def createMetaRotation(
             metaRotation.append(tools.rotDict2Xr(np.nan, np.nan, ffl1.datetime64))
             if stopOnFailure:
                 raise RuntimeError
+            nError += 1
         else:
             # just use default values again
             metaRotation.append(
@@ -2402,7 +2401,7 @@ def createMetaRotation(
 @tools.loopify
 def manualRotationEstimate(
     case,
-    settings,
+    config,
     nPoints=1000,
     iterations=4,
     minSamples4rot=90,
@@ -2419,7 +2418,7 @@ def manualRotationEstimate(
     ----------
     cases : list of str
         List of case identifiers to process in format ["YYYYMMDD-HHMMSS"]
-    settings : dict or str
+    config : dict or str
         Configuration settings or path to settings file
     nPoints : int, optional
         Number of points to use in matching (default=1000)

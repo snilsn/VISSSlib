@@ -171,8 +171,19 @@ class TestMatch(object):
         np.isclose(rotate_final["camera_Ofz"], -20.31999969482422)
 
     def testManualRotation(self):
-        cases = ["20260110-083000"]
-        res = manualRotationEstimate(cases, self.config, minSamples4rot=10)
-        assert (
-            res[:60] == "20260110-083000:\n  transformation:\n    camera_Ofz: -20.29870"
-        )
+        case = "20260110-083000"
+        res = manualRotationEstimate(case, self.config, minSamples4rot=10)
+        assert res == {
+            "20260110-083000": {
+                "transformation": {
+                    "camera_phi": 0.32747,
+                    "camera_theta": 0.489329,
+                    "camera_Ofz": -20.298707,
+                },
+                "transformation_err": {
+                    "camera_phi": 0.017591,
+                    "camera_theta": 0.015518,
+                    "camera_Ofz": 0.283318,
+                },
+            }
+        }

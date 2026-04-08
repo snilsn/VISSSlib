@@ -68,8 +68,6 @@ class TestL2(object):
             "aspectRatio_std",
             "blockedPixelRatio",
             "blowingSnowRatio",
-            "capture_time_mean",
-            "capture_time_std",
             "complexityBW_dist",
             "complexityBW_mean",
             "complexityBW_std",

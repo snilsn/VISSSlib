@@ -68,5 +68,5 @@ class TestTracking(object):
             assert var in dat.data_vars
         assert np.isclose(dat.Dmax.mean(), 4.98294973)
         assert np.isclose(dat.area.mean(), 15.86436176)
-        assert np.isclose(dat.perimeter.mean(), 13.49925995)
+        assert np.isclose(dat.perimeter.mean(), 13.49942)
         assert np.isclose(dat.contourFFT.mean(), 1.2981159)

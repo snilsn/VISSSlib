@@ -1650,7 +1650,8 @@ def createLevel1matchQuicklook(
     ax[2].axhline(config.quality.minMatchScore)
 
     zDiff = (
-        datM.position3D_centroid.sel(dim3D=["z", "z_rotated"])
+        datM.position3D_centroid.sel(dim3D="z")
+        .diff("camera")
         .diff("dim3D")
         .values.squeeze()
     )
