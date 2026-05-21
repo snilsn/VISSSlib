@@ -800,7 +800,7 @@ def createLevel2_single_class(
     import scipy.stats
     from tqdm import tqdm
 
-    assert sublevel in ["match", "track", "detect"]
+    assert sublevel in ["match", "track"]
 
     start = level1dat.capture_time.min().values
     end = level1dat.capture_time.max().values
@@ -1703,7 +1703,7 @@ def createLevel2_single_class(
         timeIndex,
         timeIndex1,
         sublevel,
-        camera=camera,
+        camera=camera, single_class=True
     )
 
     calibDat = tools.finishNc(calibDat, config.site, config.visssGen)
@@ -1721,8 +1721,8 @@ def createLevel2_single_class(
         dict(long_name="time", comment="label at the end of time interval")
     )
 
-    if sublevel != "detect":
-        calibDat.camera.attrs.update(dict(units="string", long_name="camera"))
+    #if sublevel != "detect":
+        #calibDat.camera.attrs.update(dict(units="string", long_name="camera"))
 
     calibDat.D32.attrs.update(dict(units="m", long_name="mean mass-weighted diameter"))
     calibDat.D43.attrs.update(
@@ -1789,6 +1789,7 @@ def createLevel2_single_class(
     calibDat.aspectRatio_std.attrs.update(
         dict(units="-", long_name="standard deviation aspect ratio")
     )
+    """
     calibDat.blockedPixelRatio.attrs.update(
         dict(
             units="-", long_name="ratio of frames rejected due to blocked image filter"
@@ -1797,7 +1798,7 @@ def createLevel2_single_class(
     calibDat.blowingSnowRatio.attrs.update(
         dict(units="-", long_name="ratio of frames rejected due to blowing snow filter")
     )
-
+    """
     calibDat.complexityBW_mean.attrs.update(
         dict(units="-", long_name="complexity distribution (based on shape only)")
     )
@@ -1837,12 +1838,14 @@ def createLevel2_single_class(
         calibDat.matchScore_std.attrs.update(
             dict(units="-", long_name="standard deviation camera match score")
         )
+        """
         calibDat.observationsRatio.attrs.update(
             dict(
                 units="-",
                 long_name="ratio of detected particles by leader and follower",
             )
         )
+        """
     calibDat.obs_volume.attrs.update(dict(units="m^3", long_name="obs_volume"))
     calibDat.perimeter_dist.attrs.update(
         dict(units="m", long_name="perimeter distribution")
@@ -1851,7 +1854,7 @@ def createLevel2_single_class(
     calibDat.perimeter_std.attrs.update(
         dict(units="m", long_name="standard deviation perimeter")
     )
-
+    """
     calibDat.qualityFlags.attrs.update(
         dict(
             units="m",
@@ -1862,7 +1865,7 @@ def createLevel2_single_class(
             "Use VISSSlib.tools.unpackQualityFlags to unpack",
         )
     )
-
+    """
     if sublevel == "match":
         calibDat.nParticles.attrs.update(
             dict(units="-", long_name="number of particle observations")
@@ -2956,6 +2959,7 @@ def addVariables(
     timeIndex1,
     sublevel,
     camera="leader",
+    single_class=False,
 ):
     """
     Add additional variables to the calibrated dataset.
@@ -3012,7 +3016,9 @@ def addVariables(
             * ((b + 1) ** (b + 1))
             / scipy.special.gamma(b + 1)
         )
-
+    if single_class==True:
+        return calibDat
+        
     # quality variables
     (
         recordingFailed,
