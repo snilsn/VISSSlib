@@ -1015,6 +1015,7 @@ def removeBlockedBlowingData(dat1D, events, config, threshold=0.1):
         return dat1D
 
 def _aggregate(results):
+    import pandas as pd
     if not results:
         return results
     first = results[0]
@@ -1039,7 +1040,6 @@ def _aggregate(results):
         return results  # ← always a list, even if len==1
     else:
         return results
-
 
 def estimateCaptureIdDiff(
     leaderFile,

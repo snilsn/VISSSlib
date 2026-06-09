@@ -889,7 +889,12 @@ class DataProduct(object):
                     log.warning(f"{fname} removed")
         if withParents:
             for name, parent in self.parents.items():
-                parent.cleanUpBroken(withParents=False, withNoData=withNoData)
+                if not isinstance(parent, list):
+                    parent = [parent]
+                [
+                    p.cleanUpBroken(withParents=False, withNoData=withNoData)
+                    for p in parent
+                ]
 
     def cleanUpDuplicates(self, withParents=False):
         """
@@ -900,12 +905,21 @@ class DataProduct(object):
         withParents : bool, default False
             Whether to clean up parents too
         """
-        for fname in self.fn.reportDuplicates(self.level):
+        try:
+            dups = self.fn.reportDuplicates(self.level)
+        except AttributeError:
+            dups = list(
+                np.array([f.reportDuplicates(self.level) for f in self.fn]).ravel()
+            )
+
+        for fname in dups:
             os.remove(fname)
             log.warning(f"{fname} removed")
         if withParents:
             for name, parent in self.parents.items():
-                parent.cleanUpDuplicates(withParents=False)
+                if not isinstance(parent, list):
+                    parent = [parent]
+                [p.cleanUpDuplicates(withParents=False) for p in parent]
 
 
 class allDone(DataProduct):
@@ -1331,8 +1345,6 @@ class DataProductRange(DataProduct):
             Whether to include parent commands
         runWorkers : bool, default False
             Whether to run workers immediately
-        doNotWaitForMissingThreadFiles : bool, default False
-            Whether to wait for missing thread files
         """
         commands = tools._aggregate(
             [
@@ -1367,7 +1379,7 @@ def submitAll(
     skipExisting=True,
     checkForDuplicates=True,
     cleanUpBroken=False,
-    cleanUpDuplicates=False,
+    cleanUpDuplicates=True,
 ):
     """
     Submit all processing jobs of for a given range of days. All processing
@@ -1414,7 +1426,6 @@ def submitAll(
             checkForDuplicates=checkForDuplicates,
             skipExisting=skipExisting,
         )
-
     else:
         prod = None
 
@@ -1423,6 +1434,10 @@ def submitAll(
             f"{sys.executable} -m VISSSlib matching.createMetaRotation  {settings} {case}"
         )
         matching.createMetaRotation(case, settings, skipExisting=skipExisting)
+
+        years = [c[:4] for c in tools.getCaseRange(case, settings)]
+        for year in years:
+            quicklooks.metaRotationYearlyQuicklook(year, settings)
     return prod
 
 

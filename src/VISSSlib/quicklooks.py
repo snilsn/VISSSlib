@@ -78,6 +78,10 @@ def generate(
             res = metaFramesQuicklook(
                 case, camera, config, version=version, skipExisting=skipExisting
             )
+        elif level == "metaRotation":
+            res = metaRotationQuicklook(
+                case, config, version=version, skipExisting=skipExisting
+            )
         elif level == "level1detect":
             res = createLevel1detectQuicklook(
                 case, camera, config, version=version, skipExisting=skipExisting
@@ -1649,12 +1653,7 @@ def createLevel1matchQuicklook(
     )
     ax[2].axhline(config.quality.minMatchScore)
 
-    zDiff = (
-        datM.position3D_centroid.sel(dim3D="z")
-        .diff("camera")
-        .diff("dim3D")
-        .values.squeeze()
-    )
+    zDiff = datM.position_upperLeft.sel(dim2D="y").diff("camera").values.squeeze()
     _, rs = _plotVar(
         zDiff,
         datM.capture_time,
@@ -1893,10 +1892,10 @@ def metaRotationYearlyQuicklook(year, config, version=__version__, skipExisting=
     if (
         skipExisting
         and tools.checkForExisting(fOut, parents=rotFiles)
-        and (
-            int(year)
-            < int((datetime.datetime.utcnow() - datetime.timedelta(days=60)).year)
-        )
+        # and (
+        #     int(year)
+        #     < int((datetime.datetime.utcnow() - datetime.timedelta(days=60)).year)
+        # )
     ):
         print(f"{year} skip exisiting {fOut}")
         return None, None
