@@ -1593,7 +1593,7 @@ def createLevel2_single_class(
             # print(interv)
             tmp = []
             # for each track&camera/min/max/mean seperately
-            for coord in level1datG1[coordVar]:
+            for coord in level1datG1[coordVar].values:
                 # estimate counts
                 tmpXr = []
                 for sizeDefinition in sizeDefinitions:
