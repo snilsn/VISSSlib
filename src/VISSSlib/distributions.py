@@ -1436,11 +1436,20 @@ def _createLevel2part(
             level1dat_time[data_vars].min("camera"),
             level1dat_time[data_vars].sel(camera=config.leader, drop=True),
             level1dat_time[data_vars].sel(camera=config.follower, drop=True),
+            level1dat_time[data_vars].std("camera"),
         )
         level1dat_camAve = xr.concat(level1dat_camAve, dim="camera")
-        level1dat_camAve["camera"] = ["max", "mean", "min", "leader", "follower"]
 
-        # fix angle becuase we want the circular mean
+        level1dat_camAve["camera"] = [
+            "max",
+            "mean",
+            "min",
+            "leader",
+            "follower",
+            "std",
+        ]
+
+        # fix angle because we want the circular mean
         level1dat_camAve["angle"].loc["mean"] = level1dat_time["angle"].reduce(
             scipy.stats.circmean, "camera", high=360, nan_policy="omit"
         )
@@ -1636,10 +1645,11 @@ def _createLevel2part(
             # print(interv)
             tmp = []
             # for each track&camera/min/max/mean seperately
-            for coord in level1datG1[coordVar]:
+            for coord in level1datG1[coordVar].values:
                 # estimate counts
                 tmpXr = []
                 for sizeDefinition in sizeDefinitions:
+                    # for the PSD, caemra min/max etc applied to the binning
                     tmpXr1 = (
                         level1datG1[[sizeDefinition]]
                         .sel(**{coordVar: coord})
@@ -1656,20 +1666,23 @@ def _createLevel2part(
                     # Dmax is only for technical resaons and is removed afterwards
                     data_vars1 = data_vars + [sizeDefinition]
                     data_vars1.remove("angle")  # treated seperately
+
+                    # for all variabvles except the PSD, min/max etc is applied to the variable
+                    # the binning uses max observed Dmax or Deq
+                    binningVar = level1datG1[sizeDefinition].sel(**{coordVar: "max"})
                     otherVars1 = (
                         level1datG1[data_vars1]
-                        .sel(**{coordVar: coord})
-                        .groupby_bins(sizeDefinition, DbinsPixel, right=False)
+                        .sel(drop=True, **{coordVar: coord})
+                        .groupby_bins(binningVar, DbinsPixel, right=False)
                         .mean()
                     )
                     angleVars = (
                         level1datG1[["angle", sizeDefinition]]
-                        .sel(**{coordVar: coord})
-                        .groupby_bins(sizeDefinition, DbinsPixel, right=False)
+                        .sel(drop=True, **{coordVar: coord})
+                        .groupby_bins(binningVar, DbinsPixel, right=False)
                         .reduce(scipy.stats.circmean, high=360, nan_policy="omit")
                     )
                     otherVars1["angle"] = angleVars["angle"]
-                    del otherVars1[sizeDefinition]
 
                     otherVars1 = otherVars1.rename(
                         {k: f"{k}_dist" for k in otherVars1.data_vars}
@@ -2004,6 +2017,7 @@ def addVariables(
             blockedPixels.min("camera"),
             blockedPixels.sel(camera="leader", drop=True),
             blockedPixels.sel(camera="follower", drop=True),
+            blockedPixels.std("camera"),
         )
         calibDat["blockedPixelRatio"] = xr.concat(blockedVars, dim="camera").T
         blowingVars = (
@@ -2012,6 +2026,7 @@ def addVariables(
             blowingSnowRatio.min("camera"),
             blowingSnowRatio.sel(camera="leader", drop=True),
             blowingSnowRatio.sel(camera="follower", drop=True),
+            blowingSnowRatio.std("camera"),
         )
         calibDat["blowingSnowRatio"] = xr.concat(blowingVars, dim="camera").T
     else:
