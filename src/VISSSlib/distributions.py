@@ -1401,9 +1401,10 @@ def createLevel2_single_class(
             level1dat_time[data_vars].min("camera"),
             level1dat_time[data_vars].sel(camera=config.leader, drop=True),
             level1dat_time[data_vars].sel(camera=config.follower, drop=True),
+            level1dat_time[data_vars].std("camera"),
         )
         level1dat_camAve = xr.concat(level1dat_camAve, dim="camera")
-        level1dat_camAve["camera"] = ["max", "mean", "min", "leader", "follower"]
+        level1dat_camAve["camera"] = ["max", "mean", "min", "leader", "follower", "std"]
 
         # fix angle becuase we want the circular mean
         level1dat_camAve["angle"].loc["mean"] = level1dat_time["angle"].reduce(
@@ -1613,16 +1614,21 @@ def createLevel2_single_class(
                     # Dmax is only for technical resaons and is removed afterwards
                     data_vars1 = data_vars + [sizeDefinition]
                     data_vars1.remove("angle")  # treated seperately
+
+                    # for all variabvles except the PSD, min/max etc is applied to the variable
+                    # the binning uses max observed Dmax or Deq
+                    binningVar = level1datG1[sizeDefinition].sel(drop=True, **{coordVar: coord})
+                    
                     otherVars1 = (
                         level1datG1[data_vars1]
                         .sel(**{coordVar: coord})
-                        .groupby_bins(sizeDefinition, DbinsPixel, right=False)
+                        .groupby_bins(binningVar, DbinsPixel, right=False)
                         .mean()
                     )
                     angleVars = (
                         level1datG1[["angle", sizeDefinition]]
-                        .sel(**{coordVar: coord})
-                        .groupby_bins(sizeDefinition, DbinsPixel, right=False)
+                        .sel(drop=True, **{coordVar: coord})
+                        .groupby_bins(binningVar, DbinsPixel, right=False)
                         .reduce(scipy.stats.circmean, high=360, nan_policy="omit")
                     )
                     otherVars1["angle"] = angleVars["angle"]
