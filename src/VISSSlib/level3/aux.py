@@ -123,6 +123,7 @@ def getARM(date, config, path, product, user):
     return fnames
 
 
+@tools.loopify
 def getMeteoData(case, config):
     """
     Retrieve meteorological data for a given case.
@@ -781,7 +782,7 @@ def getRadarDataARMarsclkazr1kollias(case, config, fn):
     return dat1, frq
 
 
-def _downloadPangaea1(config, path, type):
+def _downloadPangaea1(config, path, type, doi):
     """
     Download data from Pangaea for a specific type and save it locally.
 
@@ -801,13 +802,14 @@ def _downloadPangaea1(config, path, type):
     """
     from pangaeapy.pandataset import PanDataSet
 
-    doipart = config.aux.meteo.doi.split("/")[-1]
+    doipart = doi.split("/")[-1]
     fnamePart = f"{path}/*_{type}_{config.site}_{doipart}.nc"
     if len(glob.glob(fnamePart)) > 0:
-        print(f"{fnamePart} exists")
+        log.info(f"{fnamePart} exists")
         return fnamePart
 
-    ds1 = PanDataSet(config.aux.meteo.doi)
+    log.info(f"downloading {doi}")
+    ds1 = PanDataSet(doi)
     ds1.data = ds1.data.rename(columns={"Date/Time": "time", "TIME": "time"})
     dat = xr.Dataset(ds1.data.set_index("time"))
 
@@ -853,8 +855,10 @@ def downloadPangaea(config, path, type):
     from pangaeapy.pandataset import PanDataSet
 
     ds = PanDataSet(config.aux.meteo.doi)
+    log.info(f"getting data from collection {config.aux.meteo.doi}")
+
     for doi in ds.collection_members:
-        fname = _downloadPangaea1(config, path, type)
+        fname = _downloadPangaea1(config, path, type, doi)
     return
 
 
