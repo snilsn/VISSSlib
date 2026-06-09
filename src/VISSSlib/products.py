@@ -1365,9 +1365,9 @@ class DataProductRange(DataProduct):
         log.warning(f"sending {len(commands)} commands to {self.fileQueue}")
         self.tq.insert([partial(runCommandInQueue, c) for c in commands])
         log.warning(f"{self.tq.enqueued} tasks in Queue")
+
         if runWorkers:
             self.runWorkers()
-
 
 @log.catch(reraise=True)
 def submitAll(

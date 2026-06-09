@@ -329,7 +329,7 @@ class FindFiles(object):
             )
         self.fnamesPattern["imagesL1detect"] = self.fnamesPattern[
             "imagesL1detect"
-        ].replace(".nc", ".zip")
+        ].replace(".nc", ".bin")
         self.fnamesPattern.level3combinedRiming = (
             self.fnamesPattern.level3combinedRiming.replace(
                 "level3combinedRiming",
@@ -1131,7 +1131,7 @@ class Filenames(object):
             self.fname[fL] = self.fname[fL].replace("//", "/")
 
         self.fname["imagesL1detect"] = self.fname["imagesL1detect"].replace(
-            ".nc", ".zip"
+            ".nc", ".bin"
         )
         self.fname.level3combinedRiming = self.fname.level3combinedRiming.replace(
             "level3combinedRiming",
