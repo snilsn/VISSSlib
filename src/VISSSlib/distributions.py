@@ -1598,6 +1598,7 @@ def createLevel2_single_class(
                 # estimate counts
                 tmpXr = []
                 for sizeDefinition in sizeDefinitions:
+                    # for the PSD, caemra min/max etc applied to the binning
                     tmpXr1 = (
                         level1datG1[[sizeDefinition]]
                         .sel(**{coordVar: coord})
@@ -1617,7 +1618,7 @@ def createLevel2_single_class(
 
                     # for all variabvles except the PSD, min/max etc is applied to the variable
                     # the binning uses max observed Dmax or Deq
-                    binningVar = level1datG1[sizeDefinition].sel(drop=True, **{coordVar: coord})
+                    binningVar = level1datG1[sizeDefinition].sel(**{coordVar: "max"})
                     
                     otherVars1 = (
                         level1datG1[data_vars1]
