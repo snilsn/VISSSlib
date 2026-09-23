@@ -295,12 +295,25 @@ def main():
     # forward through --levels again, resubmitting anything now pending,
     # until a full sweep finds nothing left anywhere, or --max-passes is
     # exhausted.
+    #
+    # Settle passes always use skipExisting=True here, regardless of what
+    # --skip-existing was for the initial pass above: their whole purpose
+    # is to catch genuinely new/stale work per the normal DAG staleness
+    # check. If they reused a caller's --skip-existing false (meant for a
+    # one-time forced full rebuild), generateAllCommands(skipExisting=False)
+    # always returns the entire file list regardless of what previous
+    # passes already rebuilt -- passTotal can then never reach 0, so every
+    # run burns --max-passes full rebuilds of the whole case range before
+    # giving up with a misleading "still finding new work" warning, even
+    # though the data was already fully correct after pass 1 (confirmed:
+    # eriswil_v1's 2026-09-23 forced rebuild redid ~25k files 5 extra times
+    # this way before hitting max-passes).
     for passNum in range(1, args.max_passes + 1):
         passTotal = 0
         for level in levels:
             passTotal += processLevel(
                 level, args.settings, args.case, args.queue, args.camera,
-                skipExisting, args.workers, args.conda_env, args.poll_seconds,
+                True, args.workers, args.conda_env, args.poll_seconds,
                 args.with_parents, args.dry_run,
             )
         if passTotal == 0:
