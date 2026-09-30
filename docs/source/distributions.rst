@@ -114,6 +114,22 @@ mesh intersection at only ``nSteps`` bins and interpolating the rest, for
 performance) stays within 1% of computing every bin exactly — i.e. the
 interpolation shortcut is verified numerically, not just assumed safe.
 
+Track time and the border filter
+-------------------------------------
+
+Particles too close to the image border are removed before the track
+statistics are estimated (see ``farEnoughFromBorder``). This can remove the
+*first* step of a track. The time of a track (used to assign it to a one-minute
+bin) is the time of its first **remaining** step,
+:func:`VISSSlib.distributions.getPerTrackStatistics`. Previously, the time of
+``track_step=0`` was used, which was missing for such tracks whenever other
+tracks in the same data had a ``track_step=0``; these tracks were then silently
+dropped. Whether a track survived thus depended on the other tracks processed
+together with it, which mainly showed for rare classes (few tracks) and made
+the results of :func:`~VISSSlib.distributions.createLevel2_multiple_classes`
+depend on how files were grouped. The fix increases the number of tracks
+in ``level2track`` (about 3.5% for the day tested in Hyytiälä, 2023-12-25).
+
 Optional shape variables
 ----------------------------
 
@@ -194,8 +210,10 @@ attached to every file *before* combining them:
     level2 = createLevel2_multiple_classes(level1, config, sublevel="track")
 
 The result is identical to processing the files one by one and joining the
-results in time (checked for counts and the number of tracks). All data is
-held in memory at once, so use hourly or daily chunks rather than months.
+results in time (checked for the counts and the number of tracks of all
+classes for a full day of 142 files). It is, however, considerably faster
+for many files (31 s instead of 120 s in that test). All data is held in
+memory at once, so use hourly or daily chunks rather than months.
 
 Things to know:
 
