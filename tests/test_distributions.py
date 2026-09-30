@@ -420,3 +420,63 @@ class TestVolume(object):
         V = VISSSlib.distributions._estimateVolume(width, height, phi, theta, Of_z)
 
         assert np.isclose(V, width * width * height)
+
+
+class TestParticleClasses:
+    """Unit tests for the helpers of the per-class level 2 functions."""
+
+    def _level1(self, nTracks=3, nSteps=2):
+        n = nTracks * nSteps
+        t0 = np.datetime64("2024-01-01T00:00:30")
+        return xr.Dataset(
+            {
+                "track_id": ("pair_id", np.repeat(np.arange(nTracks), nSteps)),
+                "capture_time": (
+                    "pair_id",
+                    t0 + np.arange(n) * np.timedelta64(45, "s"),
+                ),
+            },
+            coords={"pair_id": np.arange(n)},
+        )
+
+    @pytest.mark.unit
+    def test_attachTrackCategories_maps_float_keys_and_default(self):
+        level1 = self._level1()
+        # keys of the level1class pickles are floats
+        res = attachTrackCategories(level1, {0.0: "a", 2.0: "b"})
+        assert list(res.category.values) == ["a", "a", "unclassified", "unclassified", "b", "b"]
+        assert "category" not in level1  # input is not modified
+        assert res.track_id.dtype == level1.track_id.dtype
+
+    @pytest.mark.unit
+    def test_level2TimeIndex_covers_all_particles(self):
+        level1 = self._level1()
+        timeIndex, timeIndex1 = VISSSlib.distributions._level2TimeIndex(level1, "1min")
+        assert timeIndex[0] == np.datetime64("2024-01-01T00:00")
+        assert timeIndex1[-1] == timeIndex[-1] + timeIndex.freq
+        assert level1.capture_time.max().values < timeIndex1[-1].to_datetime64()
+        assert len(timeIndex1) == len(timeIndex) + 1
+
+    @pytest.mark.unit
+    def test_level2TimeIndex_particle_on_minute_boundary_is_kept(self):
+        level1 = self._level1()
+        level1["capture_time"][:] = np.datetime64("2024-01-01T00:02:00")
+        timeIndex, _ = VISSSlib.distributions._level2TimeIndex(level1, "1min")
+        assert timeIndex[-1] == np.datetime64("2024-01-01T00:02")
+
+    @pytest.mark.unit
+    def test_multiple_classes_requires_category(self):
+        with pytest.raises(ValueError, match="category"):
+            createLevel2_multiple_classes(self._level1(), config=None)
+
+    @pytest.mark.unit
+    def test_multiple_classes_requires_category_on_pair_id(self):
+        level1 = self._level1()
+        level1["category"] = ("other", ["a"])
+        with pytest.raises(ValueError, match="pair_id"):
+            createLevel2_multiple_classes(level1, config=None)
+
+    @pytest.mark.unit
+    def test_optionalShapeVars(self):
+        dat = xr.Dataset({"solidity": ("x", [1.0]), "area": ("x", [1.0])})
+        assert VISSSlib.distributions._optionalShapeVars(dat) == ["solidity"]
