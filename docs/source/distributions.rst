@@ -161,13 +161,41 @@ Workflow:
     )
 
     config = VISSSlib.tools.readSettings("settings.yaml")
-    level1 = xr.open_mfdataset(
-        level1trackFiles, combine="nested", concat_dim="pair_id"
-    ).load()
+    level1 = xr.load_dataset(level1trackFile)
     level1 = attachTrackCategories(level1, trackClasses)
 
     level2 = createLevel2_multiple_classes(level1, config, sublevel="track")
     level2.PSD.sel(particle_class="stellar aggregate")
+
+Multiple Level 1 files
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Both functions also accept a **list** of datasets and/or file names (e.g. all
+10 minute ``level1track`` files of an hour or a day) and create a single
+Level 2 dataset from them. The data is combined by
+:func:`VISSSlib.distributions._combineLevel1`, which
+
+* makes ``pair_id`` unique, and adds a per-file offset to ``track_id``,
+  because ``track_id`` restarts at zero in every Level 1 file (otherwise
+  different particles of different files would be merged into one track);
+* drops variables that are not available in all files;
+* raises a ``ValueError`` if the files do not fit together, e.g. because they
+  were observed by different cameras.
+
+Because ``track_id`` is only unique within a file, the classes have to be
+attached to every file *before* combining them:
+
+.. code-block:: python
+
+    level1 = [
+        attachTrackCategories(xr.load_dataset(f), trackClasses[f])
+        for f in level1trackFiles
+    ]
+    level2 = createLevel2_multiple_classes(level1, config, sublevel="track")
+
+The result is identical to processing the files one by one and joining the
+results in time (checked for counts and the number of tracks). All data is
+held in memory at once, so use hourly or daily chunks rather than months.
 
 Things to know:
 
