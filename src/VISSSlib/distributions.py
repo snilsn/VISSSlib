@@ -15,6 +15,21 @@ from .matching import *
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
+# Shape variables that only exist in newer level1 files. They are used if
+# present, so that older level1 files can still be processed.
+_OPTIONAL_SHAPE_VARS = [
+    "areaConsideringHoles",
+    "perimeterConsideringHoles",
+    "solidity",
+    "extent",
+]
+
+
+def _optionalShapeVars(dat):
+    """Names of the optional shape variables available in dat."""
+    return [v for v in _OPTIONAL_SHAPE_VARS if v in dat]
+
+
 def _preprocess(dat):
     """
     Preprocess the input data for further processing in distributions.
@@ -41,8 +56,8 @@ def _preprocess(dat):
             "area",
             "aspectRatio",
             "angle",
-            "perimeter"
-        ]
+            "perimeter",
+        ] + _optionalShapeVars(dat)
         if "pair_id" in dat.coords:
             del dat["pair_id"]
             data_vars += [
@@ -760,6 +775,27 @@ def _createLevel2(
     lv2Dat.area_dist.attrs.update(dict(units="m^2", long_name="area distribution"))
     lv2Dat.area_mean.attrs.update(dict(units="m^2", long_name="mean area"))
     lv2Dat.area_std.attrs.update(dict(units="m^2", long_name="standard deviation area"))
+
+    # optional variables of newer level1 files
+    for name, units, longName in [
+        ("areaConsideringHoles", "m^2", "area"),
+        ("perimeterConsideringHoles", "m", "perimeter"),
+        ("extent", "m", "extent"),
+        ("solidity", "m", "solidity"),
+    ]:
+        for suffix, prefix in [
+            ("dist", ""),
+            ("mean", "mean "),
+            ("std", "standard deviation "),
+        ]:
+            if f"{name}_{suffix}" in lv2Dat:
+                lv2Dat[f"{name}_{suffix}"].attrs.update(
+                    dict(
+                        units=units,
+                        long_name=f"{prefix}{longName}"
+                        + (" distribution" if suffix == "dist" else ""),
+                    )
+                )
 
     lv2Dat.aspectRatio_dist.attrs.update(
         dict(units="-", long_name="aspectRatio distribution")
@@ -2755,7 +2791,7 @@ def _createLevel2part(
             "aspectRatio",
             "angle",
             "perimeter",
-        ]
+        ] + _optionalShapeVars(level1dat)
 
         # promote capture_time to coordimnate for later
         level1dat_time = level1dat.assign_coords(
@@ -2839,7 +2875,7 @@ def _createLevel2part(
             "angle",
             "perimeter",
             "velocity",
-        ]
+        ] + _optionalShapeVars(level1dat_track2D)
         for data_var in data_vars:
             level1dat_trackAve[data_var] = level1dat_trackAve[data_var].broadcast_like(
                 level1dat_track2D.isel(camera=0, drop=True)[data_var]
@@ -2894,7 +2930,7 @@ def _createLevel2part(
         "perimeter",
         "complexityBW",
         "normalizedRimeMass",
-    ]
+    ] + _optionalShapeVars(level1dat_4timeAve)
     if sublevel == "track":
         data_vars += ["velocity", "track_angle"]
 
@@ -3043,9 +3079,11 @@ def addPerParticleVariables(level1dat_camAve, config):
     """
 
     # add area equivalent radius
-    level1dat_camAve["Dequiv"] = np.sqrt(
-        4 * level1dat_camAve["area"] / np.pi
-    )
+    if "areaConsideringHoles" in level1dat_camAve:
+        areaForDequiv = level1dat_camAve["areaConsideringHoles"]
+    else:
+        areaForDequiv = level1dat_camAve["area"]
+    level1dat_camAve["Dequiv"] = np.sqrt(4 * areaForDequiv / np.pi)
 
     # based on Garrett, T. J., and S. E. Yuter, 2014: Observed influence of riming,
     # temperature, and turbulence on the fallspeed of solid precipitation.
@@ -3417,8 +3455,9 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
                 "angle",
                 "perimeter",
                 "position3D_centroid",
-                "capture_time"
+                "capture_time",
             ]
+            + _optionalShapeVars(level1dat_time)
             + extraVars
         )
     ]
@@ -3740,6 +3779,15 @@ def calibrateData(level2dat, level1dat_time, config, DbinsPixel, timeIndex1):
     calibDat["area_std"] = calibDat["area_std"] / slope**2 / 1e6**2
     calibDat["perimeter_mean"] = calibDat["perimeter_mean"] / slope / 1e6
     calibDat["perimeter_std"] = calibDat["perimeter_std"] / slope / 1e6
+
+    # optional variables of newer level1 files
+    for name in ["areaConsideringHoles", "perimeterConsideringHoles"]:
+        power = 2 if name.startswith("area") else 1
+        for suffix in ["dist", "mean", "std"]:
+            if f"{name}_{suffix}" in calibDat:
+                calibDat[f"{name}_{suffix}"] = (
+                    calibDat[f"{name}_{suffix}"] / slope**power / 1e6**power
+                )
 
     calibDat["Dequiv_mean"] = (calibDat["Dequiv_mean"]) / slope / 1e6
 
