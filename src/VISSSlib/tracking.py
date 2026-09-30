@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 import warnings
-from copy import deepcopy
 
 import numpy as np
 import xarray as xr
@@ -47,7 +46,66 @@ _reference_intercepts = {
 # z = x,y,z
 
 
-def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1):
+def _buildKFConstants(R_std=2, q_var=1, reduced_q_var=0.5):
+    """
+    Precompute the Kalman-filter matrices shared by every Track.
+
+    F, H, R, Q and P only depend on R_std/q_var, which are fixed for an entire
+    Tracker run, not on the individual particle. Building them once and copying
+    them into each new KalmanFilter avoids calling into scipy
+    (Q_discrete_white_noise/block_diag) for every single track.
+
+    Parameters
+    ----------
+    R_std : float, optional
+        Standard deviation for measurement noise, default 2.
+    q_var : float, optional
+        Variance for process noise, default 1.
+    reduced_q_var : float, optional
+        Variance for the reduced process noise applied after a track's first
+        update, default 0.5. Pass None to skip computing it.
+
+    Returns
+    -------
+    dict
+        Keys "F", "H", "R", "Q", "P", "reducedQ" (None if reduced_q_var is None).
+    """
+    from filterpy.common import Q_discrete_white_noise
+    from scipy.linalg import block_diag
+
+    dt = 1  # time step, we are in frame units!
+
+    F = np.array(
+        [
+            [1, dt, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0],
+            [0, 0, 1, dt, 0, 0],
+            [0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 1, dt],
+            [0, 0, 0, 0, 0, 1],
+        ]
+    )
+    H = np.array(
+        [
+            [1, 0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0],
+        ]
+    )
+    R = np.eye(3) * R_std**2
+    q = Q_discrete_white_noise(dim=3, dt=dt, var=q_var)
+    Q = block_diag(q, q)
+    P = np.eye(6) * 100**2.0
+
+    reducedQ = None
+    if reduced_q_var is not None:
+        qr = Q_discrete_white_noise(dim=3, dt=dt, var=reduced_q_var)
+        reducedQ = block_diag(qr, qr)
+
+    return {"F": F, "H": H, "R": R, "Q": Q, "P": P, "reducedQ": reducedQ}
+
+
+def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1, constants=None):
     """
     Initialize a Kalman Filter for 3D particle tracking.
 
@@ -58,9 +116,13 @@ def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1):
     velocityGuess : array_like, optional
         Initial velocity guess [vx, vy, vz], default [0, 0, 50].
     R_std : float, optional
-        Standard deviation for measurement noise, default 2.
+        Standard deviation for measurement noise, default 2. Ignored if
+        `constants` is given.
     q_var : float, optional
-        Variance for process noise, default 1.
+        Variance for process noise, default 1. Ignored if `constants` is given.
+    constants : dict, optional
+        Precomputed F/H/R/Q/P matrices from `_buildKFConstants`, reused instead
+        of rebuilding them via scipy. Default None (build them here).
 
     Returns
     -------
@@ -71,43 +133,22 @@ def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1):
     -----
     The filter uses a constant velocity model with state vector [x, vx, y, vy, z, vz].
     """
-    from filterpy.common import Q_discrete_white_noise
     from filterpy.kalman import KalmanFilter
-    from scipy.linalg import block_diag
 
     assert len(velocityGuess) == 3
 
     kf = KalmanFilter(dim_x=6, dim_z=3)
     kf.dt = 1  # time step, we are in frame units! stor it in kf for convenience
 
-    kf.F = np.array(
-        [
-            [1, kf.dt, 0, 0, 0, 0],
-            [0, 1, 0, 0, 0, 0],
-            [0, 0, 1, kf.dt, 0, 0],
-            [0, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 1, kf.dt],
-            [0, 0, 0, 0, 0, 1],
-        ]
-    )
+    if constants is None:
+        constants = _buildKFConstants(R_std=R_std, q_var=q_var, reduced_q_var=None)
+
+    kf.F = constants["F"].copy()
     kf.u = 0.0
-
-    # measurement function
-    kf.H = np.array(
-        [
-            [1, 0, 0, 0, 0, 0],
-            [0, 0, 1, 0, 0, 0],
-            [0, 0, 0, 0, 1, 0],
-        ]
-    )
-
-    # measurement noise
-    kf.R = np.eye(3) * R_std**2
-
-    # process noise
-    q = Q_discrete_white_noise(dim=3, dt=kf.dt, var=q_var)
-    kf.Q = block_diag(q, q)
-    #     #print(kf.Q)
+    kf.H = constants["H"].copy()
+    kf.R = constants["R"].copy()
+    kf.Q = constants["Q"].copy()
+    kf.P = constants["P"].copy()
 
     # prior
     kf.x = np.array(
@@ -122,8 +163,60 @@ def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1):
             ]
         ]
     ).T
-    kf.P = np.eye(6) * 100**2.0
     return kf
+
+
+class _RollingArray:
+    """
+    Append-only history buffer, backed by a numpy array, that only ever
+    exposes its most recent `maxlen` entries.
+
+    Tracker keeps a short rolling history of recently finished tracks
+    (`archiveTrack*`) to fit the size/velocity relationship. That history
+    used to be a plain Python list, rebuilt into a numpy array (and
+    re-trimmed to `maxlen`) on every read in updateVelocityFirstGuess() -
+    which runs on nearly every frame. Here the storage is already numpy, so
+    reads (`.values`) are O(1) views and appends are amortized O(1) instead
+    of paying an O(maxlen) list->array conversion on every read.
+    """
+
+    def __init__(self, maxlen, dtype, shape=()):
+        self.maxlen = maxlen
+        self._dtype = dtype
+        self._shape = shape
+        self._cap = max(maxlen * 2, 1)
+        self._buf = np.empty((self._cap,) + shape, dtype=dtype)
+        self._n = 0  # valid entries live in self._buf[:self._n]
+
+    def extend(self, values):
+        if len(values) == 0:
+            return
+        values = np.asarray(values, dtype=self._dtype)
+        k = len(values)
+        if self._n + k > self._cap:
+            # drop everything older than the last `maxlen` entries, growing
+            # the backing buffer too if the incoming batch still won't fit
+            start = max(0, self._n - self.maxlen)
+            kept = self._buf[start : self._n].copy()
+            self._n = len(kept)
+            if self._n + k > self._cap:
+                self._cap = max(self._cap * 2, self._n + k)
+                newBuf = np.empty((self._cap,) + self._shape, dtype=self._dtype)
+                newBuf[: self._n] = kept
+                self._buf = newBuf
+            else:
+                self._buf[: self._n] = kept
+        self._buf[self._n : self._n + k] = values
+        self._n += k
+
+    @property
+    def values(self):
+        """The last `maxlen` entries, oldest to newest."""
+        start = max(0, self._n - self.maxlen)
+        return self._buf[start : self._n]
+
+    def __len__(self):
+        return min(self._n, self.maxlen)
 
 
 class Track(object):
@@ -142,6 +235,7 @@ class Track(object):
         R_std=2,
         q_var=1,
         reduced_q_var=0.5,
+        kfConstants=None,
     ):
         """
         Initialize a particle track.
@@ -166,14 +260,15 @@ class Track(object):
             Process noise variance, default 1.
         reduced_q_var : float, optional
             Reduced process noise variance after first step, default 0.5.
+        kfConstants : dict, optional
+            Precomputed matrices from `_buildKFConstants`, reused instead of
+            rebuilding them via scipy for every track. Default None.
 
         Notes
         -----
         Maintains particle position, velocity, and feature history.
         """
         import vg
-        from filterpy.common import Q_discrete_white_noise
-        from scipy.linalg import block_diag
 
         self._vg = vg
         assert len(velocityGuess) == 3
@@ -184,7 +279,13 @@ class Track(object):
         # process noice can be reduce a lot after the first step becuase a track is now available. factor applies to log10(q_var)
         self.reduced_q_var = reduced_q_var
         # KF instance to track this object
-        self.KF = myKF(position, velocityGuess=velocityGuess, R_std=R_std, q_var=q_var)
+        self.KF = myKF(
+            position,
+            velocityGuess=velocityGuess,
+            R_std=R_std,
+            q_var=q_var,
+            constants=kfConstants,
+        )
         self.predictedPos = position
         self.skipped_frames = 0  # number of frames skipped undetected
         self._trace = [position]  # trace path
@@ -197,8 +298,14 @@ class Track(object):
         self.predictedAng = self._vg.angle(np.array([0, 0, 1]), np.array(velocityGuess))
 
         if self.reduced_q_var is not None:
-            q = Q_discrete_white_noise(dim=3, dt=self.KF.dt, var=self.reduced_q_var)
-            self.reducedQ = block_diag(q, q)
+            if kfConstants is not None and kfConstants.get("reducedQ") is not None:
+                self.reducedQ = kfConstants["reducedQ"].copy()
+            else:
+                from filterpy.common import Q_discrete_white_noise
+                from scipy.linalg import block_diag
+
+                q = Q_discrete_white_noise(dim=3, dt=self.KF.dt, var=self.reduced_q_var)
+                self.reducedQ = block_diag(q, q)
 
     def __repr__(self):
         return "Track %i %s" % (self.track_id, self.trace)
@@ -296,6 +403,28 @@ class Track(object):
             self.KF.update(self.predictedPos)
         if self.reduced_q_var is not None:
             self.KF.Q = self.reducedQ
+
+    def trimHistory(self, max_length):
+        """
+        Drop the oldest history entries so at most `max_length` remain.
+
+        Parameters
+        ----------
+        max_length : int
+            Maximum number of trace/feature/size entries to keep.
+
+        Notes
+        -----
+        `trace`/`meanVelocity`/etc. read `_trace` through a property that
+        returns a fresh `np.array(self._trace)` on every access, so trimming
+        must mutate `_trace` (and the parallel `_features`/`_sizes` lists)
+        directly rather than the array a property call returns.
+        """
+        excess = len(self._trace) - max_length
+        if excess > 0:
+            del self._trace[:excess]
+            del self._features[:excess]
+            del self._sizes[:excess]
 
     def predict(self):
         """
@@ -418,33 +547,29 @@ class Tracker(object):
         self.training = training
         self.verbosity = verbosity
 
-        self.featureVariance = xr.Dataset(featureVariance).to_array()
         self.featureKeys = list(featureVariance.keys())
         self.featureKeys.remove("distance")
         assert len(velocityGuessXY) == 2
-        assert self.featureVariance.coords["variable"].values[0] == "distance"
+        assert list(featureVariance.keys())[0] == "distance"
+        # plain numpy array ordered ["distance"] + featureKeys, used for the
+        # elementwise cost-matrix division in update()
+        self.featureVariance = np.array(
+            [featureVariance[k] for k in ["distance"] + self.featureKeys]
+        )
+        self._hasFeatures = len(self.featureVariance) > 1
+        # Dmax's cost variance is overridden per track below (scaled to the
+        # track's own size) instead of using the fixed value from
+        # featureVariance, so large/tumbling particles aren't penalized for
+        # their naturally larger frame-to-frame Dmax jitter.
+        self._dmaxFeatureIdx = (
+            self.featureKeys.index("Dmax") if "Dmax" in self.featureKeys else None
+        )
 
         # intitalize
         self.lastTime = np.datetime64("2010-01-01T00:00:00")
         self.lastFrame = 0
 
-        # we do not need to load all variables
-        self._lv1match = deepcopy(
-            self.lv1track[
-                set(
-                    self.featureKeys
-                    + ["capture_time", "position3D_centroid", "pair_id"]
-                    + [self.sizeVariable]
-                )
-            ]
-        )
-
         self.activeTracks = []
-        self.archiveTrackNSamples = []
-        self.archiveTrackTimes = []
-        self.archiveTrackSize = []
-        self.archiveTrackVelocities = []
-        self.archiveTrackAngles = []
 
         self.trackIdCount = 0
         # print("Tracker created", dist_thresh, max_frames_to_skip)
@@ -455,17 +580,68 @@ class Tracker(object):
             self.ax.set_ylabel("y")
             self.ax.set_zlabel("z")
 
-        self.iiCapture = -99
+        # Pull everything the per-frame loop needs into plain numpy arrays once,
+        # up front. update() used to re-enter xarray on every frame (a
+        # groupby("frameid4tracking") iterator) and every particle (per-particle
+        # .isel() calls in getFeatures()); profiling showed that xarray call
+        # overhead, not the tracking math, dominated runtime (~90% of wall time
+        # on real level1match files). From here on the hot loop only touches
+        # plain numpy.
+        captureTime0 = self.lv1track.capture_time.isel(camera=0).values
+        frameInterval = np.around(1e9 / config.fps, -3).astype(int)
+        frameid = captureTime0.astype("int64") // frameInterval
+        frameid = frameid - frameid[0]
 
-        # make a frame id used for tracking
-        self._lv1match["frameid4tracking"] = self._lv1match.capture_time.isel(
-            camera=0
-        ).astype(int) // np.around(1e9 / config.fps, -3).astype(int)
-        self._lv1match["frameid4tracking"] -= self._lv1match["frameid4tracking"][0]
-        self._lv1matchgp = self._lv1match.groupby("frameid4tracking")
-        self.nFrames = len(self._lv1matchgp)
-        self._lv1matchgp = iter(self._lv1matchgp)
+        # groupby("frameid4tracking") iterates groups in ascending key order;
+        # an explicit stable sort reproduces that ordering exactly even if
+        # frameid were ever not already monotonic.
+        order = np.argsort(frameid, kind="stable")
+        frameidSorted = frameid[order]
+        uniqFrameid, frameStart = np.unique(frameidSorted, return_index=True)
+        self._frameBoundaries = np.append(frameStart, len(order))
+        self._uniqFrameid = uniqFrameid
+        self.nFrames = len(uniqFrameid)
+
+        positionsAll = self.lv1track.position3D_centroid.isel(dim3D=range(3)).values.T
+        # the old per-particle `.isel(pair_id=i).mean("camera")` scalar reduction
+        # promoted to float64; match that dtype here so results are bit-identical
+        # (a bulk `.mean("camera")` over the full array instead keeps float32).
+        sizesAll = (
+            self.lv1track[self.sizeVariable].mean("camera").values.astype(np.float64)
+        )
+        pairIdsAll = self.lv1track.pair_id.values
+
+        self._positionsSorted = positionsAll[order]
+        self._sizesSorted = sizesAll[order]
+        self._captureTimesSorted = captureTime0[order]
+        self._pairIdsSorted = pairIdsAll[order]
+
+        if self._hasFeatures:
+            featuresAll = np.stack(
+                [self.lv1track[k].mean("camera").values for k in self.featureKeys],
+                axis=-1,
+            )
+            self._featuresSorted = featuresAll[order]
+        else:
+            self._featuresSorted = None
+
         self._frameid = -1  # id of current frame
+
+        # pair_id -> row index in self.lv1track, used by save(). pair_id is
+        # unique but, once matchCond has filtered rows, not necessarily
+        # contiguous 0..n-1 any more, so this dict lookup replaces the O(n)
+        # np.where(...) scan save() used to do for every particle (O(n^2) over
+        # a whole file).
+        self._pairIdToRow = {
+            int(pid): i for i, pid in enumerate(self.lv1track.pair_id.values)
+        }
+
+        # F/H/R/Q/P only depend on R_std/q_var, fixed for the whole run, so
+        # build them once instead of re-deriving via scipy for every new track.
+        # Track's own reduced_q_var default (0.5) is used here, not the
+        # reduced_q_var passed into Tracker/trackParticles - Track never
+        # forwards that argument on, matching prior behavior.
+        self._kfConstants = _buildKFConstants(R_std=R_std, q_var=q_var)
 
         # results will be written here
         nParts = len(self.lv1track.pair_id)
@@ -482,12 +658,31 @@ class Tracker(object):
         self.lv1track["track_angleGuess"] = xr.DataArray(
             np.zeros((nParts)) * np.nan, coords=[self.lv1track.pair_id]
         )
+        # cache references to the underlying numpy arrays (no copy - same memory
+        # backs self.lv1track) so save() writes directly into them instead of
+        # doing a `self.lv1track["..."]` xarray lookup for every particle
+        self._trackIdArr = self.lv1track["track_id"].values
+        self._trackStepArr = self.lv1track["track_step"].values
+        self._trackVelocityGuessArr = self.lv1track["track_velocityGuess"].values
+        self._trackAngleGuessArr = self.lv1track["track_angleGuess"].values
 
         # init velocity first guess
 
         self.backSteps = 200  # max number of data point to look back
         # max number of default values to fill up backSteps
         self.backStepsMin = self.backSteps // 10
+
+        # rolling history of recently finished tracks, used to fit the
+        # size/velocity relation in updateVelocityFirstGuess()
+        archiveMaxlen = self.backSteps * 10
+        self._archiveTrackTimes = _RollingArray(
+            archiveMaxlen, dtype=self._captureTimesSorted.dtype
+        )
+        self._archiveTrackNSamples = _RollingArray(archiveMaxlen, dtype=np.int64)
+        self._archiveTrackSize = _RollingArray(archiveMaxlen, dtype=np.float64)
+        self._archiveTrackVelocities = _RollingArray(
+            archiveMaxlen, dtype=np.float64, shape=(3,)
+        )
 
         if velSlope is None:
             self.velGuess_slope = _reference_slopes[self.sizeVariable][config.visssGen]
@@ -554,10 +749,17 @@ class Tracker(object):
         if self.training:
             print(f"training complete after {ff} of {self.nFrames} frames")
             self.training = False
-            # reset iterator
-            self._lv1matchgp = iter(self._lv1match.groupby("frameid4tracking"))
-            # reset track index
+            # reset track index and all per-frame/per-track state so the real
+            # pass starts clean at frame 0 instead of carrying over whatever
+            # tracks were active wherever the training pass happened to stop.
+            # The archive (archiveTrack*, used to fit the size/velocity
+            # relation) is intentionally kept as a warm-start prior.
             self.trackIdCount = 0
+            self.activeTracks = []
+            self.assignment = []
+            self._frameid = -1
+            self.lastTime = np.datetime64("2010-01-01T00:00:00")
+            self.lastFrame = 0
             for ff in tqdm(range(stopAfter), file=sys.stdout):
                 self.update(ff)
 
@@ -602,11 +804,13 @@ class Tracker(object):
 
         if not self.training and (self.verbosity > 5):
             print(ff, self.costGuessFactor)
-        # extractData from lv1match iterator over frames
-        _, self._thisDat = next(self._lv1matchgp)
+        # slice this frame's rows out of the arrays precomputed once in __init__
+        frameSlice = slice(self._frameBoundaries[ff], self._frameBoundaries[ff + 1])
+        thisFrameid = int(self._uniqFrameid[ff])
+        self._thisSizes = self._sizesSorted[frameSlice]
 
         # identify jumps in time - reset everything even if a single frame is missing
-        frameDiff = self._thisDat.frameid4tracking.values[0] - self._frameid
+        frameDiff = thisFrameid - self._frameid
         if frameDiff > 2:
             if not self.training and (self.verbosity > 5):
                 print(
@@ -624,18 +828,17 @@ class Tracker(object):
             for i in range(len(self.activeTracks)):
                 self.activeTracks[i].updateTrack(None, None, None)
                 self.activeTracks[i].skipped_frames += 1
-            stop = True
 
-        self._frameid = int(self._thisDat.frameid4tracking.values[0])
+        self._frameid = thisFrameid
 
         # get particle position and id
-        detections = self._thisDat.position3D_centroid.isel(dim3D=range(3)).values.T
-        if len(self.featureVariance) > 1:
-            features = self._thisDat[self.featureKeys].mean("camera").to_array().T
+        detections = self._positionsSorted[frameSlice]
+        if self._hasFeatures:
+            features = self._featuresSorted[frameSlice]
         else:
             features = None
-        capture_times = self._thisDat.capture_time.isel(camera=0).values
-        pair_ids = self._thisDat.pair_id.values
+        capture_times = self._captureTimesSorted[frameSlice]
+        pair_ids = self._pairIdsSorted[frameSlice]
 
         if not self.training and (self.verbosity > 5):
             print("#" * 10, "update", self._frameid, "#" * 10)
@@ -658,7 +861,7 @@ class Tracker(object):
             # or if older than X s
             ((capture_times[0] - self.lastTime) > np.timedelta64(500, "ms"))
             or (
-                len(self.archiveTrackNSamples) < (self.backSteps * 10)
+                len(self._archiveTrackNSamples) < (self.backSteps * 10)
             )  # or at the beginning
         ):
             self.updateVelocityFirstGuess(capture_times, ff)
@@ -686,6 +889,7 @@ class Tracker(object):
                     velocityGuess=velocityGuess,
                     R_std=self.R_std,
                     q_var=self.q_var,
+                    kfConstants=self._kfConstants,
                 )
                 self.trackIdCount += 1
                 self.activeTracks.append(track)
@@ -727,31 +931,28 @@ class Tracker(object):
         if not self.training and (self.verbosity > 5):
             print(self._frameid, predictions, detections)
 
-        if len(self.featureVariance) > 1:
-            trackFeatures = np.array(
-                [a._features[-1].values for a in self.activeTracks]
-            )
-            featureDiff = (
-                trackFeatures[:, np.newaxis] - features.values[np.newaxis]
-            ) ** 2
+        if self._hasFeatures:
+            trackFeatures = np.array([a._features[-1] for a in self.activeTracks])
+            featureDiff = (trackFeatures[:, np.newaxis] - features[np.newaxis]) ** 2
             joinedDiffs = np.concatenate(
                 (distancesSq[:, :, np.newaxis], featureDiff), axis=-1
             )
-            joinedDiffs = xr.DataArray(joinedDiffs, dims=["p1", "p2", "variable"])
-            joinedDiffs["variable"] = ["distance"] + self.featureKeys
         else:
-            joinedDiffs = xr.DataArray(
-                distancesSq[:, :, np.newaxis], dims=["p1", "p2", "variable"]
-            )
-            joinedDiffs["variable"] = ["distance"]
+            joinedDiffs = distancesSq[:, :, np.newaxis]
+
         # weigh squared difference with assumed variance and sum up
-
-        # if np.any(self._thisDat.capture_time == np.datetime64("2022-12-06T12:30:21.326780000")):
-        #     import pdb; pdb.set_trace()
-
-        self.cost = (joinedDiffs / self.featureVariance).mean("variable").values
+        if self._hasFeatures and self._dmaxFeatureIdx is not None:
+            # per-track variance: distance (and any other feature) keeps the
+            # fixed value, but Dmax's variance scales with the track's own
+            # size instead of a fixed 1 px^2
+            variance = np.tile(self.featureVariance, (len(self.activeTracks), 1))
+            trackDmax = trackFeatures[:, self._dmaxFeatureIdx]
+            variance[:, 1 + self._dmaxFeatureIdx] = np.maximum(1, (0.1 * trackDmax) ** 2)
+            self.cost = (joinedDiffs / variance[:, np.newaxis, :]).mean(axis=-1)
+        else:
+            self.cost = (joinedDiffs / self.featureVariance).mean(axis=-1)
         if not self.training and (self.verbosity > 5):
-            print(self._frameid, joinedDiffs / self.featureVariance.values)
+            print(self._frameid, joinedDiffs / self.featureVariance)
         if not self.training and (self.verbosity > 5):
             print(self._frameid, self.cost)
 
@@ -781,7 +982,7 @@ class Tracker(object):
             print("ddists", (joinedDiffs)[row_ind, col_ind])
         if not self.training and (self.verbosity > 5):
             print(
-                "costs", (joinedDiffs / self.featureVariance.values)[row_ind, col_ind]
+                "costs", (joinedDiffs / self.featureVariance)[row_ind, col_ind]
             )
 
         # if 52 in [a.track_id for a in  self.activeTracks]:
@@ -857,6 +1058,7 @@ class Tracker(object):
                 velocityGuess=velocityGuess,
                 R_std=self.R_std,
                 q_var=self.q_var,
+                kfConstants=self._kfConstants,
             )
             self.trackIdCount += 1
             self.activeTracks.append(track)
@@ -892,11 +1094,7 @@ class Tracker(object):
                 self.activeTracks[i].updateTrack(None, None, None)
 
             if self.max_trace_length is not None:
-                if len(self.activeTracks[i].trace) > self.max_trace_length:
-                    for j in range(
-                        len(self.activeTracks[i].trace) - self.max_trace_length
-                    ):
-                        del self.activeTracks[i].trace[j]
+                self.activeTracks[i].trimHistory(self.max_trace_length)
 
             if not self.training and (self.verbosity > 5):
                 print(i, "done")
@@ -919,26 +1117,24 @@ class Tracker(object):
             Tuple of (feature_vector, size, velocity_guess)
         """
         if features is not None:
-            feat = features.isel(pair_id=pair_id)
+            feat = features[pair_id]
         else:
             feat = None
-        size = (
-            self._thisDat[self.sizeVariable].isel(pair_id=pair_id).mean("camera").values
-        )
+        size = self._thisSizes[pair_id]
         velocityGuess = self.getVelocityFirstGuess(size)
         return feat, size, velocityGuess
 
     def save(self, pair_id, track):
         """save results"""
 
-        pp = np.where(self.lv1track.pair_id == pair_id)[0][0]
-        self.lv1track["track_id"].values[pp] = track.track_id
-        self.lv1track["track_step"].values[pp] = len(track)
+        pp = self._pairIdToRow[int(pair_id)]
+        self._trackIdArr[pp] = track.track_id
+        self._trackStepArr[pp] = len(track)
         if len(track) == 1:
-            self.lv1track["track_velocityGuess"].values[pp, :3] = track.velocityGuess
+            self._trackVelocityGuessArr[pp, :3] = track.velocityGuess
         else:
-            self.lv1track["track_velocityGuess"].values[pp, :3] = track.predictedVel
-        self.lv1track["track_angleGuess"].values[pp] = track.predictedAng
+            self._trackVelocityGuessArr[pp, :3] = track.predictedVel
+        self._trackAngleGuessArr[pp] = track.predictedAng
         if not self.training and (self.verbosity > 5):
             print(track.track_id, len(track), track.predictedAng, track.lastAngle)
 
@@ -967,11 +1163,12 @@ class Tracker(object):
             self.config.visssGen
         ]
 
-        if len(self.archiveTrackTimes) > 0:
-            nSamples = np.array(self.archiveTrackNSamples[-(self.backSteps * 20) :])
-            times = np.array(self.archiveTrackTimes[-(self.backSteps * 20) :])
-            zVels = np.array(self.archiveTrackVelocities)[-self.backSteps * 20 :, 2]
-            sizes = np.array(self.archiveTrackSize[-self.backSteps * 20 :])
+        if len(self._archiveTrackTimes) > 0:
+            nSamples = self._archiveTrackNSamples.values
+            times = self._archiveTrackTimes.values
+            velocities = self._archiveTrackVelocities.values
+            zVels = velocities[:, 2]
+            sizes = self._archiveTrackSize.values
 
             cond = (
                 (nSamples >= self.minTrackLen4training)
@@ -1028,9 +1225,7 @@ class Tracker(object):
                 #     from IPython import display
                 #     display.display(plt.gcf())
 
-                xVel, yVel = np.nanmean(
-                    np.array(self.archiveTrackVelocities)[:, :2], axis=0
-                )
+                xVel, yVel = np.nanmean(velocities[:, :2], axis=0)
                 self.velocityGuessXY = [xVel, yVel]  # , np.mean(zVels, axis=0)
                 log.debug(self.velocityGuessXY)
                 self.costGuessFactor = 1
@@ -1085,17 +1280,12 @@ class Tracker(object):
                 )
 
         # self.archiveTracks += self.activeTracks
-        self.archiveTrackTimes += [t.startTime for t in self.activeTracks]
-        self.archiveTrackNSamples += [t.length for t in self.activeTracks]
-        self.archiveTrackSize += [t.meanSize for t in self.activeTracks]
-        self.archiveTrackVelocities += [t.meanVelocity for t in self.activeTracks]
-
-        self.archiveTrackTimes = self.archiveTrackTimes[-(self.backSteps * 10) :]
-        self.archiveTrackNSamples = self.archiveTrackNSamples[-(self.backSteps * 10) :]
-        self.archiveTrackSize = self.archiveTrackSize[-(self.backSteps * 10) :]
-        self.archiveTrackVelocities = self.archiveTrackVelocities[
-            -(self.backSteps * 10) :
-        ]
+        self._archiveTrackTimes.extend([t.startTime for t in self.activeTracks])
+        self._archiveTrackNSamples.extend([t.length for t in self.activeTracks])
+        self._archiveTrackSize.extend([t.meanSize for t in self.activeTracks])
+        self._archiveTrackVelocities.extend(
+            [t.meanVelocity for t in self.activeTracks]
+        )
 
         self.activeTracks = []
         self.assignment = []
@@ -1115,26 +1305,18 @@ class Tracker(object):
         Maintains only recent archive data (last backSteps*10 items).
         """
         del_ii = np.where(del_ii)[0]
-        self.archiveTrackTimes += [
-            i.startTime for j, i in enumerate(self.activeTracks) if j in del_ii
-        ]
-        self.archiveTrackNSamples += [
-            i.length for j, i in enumerate(self.activeTracks) if j in del_ii
-        ]
-        self.archiveTrackSize += [
-            i.meanSize for j, i in enumerate(self.activeTracks) if j in del_ii
-        ]
-        self.archiveTrackVelocities += [
-            i.meanVelocity for j, i in enumerate(self.activeTracks) if j in del_ii
-        ]
-        # import pdb;pdb.set_trace()
-
-        self.archiveTrackTimes = self.archiveTrackTimes[-(self.backSteps * 10) :]
-        self.archiveTrackNSamples = self.archiveTrackNSamples[-(self.backSteps * 10) :]
-        self.archiveTrackSize = self.archiveTrackSize[-(self.backSteps * 10) :]
-        self.archiveTrackVelocities = self.archiveTrackVelocities[
-            -(self.backSteps * 10) :
-        ]
+        self._archiveTrackTimes.extend(
+            [i.startTime for j, i in enumerate(self.activeTracks) if j in del_ii]
+        )
+        self._archiveTrackNSamples.extend(
+            [i.length for j, i in enumerate(self.activeTracks) if j in del_ii]
+        )
+        self._archiveTrackSize.extend(
+            [i.meanSize for j, i in enumerate(self.activeTracks) if j in del_ii]
+        )
+        self._archiveTrackVelocities.extend(
+            [i.meanVelocity for j, i in enumerate(self.activeTracks) if j in del_ii]
+        )
 
         self.activeTracks = [
             i for j, i in enumerate(self.activeTracks) if j not in del_ii
@@ -1235,6 +1417,7 @@ def trackParticles(
     if skipExisting and tools.checkForExisting(
         fnameTracking,
         parents=glob.glob(f"{fnameLv1Match}*"),
+        breakpointLevel="level1track",
     ):
         print("SKIPPING", fnameTracking)
         return None, None
@@ -1242,25 +1425,26 @@ def trackParticles(
     if os.path.isfile(fnameLv1Match):
         lv1match = xr.open_dataset(fnameLv1Match)
         lv1match.load()  # important to do that early, is much slower after applying filters with isel
-    elif os.path.isfile("%s.nodata" % fnameLv1Match):
-        with tools.open2(f"{fnameTracking}.nodata", config, "w") as f:
-            f.write("no data, lv1match nodata ")
+    elif ffl1.isNoData("level1match"):
+        ffl1.propagateNoData(
+            "level1match", "level1track", message="no data, lv1match nodata "
+        )
         log.error(f"NO DATA {fnameTracking}")
         return None, fnameTracking
-    elif os.path.isfile("%s.broken.txt" % fnameLv1Match):
-        with tools.open2(f"{fnameTracking}.broken.txt", config, "w") as f:
-            f.write("no data, lv1match  broken")
+    elif ffl1.isBroken("level1match"):
+        ffl1.writeStatus("level1track", "broken.txt", "no data, lv1match  broken")
         log.error(f"NO DATA {fnameTracking}")
         return None, fnameTracking
     elif doMatchIfRequired:
         log.info("need to create lv1match data")
-        _, lv1match, _, _ = matching.matchParticles(
+        _, lv1match, _, _, _, _, _, _ = matching.matchParticles(
             fnameLv1Detect, config, writeNc=False
         )
 
         if lv1match is None:
-            with tools.open2(f"{fnameTracking}.broken.txt", config, "w") as f:
-                f.write("no data, lv1match processing failed")
+            ffl1.writeStatus(
+                "level1track", "broken.txt", "no data, lv1match processing failed"
+            )
             log.error(f"NO DATA {fnameTracking}")
             return None, fnameTracking
     else:
@@ -1271,8 +1455,9 @@ def trackParticles(
 
     if matchCond.sum() == 0:
         log.error("matchCond applies to ALL data")
-        with tools.open2(f"{fnameTracking}.nodata", config, "w") as f:
-            f.write("no data, matchCond applies to ALL data")
+        ffl1.writeStatus(
+            "level1track", "nodata", "no data, matchCond applies to ALL data"
+        )
         log.error(f"NO DATA {fnameTracking}")
         return None, fnameTracking
 
@@ -1306,7 +1491,14 @@ def trackParticles(
     lv1track, velSlope, velIntercept = trackTrainer.updateAll()
     print("final slope and intercept", velSlope, velIntercept)
 
-    lv1track = tools.finishNc(lv1track, config.site, config.visssGen)
+    lv1track = tools.finishNc(
+        lv1track,
+        config.site,
+        config.visssGen,
+        extra=tools.collectVersionAttrs(
+            "level1track", {"level1match": [fnameLv1Match]}
+        ),
+    )
     lv1track.load()
     print(lv1track)
     if writeNc:

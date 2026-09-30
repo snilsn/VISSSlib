@@ -13,7 +13,7 @@ import numpy as np
 import xarray as xr
 from loguru import logger as log
 
-from . import __version__, av, files, metadata, tools
+from . import __version__, av, files, fixes, metadata, tools
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
@@ -453,7 +453,7 @@ class detectedParticles(object):
         return fgMaskCanny
 
     def add(self, frame1, fgMask, cnt, **kwargs):
-        """
+        r"""
         Add a new particle to the detection results.
 
         Parameters
@@ -464,7 +464,7 @@ class detectedParticles(object):
             Foreground mask
         cnt : array
             Contour coordinates
-        **kwargs : dict
+        \*\*kwargs : dict
             Additional keyword arguments
 
         Returns
@@ -501,8 +501,8 @@ class detectedParticles(object):
             )
 
             # single pixels will be modified, make sure we do not change the full frame
-            particleBoxPlus = deepcopy(particleBoxPlus)
-            fgBoxMaskPlus = deepcopy(fgBoxMaskPlus)
+            particleBoxPlus = particleBoxPlus.copy()
+            fgBoxMaskPlus = fgBoxMaskPlus.copy()
             particleBoxMaskPlus = self.applyCannyFilter(particleBoxPlus, fgBoxMaskPlus)
 
             if np.sum(particleBoxMaskPlus) == 0:
@@ -542,12 +542,8 @@ class detectedParticles(object):
                 self.record_time,
                 self.nThread,
                 self.pp,
-                deepcopy(
-                    frame4sp
-                ),  # single pixels will be modified, make sure we do not change the full frame
-                deepcopy(
-                    mask4sp
-                ),  # single pixels will be modified, make sure we do not change the full frame
+                frame4sp.copy(),  # single pixels will be modified, make sure we do not change the full frame
+                mask4sp.copy(),  # single pixels will be modified, make sure we do not change the full frame
                 cnt,
                 cntChild,
                 xOffset,
@@ -579,7 +575,7 @@ class detectedParticles(object):
                         )
 
                 elif (
-                    self.lastParticle.particleContrast
+                    np.abs(self.lastParticle.particleContrast)
                     < self.config.level1detect.minContrast
                 ):
                     if self.verbosity > 2:
@@ -589,8 +585,8 @@ class detectedParticles(object):
                                     "particles.add",
                                     "PID",
                                     "%i" % self.lastParticle.pid,
-                                    "too small minContrast",
-                                    "%.2f" % self.lastParticle.particleContrast,
+                                    "too small abs minContrast",
+                                    "%.2f" % np.abs(self.lastParticle.particleContrast),
                                 ]
                             )
                         )
@@ -626,9 +622,13 @@ class detectedParticles(object):
                         )
 
                 # erosionTestThreshold does not apply to needles or similalrly shaped particles, also does not work to very small particles
+                # (same Dmax cutoff as the minBlur guard above: below this size, Canny edge
+                # detection on the blurred particle box can't reliably trace a closed
+                # boundary, so the erosion test's "vanishes under 1px erosion" signal is
+                # meaningless rather than indicative of a bad detection)
                 elif (
                     (self.lastParticle.aspectRatio[-1] > 0.4)
-                    and (self.lastParticle.Dmax > 5)
+                    and (self.lastParticle.Dmax >= 8)
                     and (ratio < self.config.level1detect.erosionTestThreshold)
                 ):
                     if self.verbosity > 2:
@@ -1105,7 +1105,6 @@ class singleParticle(object):
             Verbosity level, default is 0
         """
         import cv2
-        import scipy.stats
 
         self._cv2 = cv2
 
@@ -1177,7 +1176,7 @@ class singleParticle(object):
         self.particleBoxAlpha = np.stack((self.particleBox, self.particleBoxMask), -1)
 
         fill_color = 255  # any  color value to fill with
-        self.particleBoxCropped = deepcopy(self.particleBox)
+        self.particleBoxCropped = self.particleBox.copy()
         self.particleBoxCropped[self.particleBoxMask == 0] = fill_color
         particleBoxData = self.particleBox[self.particleBoxMask == 255]
 
@@ -1186,16 +1185,19 @@ class singleParticle(object):
             self.success = False
             return
 
-        self.pixMin = particleBoxData.min()
-        self.pixMax = particleBoxData.max()
+        # cast off uint8 so particleContrast (brightnessBackground - pixMin)
+        # doesn't wrap around instead of going negative for particles
+        # brighter than the background (e.g. sunlight reflections)
+        self.pixMin = int(particleBoxData.min())
+        self.pixMax = int(particleBoxData.max())
         self.pixMean = particleBoxData.mean()
         self.pixPercentiles = np.percentile(
             particleBoxData, range(10, 100, 10)
         )  # , interpolation='nearest'
         self.pixStd = np.std(particleBoxData, ddof=1)
 
-        self.pixSkew = scipy.stats.skew(particleBoxData)
-        self.pixKurtosis = scipy.stats.kurtosis(particleBoxData)
+        self.pixSkew = _skew(particleBoxData)
+        self.pixKurtosis = _kurtosis(particleBoxData)
         self.particleContrast = parent.brightnessBackground - self.pixMin
 
         # figure out whether particle was properly detected
@@ -1325,8 +1327,8 @@ class singleParticle(object):
         self.area = self._cv2.contourArea(self.cnt)
         self.perimeter = self._cv2.arcLength(self.cnt, True)
 
-        self.areaConsideringHoles = deepcopy(self.area)
-        self.perimeterConsideringHoles = deepcopy(self.perimeter)
+        self.areaConsideringHoles = self.area
+        self.perimeterConsideringHoles = self.perimeter
         for cc in self.cntChild:
             self.areaConsideringHoles -= self._cv2.contourArea(cc)
             self.perimeterConsideringHoles += self._cv2.arcLength(cc, True)
@@ -1556,6 +1558,30 @@ class singleParticle(object):
         return annotatedParticleCropped
 
 
+def _skew(x):
+    """
+    Sample skewness, equivalent to scipy.stats.skew(x) (bias=True default)
+    but without the inspect-based nan-policy wrapper scipy wraps every call
+    in, which dominates its per-call cost for small arrays like a single
+    particle's pixel values.
+    """
+    d = x - x.mean()
+    m2 = np.mean(d**2)
+    m3 = np.mean(d**3)
+    return m3 / m2**1.5
+
+
+def _kurtosis(x):
+    """
+    Sample excess (Fisher) kurtosis, equivalent to scipy.stats.kurtosis(x)
+    (fisher=True, bias=True defaults) -- see _skew for why this bypasses scipy.
+    """
+    d = x - x.mean()
+    m2 = np.mean(d**2)
+    m4 = np.mean(d**4)
+    return m4 / m2**2 - 3.0
+
+
 def extractRoi(roi, frame, extra=0):
     """
     Extract region of interest from frame.
@@ -1732,6 +1758,23 @@ def detectParticles(
 
     config = tools.readSettings(config)
 
+    # cv2's own thread pool defaults to os.cpu_count() and is not covered by the
+    # OMP_NUM_THREADS/OPENBLAS_NUM_THREADS/etc. env vars products.py already sets for
+    # detect jobs, so it silently oversubscribes cores when many detect workers run
+    # concurrently (the normal task-queue deployment). An explicit level1detect.cv2NumThreads
+    # always wins; otherwise follow OMP_NUM_THREADS (the same value products.py already
+    # exports per job) so cv2 stays consistent with the rest of the numeric stack without a
+    # second, independent thread-count setting to keep in sync; if neither is set (e.g.
+    # interactive use outside the task queue), cv2's own default is left untouched.
+    cv2NumThreads = config.level1detect.cv2NumThreads
+    if cv2NumThreads is None:
+        cv2NumThreads = os.environ.get("OMP_NUM_THREADS")
+    if cv2NumThreads is not None:
+        try:
+            cv2.setNumThreads(int(cv2NumThreads))
+        except ValueError:
+            log.warning(f"cannot parse thread count {cv2NumThreads!r}, ignoring")
+
     path = config["path"]
     threshs = np.array(config.level1detect.threshs)
     instruments = config["instruments"]
@@ -1752,6 +1795,16 @@ def detectParticles(
     fn = files.Filenames(fname, config, version=version)
     log.info(f"running {fn.fname.level1detect}")
     camera = fn.camera
+
+    def _noData(message):
+        fn.writeStatus("metaDetection", "nodata", message)
+        fn.writeStatus("level1detect", "nodata", message)
+
+    def _broken(message):
+        # unlike _noData, this means the raw data itself is missing/corrupt
+        # (e.g. a failed transfer), not a confirmed absence of precipitation
+        fn.writeStatus("metaDetection", "broken.txt", message)
+        fn.writeStatus("level1detect", "broken.txt", message)
 
     # check whether output exists
     if skipExisting and tools.checkForExisting(
@@ -1780,10 +1833,7 @@ def detectParticles(
 
     # txt data is transmitted first
     if len(fnamesT) == 0:
-        with tools.open2("%s.nodata" % fn.fname.metaDetection, config, "w") as f:
-            f.write("no data in %s" % fn.fname.metaFrames)
-        with tools.open2("%s.nodata" % fn.fname.level1detect, config, "w") as f:
-            f.write("no data in %s" % fn.fname.metaFrames)
+        _noData("no data in %s" % fn.fname.metaFrames)
         log.warning("no movie files: " + fname)
         return 0
     camera_name = camera.split("_")[0]
@@ -1803,22 +1853,19 @@ def detectParticles(
     if tooFewThreads:
         if nextDayAvailable or campaignEnded:
             log.warning("movie files of other threads not found, no data " + fname)
-            with tools.open2("%s.nodata" % fn.fname.metaDetection, config, "w") as f:
-                f.write("movie files of other threads not found, no data")
-            with tools.open2("%s.nodata" % fn.fname.level1detect, config, "w") as f:
-                f.write("movie files of other threads not found, no data")
+            _broken("movie files of other threads not found, no data")
         else:
             log.warning("movie files not found (yet?) " + fname)
         return 0
 
     try:
-        metaData = xr.open_dataset(fn.fname.metaFrames)
+        # .load() pulls all variables into memory up front instead of lazily
+        # re-reading from the netCDF file (with xarray's indexing-wrapper overhead
+        # on top) on every single .isel()/.values access in the per-frame loop below.
+        metaData = xr.open_dataset(fn.fname.metaFrames).load()
     except FileNotFoundError:
-        if os.path.isfile(f"{fn.fname.metaFrames}.nodata"):
-            with tools.open2("%s.nodata" % fn.fname.metaDetection, config, "w") as f:
-                f.write("no data in %s" % fn.fname.metaFrames)
-            with tools.open2("%s.nodata" % fn.fname.level1detect, config, "w") as f:
-                f.write("no data in %s" % fn.fname.metaFrames)
+        if fn.isNoData("metaFrames"):
+            _noData("no data in %s" % fn.fname.metaFrames)
             log.warning("metaFrames contains no data: " + fn.fname.metaFrames)
         else:
             log.warning("metaFrames data not found: " + fn.fname.metaFrames)
@@ -1828,8 +1875,7 @@ def detectParticles(
     # otherwise discard data
     nFramesPerThread = np.unique(metaData.nThread.values, return_counts=True)[1]
     if np.any(nFramesPerThread <= 1):
-        with tools.open2("%s.nodata" % fn.fname.level1detect, config, "w") as f:
-            f.write("no data in %s" % fn.fname.metaFrames)
+        fn.writeStatus("level1detect", "nodata", "no data in %s" % fn.fname.metaFrames)
         log.warning(
             "metaFrames contains not enough frames " + str(list(nFramesPerThread))
         )
@@ -1840,11 +1886,7 @@ def detectParticles(
     #     raise RuntimeError('ERROR Unable to get meta data: ' + fname)
     if len(metaData.capture_time) == 0:
         log.info("nothing moves: " + fname)
-
-        with tools.open2("%s.nodata" % fn.fname.metaDetection, config, "w") as f:
-            f.write("no data")
-        with tools.open2("%s.nodata" % fn.fname.level1detect, config, "w") as f:
-            f.write("no data")
+        _noData("no data")
         return 0
 
     if (
@@ -1930,14 +1972,12 @@ def detectParticles(
         fname11 = files.Filenames(fname1, config, version=version).prevFile()
 
         if (ii > 20) or (fname11 is None):
-            with tools.open2(
-                "%s.notenoughframes" % fn.fname.level1detect, config, "w"
-            ) as f:
-                f.write(
-                    "too few frames %i %i %s \r" % (len(trainingFrames), ii, fname11)
-                )
-                f.write(str(fnamesV))
-                f.write(str(fnamesT))
+            fn.writeStatus(
+                "level1detect",
+                "notenoughframes",
+                "too few frames %i %i %s \r%s%s"
+                % (len(trainingFrames), ii, fname11, fnamesV, fnamesT),
+            )
             log.error(
                 "%s too few frames %i " % (fn.fname.level1detect, len(trainingFrames))
             )
@@ -1971,13 +2011,6 @@ def detectParticles(
     # trainign files not needed any more
     del trainingFrames
 
-    # write background to PNG file
-    cv2.imwrite(
-        fn.fname.metaDetection.replace(".nc", ".png"),
-        snowParticles.backSub.getBackgroundImage(),
-        [cv2.IMWRITE_PNG_COMPRESSION, 9],
-    )
-
     # test motion
     # nMovingPixel missing in some mosaic data
     if np.all(metaData.nMovingPixel.values == -9999):
@@ -2006,12 +2039,13 @@ def detectParticles(
     movingObjects = np.zeros((nFrames))
 
     inVid = {}
+    nFramesByThread = {}
     for nThread, fnameV in fnamesV.items():
         assert fnameV.endswith(config.movieExtension)
         inVid[nThread] = cv2.VideoCapture(fnameV)
-        nFrames = int(inVid[nThread].get(cv2.CAP_PROP_FRAME_COUNT))
-        log.info(f"opened {fnameV} with {nFrames} frames.")
-        assert nFrames > 0, f"too few frames: {nFrames}"
+        nFramesByThread[nThread] = int(inVid[nThread].get(cv2.CAP_PROP_FRAME_COUNT))
+        log.info(f"opened {fnameV} with {nFramesByThread[nThread]} frames.")
+        assert nFramesByThread[nThread] > 0, f"too few frames: {nFramesByThread[nThread]}"
 
     frame = None
 
@@ -2046,7 +2080,11 @@ def detectParticles(
                     "fast forwarding %i %i"
                     % (int(inVid[nThread].get(cv2.CAP_PROP_POS_FRAMES)), rr)
                 )
-                _, _ = inVid[nThread].read()
+                ret, _ = inVid[nThread].read()
+                if not ret:
+                    # end of video reached before catching up to rr; let the
+                    # frame-is-None handling below deal with it
+                    break
         elif int(inVid[nThread].get(cv2.CAP_PROP_POS_FRAMES)) > rr:
             raise RuntimeError("Cannot go back!")
 
@@ -2065,13 +2103,45 @@ def detectParticles(
                 log.warning(
                     "detected single frame issue %s thread %i" % (fname, nThread)
                 )
-                with tools.open2("%s.nodata" % fn.fname.level1detect, config, "w") as f:
-                    f.write("no data (single frame problem)")
+                fn.writeStatus(
+                    "level1detect", "nodata", "no data (single frame problem)"
+                )
+                continue
+
+            # the ascii log can end up with a handful more rows than the
+            # movie container actually has decodable frames for -- seen in
+            # production as an off-by-a-few-frames shortfall right at the
+            # tail of a 10 minute recording (e.g. the video encoder's last
+            # buffered frames never got flushed before the file was
+            # closed/rotated). if this thread's video has genuinely run out
+            # of frames (not just fallen behind mid-file) and only a small
+            # number of trailing rows are affected, opt-in deployments can
+            # drop the unrecoverable tail instead of aborting the whole
+            # file -- the frames that were successfully read keep their
+            # original, untouched timestamps either way.
+            atEndOfVideo = (
+                int(inVid[nThread].get(cv2.CAP_PROP_POS_FRAMES))
+                >= nFramesByThread[nThread]
+            )
+            rowsRemainingForThread = int(
+                np.sum(metaData.nThread.values[pp:] == nThread)
+            )
+            if (
+                "dropUnrecordedTrailingFrames" in config.dataFixes
+                and atEndOfVideo
+                and fixes.isDroppableTrailingFrameShortfall(rowsRemainingForThread)
+            ):
+                log.warning(
+                    "movie file for thread %i ends %i frame(s) before the "
+                    "ascii log does; dropping the unrecoverable trailing "
+                    "row(s) %s thread %i"
+                    % (nThread, rowsRemainingForThread, fname, nThread)
+                )
                 continue
             else:
                 raise ValueError(
                     "TOO FEW FRAMES???? %i of %i, %s thread %i"
-                    % (pp, nFrames, fname, nThread)
+                    % (pp, nFramesByThread[nThread], fname, nThread)
                 )
 
         if not motionChecked:
@@ -2178,7 +2248,10 @@ def detectParticles(
             snowParticlesXR,
             config.site,
             config.visssGen,
-            extra={"maxMovingObjects": config.level1detect.maxMovingObjects},
+            extra={
+                **tools.collectVersionAttrs("level1detect", {}),
+                "maxMovingObjects": config.level1detect.maxMovingObjects,
+            },
         )
         if writeNc:
             tools.to_netcdf2(snowParticlesXR, config, fn.fname.level1detect)
@@ -2186,8 +2259,7 @@ def detectParticles(
             snowParticlesXR.close()
         return snowParticlesXR
     else:
-        with tools.open2("%s.nodata" % fn.fname.level1detect, config, "w") as f:
-            f.write("no data")
+        fn.writeStatus("level1detect", "nodata", "no data")
         log.info("no data %s" % fn.fname.level1detect)
         return None
 

@@ -19,11 +19,25 @@ Maahn, M., D. Moisseev, I. Steinke, N. Maherndl, and M. D. Shupe, 2024: Introduc
    :hidden:
    :maxdepth: 1
 
+   visss_paper_r2
    data_acquisition
    installation
    processing
+   tools
+   files
+   metadata
+   av
+   detection
    metaRotation
    matching
+   tracking
+   distributions
+   level3
+   products
+   fixes
+   analysis
+   quicklooks
+   calibration
    config_files
    api
    command_line
@@ -34,13 +48,12 @@ Maahn, M., D. Moisseev, I. Steinke, N. Maherndl, and M. D. Shupe, 2024: Introduc
 
 
    a) Concept drawing of the VISSS (not to scale with enlarged
-   observation volume). See Sections `2.2 <#sec:matching>`__ and
-   `2.3 <#sec:rotation>`__ for a discussion of the joint coordinate
-   system and the transformation of the follower’s coordinate system,
-   respectively. b) First generation VISSS deployed at Gothic, Colorado
-   during the SAIL campaign (Photo by Benn Schmatz), c) Randomly
-   selected particles observed during MOSAiC on 15 November 2019 between
-   6:53 and 11:13 UTC.
+   observation volume). See :doc:`matching` and :doc:`metaRotation` for a
+   discussion of the joint coordinate system and the transformation of the
+   follower’s coordinate system, respectively. b) First generation VISSS
+   deployed at Gothic, Colorado during the SAIL campaign (Photo by Benn
+   Schmatz), c) Randomly selected particles observed during MOSAiC on 15
+   November 2019 between 6:53 and 11:13 UTC.
 
 
 

@@ -78,7 +78,7 @@ per-particle variables from the detection are carried forward to the
 matched particle product level1match. The ratio of matched to observed
 particles from a single camera varies with the average particle size,
 since larger particles can be identified even when they are out of
-focus, and varies between approximately 10% and 90%. _[*]
+focus, and varies between approximately 10% and 90%. [*]_
 
 
 

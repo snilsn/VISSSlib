@@ -2,7 +2,6 @@
 
 import functools
 import operator
-import sys
 import warnings
 from copy import deepcopy
 
@@ -140,11 +139,12 @@ def createLevel2detect(
         4) if variable contains extra dimensions, which one to select, {} otherwise
 
         Example to get all particles > 10 pixels (using max of both cameras) with
-        aspectRatio >= 0.7 (using min of both cameras)
-        applyFilters = [
-            ("Dmax",">",10,"max",{}),
-            ("aspectRatio",">",0.7,"min",{"fitMethod":'cv2.fitEllipseDirect'}),
-        ]
+        aspectRatio >= 0.7 (using min of both cameras)::
+
+            applyFilters = [
+                ("Dmax",">",10,"max",{}),
+                ("aspectRatio",">",0.7,"min",{"fitMethod":'cv2.fitEllipseDirect'}),
+            ]
     doPlot : bool, optional
         Create plots, defaults to True.
     doParticlePlot : bool, optional
@@ -227,11 +227,12 @@ def createLevel2match(
         4) if variable contains extra dimensions, which one to select, {} otherwise
 
         Example to get all particles > 10 pixels (using max of both cameras) with
-        aspectRatio >= 0.7 (using min of both cameras)
-        applyFilters = [
-            ("Dmax",">",10,"max",{}),
-            ("aspectRatio",">",0.7,"min",{"fitMethod":'cv2.fitEllipseDirect'}),
-        ]
+        aspectRatio >= 0.7 (using min of both cameras)::
+
+            applyFilters = [
+                ("Dmax",">",10,"max",{}),
+                ("aspectRatio",">",0.7,"min",{"fitMethod":'cv2.fitEllipseDirect'}),
+            ]
     doPlot : bool, optional
         Create plots, defaults to True.
     doParticlePlot : bool, optional
@@ -310,11 +311,12 @@ def createLevel2track(
         4) if variable contains extra dimensions, which one to select, {} otherwise
 
         Example to get all particles > 10 pixels (using max of both cameras) with
-        aspectRatio >= 0.7 (using min of both cameras)
-        applyFilters = [
-            ("Dmax",">",10,"max",{}),
-            ("aspectRatio",">",0.7,"min",{"fitMethod":'cv2.fitEllipseDirect'}),
-        ]
+        aspectRatio >= 0.7 (using min of both cameras)::
+
+            applyFilters = [
+                ("Dmax",">",10,"max",{}),
+                ("aspectRatio",">",0.7,"min",{"fitMethod":'cv2.fitEllipseDirect'}),
+            ]
     doPlot : bool, optional
         Create plots, defaults to True.
     doParticlePlot : bool, optional
@@ -341,6 +343,117 @@ def createLevel2track(
         quicklooks.createLevel2trackQuicklook(case, config, skipExisting=skipExisting)
 
     return out
+
+
+def _circularMeanDeg(sinMean, cosMean):
+    """
+    Closed-form circular mean (degrees) from grouped mean sin/cos
+    components. Equivalent to scipy.stats.circmean(angles, high=360,
+    nan_policy="omit"), but vectorized: atan2 of *means* gives the same
+    angle as atan2 of sums (the 1/n scaling cancels), and an all-NaN group
+    naturally produces NaN here since sinMean/cosMean are already NaN for
+    it, matching scipy's "empty input -> NaN" behavior without extra
+    masking.
+    """
+    return np.degrees(np.arctan2(sinMean, cosMean)) % 360
+
+
+def _circularStdDeg(sinMean, cosMean):
+    """
+    Closed-form circular standard deviation (degrees) from grouped mean
+    sin/cos components, matching scipy.stats.circstd(angles, high=360,
+    nan_policy="omit").
+    """
+    R = np.clip(np.sqrt(sinMean**2 + cosMean**2), None, 1.0)
+    return np.degrees(np.sqrt(-2 * np.log(R)))
+
+
+def _binTimeAndSize(
+    level1dat_4timeAve,
+    reduceDim,
+    timeBins,
+    sizeBins,
+    sizeDefinition,
+    data_vars,
+    sublevel,
+    coordVar,
+    coord,
+):
+    """
+    Bin the full time range against `sizeDefinition` in one flox multi-
+    grouper call, replacing what used to be a Python loop over every
+    1-minute interval that re-derived pandas.cut bin edges from scratch on
+    each iteration (the dominant cost in _createLevel2part - see the
+    profiling notes referenced from AI.md). Produces the "N" (histogram)
+    and "<var>_dist" (per-bin mean, with "angle" via a closed-form circular
+    mean) fields for one (coord, sizeDefinition) combination, identical to
+    what the old per-minute loop produced for the same combination.
+
+    coordVar/coord select which camera/cameratrack slice to use for the
+    per-particle *values*; the bin *edges* for everything except the raw
+    N histogram always come from the "max" slice, matching the original
+    loop's `binningVar = ...sel(**{coordVar: "max"})`. Pass coordVar=None
+    for sublevel="detect", which has no camera dimension at all.
+    """
+    import flox.xarray
+
+    if coordVar is not None:
+        ownVar = level1dat_4timeAve[sizeDefinition].sel(**{coordVar: coord}, drop=True)
+        binningVar = level1dat_4timeAve[sizeDefinition].sel(
+            **{coordVar: "max"}, drop=True
+        )
+        selKw = {coordVar: coord}
+    else:
+        ownVar = level1dat_4timeAve[sizeDefinition]
+        binningVar = ownVar
+        selKw = {}
+    binningVar = binningVar.rename(sizeDefinition)
+
+    N = flox.xarray.xarray_reduce(
+        ownVar.rename("N"),
+        level1dat_4timeAve["time"],
+        ownVar,
+        func="count",
+        expected_groups=(timeBins, sizeBins),
+        isbin=[True, True],
+        dim=reduceDim,
+        fill_value=0,
+    )
+    N = N.rename({f"{sizeDefinition}_bins": "D_bins", "time_bins": "time"})
+
+    # NB: data_vars1 includes sizeDefinition itself, mirroring the original
+    # loop's `data_vars + [sizeDefinition]`. For match/track this is *not*
+    # deleted afterwards (the original loop only deletes it in the detect
+    # branch), which reproduces the original's Dmax_dist/Dequiv_dist output:
+    # real-valued only for their own sizeDefinition pass, NaN-filled for the
+    # other after the size_definition concat below.
+    data_vars1 = [v for v in data_vars if v != "angle"] + [sizeDefinition]
+    meanDs = level1dat_4timeAve[data_vars1]
+    angleSel = level1dat_4timeAve["angle"]
+    if selKw:
+        meanDs = meanDs.sel(drop=True, **selKw)
+        angleSel = angleSel.sel(drop=True, **selKw)
+    angleRad = np.deg2rad(angleSel)
+    meanDs = meanDs.assign(_sinAngle=np.sin(angleRad), _cosAngle=np.cos(angleRad))
+
+    meanRes = flox.xarray.xarray_reduce(
+        meanDs,
+        level1dat_4timeAve["time"],
+        binningVar,
+        func="mean",
+        expected_groups=(timeBins, sizeBins),
+        isbin=[True, True],
+        dim=reduceDim,
+        fill_value=np.nan,
+    )
+    meanRes["angle"] = _circularMeanDeg(meanRes["_sinAngle"], meanRes["_cosAngle"])
+    meanRes = meanRes.drop_vars(["_sinAngle", "_cosAngle"])
+    if sublevel == "detect":
+        del meanRes[sizeDefinition]
+    meanRes = meanRes.rename({k: f"{k}_dist" for k in meanRes.data_vars})
+    meanRes = meanRes.rename({f"{sizeDefinition}_bins": "D_bins", "time_bins": "time"})
+
+    return xr.merge([N, meanRes])
 
 
 def _createLevel2(
@@ -376,16 +489,27 @@ def _createLevel2(
 
     log.info(f"Processing {lv2File}")
 
+    # fL/level resolve this level's declared LEVEL_REGISTRY parents
+    # automatically (see checkForExisting's own docstring) instead of a
+    # hand-written list that can drift out of sync with it -- which is
+    # exactly what used to happen for level2track (it reuses level2match's
+    # own zResidualTooWide flag, see getZResidualQuality's docstring /
+    # AI.md, so it's genuinely stale whenever level2match changes, but
+    # this check didn't know about that dependency) and level2match
+    # (whose declared parents include *both* cameras' metaEvents, not
+    # just this camera's own).
     if skipExisting and tools.checkForExisting(
         lv2File,
-        events=fL.listFiles("metaEvents"),
-        parents=fL.listFilesExt(f"level1{sublevel}"),
+        fL=fL,
+        level=f"level2{sublevel}",
+        breakpointLevel=f"level2{sublevel}",
     ):
         return None, None
     if skipExisting and tools.checkForExisting(
         "%s.nodata" % lv2File,
-        events=fL.listFiles("metaEvents"),
-        parents=fL.listFilesExt(f"level1{sublevel}"),
+        fL=fL,
+        level=f"level2{sublevel}",
+        breakpointLevel=f"level2{sublevel}",
     ):
         return None, None
 
@@ -394,11 +518,23 @@ def _createLevel2(
     #        print(len(fL.listFiles("level0")), "of", len(fL.listFiles("metaFrames")), "transmitted")
     #        return None, None
 
-    # is that smart??
-    noLevel0 = len(fL.listFilesExt(f"level0txt")) == 0
-    if noLevel0:
-        with tools.open2("%s.nodata" % lv2File, "w") as f:
-            f.write("no level 0 data for %s" % case)
+    if fL.isDataTransferPending("level0txt"):
+        # no level0 data yet, but not confirmed as a genuine gap either
+        # (see files.FindFiles.isDataTransferPending): wait and retry
+        # later rather than writing a permanent nodata sentinel now
+        log.warning("level0 data transfer still pending for %s" % case)
+        return None, None
+
+    if len(fL.listFilesExt(f"level0txt")) == 0:
+        # isDataTransferPending above already ruled out "not arrived yet",
+        # so this is a confirmed data gap -- a raw-data problem, not a
+        # quiet no-precipitation day, so mark it .broken.txt rather than
+        # .nodata (see the allEmpty branch below for the genuine
+        # no-precipitation case, which does keep .nodata)
+        mes = "no raw level0 data for %s on %s, likely data gap" % (fL.camera, case)
+        fL.writeStatus(f"level2{sublevel}", "broken.txt", mes)
+        log.warning(mes)
+        return None, None
 
     if sublevel == "match":
         if not fL.isCompleteL1match:
@@ -518,8 +654,7 @@ def _createLevel2(
         except:
             allEmpty = True
     if allEmpty:
-        with tools.open2("%s.nodata" % lv2File, config, "w") as f:
-            f.write("no data for %s" % case)
+        fL.writeStatus(f"level2{sublevel}", "nodata", "no data for %s" % case)
         log.warning("no data for %s" % case)
         log.warning("written: %s.nodata" % lv2File)
         return lv2Dat, lv2File
@@ -538,7 +673,15 @@ def _createLevel2(
         camera=camera,
     )
 
-    lv2Dat = tools.finishNc(lv2Dat, config.site, config.visssGen)
+    versionParentFiles = {f"level1{sublevel}": lv1Files}
+    if sublevel == "track":
+        versionParentFiles["level2match"] = fL.listFiles("level2match")
+    lv2Dat = tools.finishNc(
+        lv2Dat,
+        config.site,
+        config.visssGen,
+        extra=tools.collectVersionAttrs(f"level2{sublevel}", versionParentFiles),
+    )
 
     lv2Dat.D_bins.attrs.update(
         dict(units="m", long_name="size bins", comment="label at center of bin")
@@ -572,9 +715,10 @@ def _createLevel2(
     lv2Dat.Dmax_std.attrs.update(
         dict(units="m", long_name="standard deviation maximum diameter")
     )
-    lv2Dat.Dmax_dist.attrs.update(
-        dict(units="m", long_name="maximum diameter distribution")
-    )
+    if sublevel != "detect":
+        lv2Dat.Dmax_dist.attrs.update(
+            dict(units="m", long_name="maximum diameter distribution")
+        )
     lv2Dat.M1.attrs.update(
         dict(units="m", long_name="1st moment of the size distribution")
     )
@@ -693,7 +837,9 @@ def _createLevel2(
             long_name="binary quality Flags",
             comment="For recordingFailed, "
             "processingFailed, cameraBlocked, blowingSnow, obervationsDiffer, "
-            "and tracksTooShort. "
+            "tracksTooShort, and zResidualTooWide (matched leader/follower "
+            "pairs disagree with each other more than a rotation refit "
+            "could fix, see config.quality.maxZSigma). "
             "Use VISSSlib.tools.unpackQualityFlags to unpack",
         )
     )
@@ -1920,6 +2066,409 @@ def createLevel2_single_class(
 
     return calibDat
 
+def _blurThreshold(visssGen):
+    """
+    Empirically-derived per-Dmax-pixel blur threshold lookup table used by
+    _applyBlurThreshold, one per VISSS generation. Index i of the returned
+    array is the threshold for a particle with Dmax rounded to i pixels;
+    entries beyond the tabulated range repeat the last value.
+
+    The coefficients estimate the cumulated total PSD for detect and match
+    data and find a blur threshold so that both distributions agree (see
+    match_analyze_blur_vs_size.ipynb), after selecting only detect files
+    where match is present, removing blocked data via VISSSlib quality
+    control, and correcting for match data's smaller sampling volume.
+
+    Parameters
+    ----------
+    visssGen : str
+        VISSS hardware generation ("visss", "visss2", or "visss3").
+
+    Returns
+    -------
+    numpy.ndarray
+        Blur threshold lookup table indexed by rounded Dmax (pixels).
+    """
+    if visssGen == "visss":
+        # coefficients developed from winer 2021/22 in Hyytiälä
+        blurThresh = np.array(
+            [
+                np.nan,
+                800.0,
+                773.0,
+                360.0,
+                363.0,
+                436.0,
+                523.0,
+                568.0,
+                633.0,
+                621.0,
+                607.0,
+                574.0,
+                556.0,
+                534.0,
+                506.0,
+                477.0,
+                465.0,
+                435.0,
+                416.0,
+                394.0,
+                374.0,
+                356.0,
+                327.0,
+                314.0,
+                300.0,
+                292.0,
+                275.0,
+                263.0,
+                256.0,
+                248.0,
+                237.0,
+                232.0,
+                226.0,
+                220.0,
+                207.0,
+                202.0,
+                196.0,
+                191.0,
+                183.0,
+                176.0,
+                172.0,
+                170.0,
+                161.0,
+                158.0,
+                153.0,
+                151.0,
+                148.0,
+                144.0,
+                141.0,
+                138.0,
+                140.0,
+                132.0,
+                132.0,
+                131.0,
+                130.0,
+                129.0,
+                125.0,
+                126.0,
+                124.0,
+                123.0,
+                119.0,
+                119.0,
+                120.0,
+                120.0,
+                119.0,
+                117.0,
+                117.0,
+                117.0,
+                118.0,
+                117.0,
+                115.0,
+                114.0,
+                115.0,
+                115.0,
+                115.0,
+                118.0,
+                113.0,
+                114.0,
+                116.0,
+                113.0,
+                112.0,
+                114.0,
+                112.0,
+                112.0,
+                116.0,
+                115.0,
+                112.0,
+                113.0,
+                114.0,
+                111.0,
+                111.0,
+                113.0,
+                112.0,
+            ]
+            + 400 * [110.0]
+        )  # by using 2000 we make sure even huge particles are treated and do not raise an error
+    elif visssGen == "visss2":
+        # coefficients developed from early 2023 in NYA cases with low wind speed
+        # "20230213", "20230223", "20230409", "20230429",
+        blurThresh = np.array(
+            [
+                np.nan,
+                323.0,
+                450.0,
+                282.0,
+                330.0,
+                351.0,
+                378.0,
+                363.0,
+                370.0,
+                352.0,
+                339.0,
+                322.0,
+                305.0,
+                291.0,
+                275.0,
+                259.0,
+                252.0,
+                234.0,
+                225.0,
+                214.0,
+                206.0,
+                196.0,
+                188.0,
+                181.0,
+                173.0,
+                167.0,
+                159.0,
+                154.0,
+                149.0,
+                142.0,
+                137.0,
+                133.0,
+                130.0,
+                124.0,
+                120.0,
+                117.0,
+                114.0,
+                111.0,
+                107.0,
+                105.0,
+                102.0,
+                99.0,
+                97.0,
+                95.0,
+                93.0,
+                91.0,
+                89.0,
+                88.0,
+                85.0,
+                83.0,
+                82.0,
+                81.0,
+                79.0,
+                78.0,
+                77.0,
+                76.0,
+                75.0,
+                74.0,
+                73.0,
+                72.0,
+                72.0,
+                70.0,
+                69.0,
+                69.0,
+                68.0,
+                67.0,
+                66.0,
+                66.0,
+                66.0,
+                64.0,
+                64.0,
+                63.0,
+                63.0,
+                62.0,
+                62.0,
+                61.0,
+                60.0,
+            ]
+            + 400 * [60.0]
+        )
+
+    elif visssGen == "visss3":
+        # coefficients developed from winer 2023/24 in Hyytiälä
+        blurThresh = np.array(
+            [
+                np.nan,
+                584.0,
+                1005.0,
+                1181.0,
+                1537.0,
+                1587.0,
+                1397.0,
+                1312.0,
+                1261.0,
+                1181.0,
+                1107.0,
+                1054.0,
+                986.0,
+                931.0,
+                875.0,
+                818.0,
+                788.0,
+                735.0,
+                704.0,
+                668.0,
+                641.0,
+                611.0,
+                585.0,
+                567.0,
+                545.0,
+                525.0,
+                501.0,
+                487.0,
+                472.0,
+                455.0,
+                441.0,
+                427.0,
+                419.0,
+                404.0,
+                391.0,
+                384.0,
+                373.0,
+                366.0,
+                354.0,
+                348.0,
+                342.0,
+                335.0,
+                327.0,
+                320.0,
+                315.0,
+                309.0,
+                303.0,
+                297.0,
+                292.0,
+                289.0,
+                283.0,
+                278.0,
+                275.0,
+                271.0,
+                266.0,
+                263.0,
+                259.0,
+                257.0,
+                253.0,
+                251.0,
+                247.0,
+                244.0,
+                242.0,
+                238.0,
+                235.0,
+                232.0,
+                229.0,
+                228.0,
+                226.0,
+                224.0,
+                221.0,
+                220.0,
+                219.0,
+                216.0,
+                214.0,
+                211.0,
+                209.0,
+                207.0,
+                205.0,
+                203.0,
+                201.0,
+                203.0,
+                199.0,
+                200.0,
+                198.0,
+                198.0,
+                195.0,
+                194.0,
+                194.0,
+                192.0,
+                192.0,
+                190.0,
+                192.0,
+                189.0,
+                187.0,
+                188.0,
+                187.0,
+                184.0,
+                184.0,
+                187.0,
+                179.0,
+                181.0,
+                183.0,
+                183.0,
+                183.0,
+                184.0,
+                181.0,
+                177.0,
+                181.0,
+                180.0,
+                176.0,
+                175.0,
+                175.0,
+                177.0,
+                172.0,
+                173.0,
+                174.0,
+                175.0,
+                172.0,
+                174.0,
+                174.0,
+                176.0,
+                176.0,
+                174.0,
+                171.0,
+            ]
+            + 400 * [170.0]
+        )
+
+    else:
+        raise ValueError(f"VISSS Generation {visssGen} not supported")
+
+    return blurThresh
+
+
+def _applyBlurThreshold(level1dat, config, lv2File):
+    """
+    Apply the empirical blur-vs-size threshold filter used for level1detect
+    data (see _blurThreshold), and drop particles above Dmax=350px for
+    which the lookup table isn't meaningful.
+
+    Split out of _createLevel2part so this filtering logic (pure function
+    of an already-loaded level1dat) can be unit tested without real
+    level1detect files.
+
+    Parameters
+    ----------
+    level1dat : xarray.Dataset
+        Level1detect data with Dmax and blur variables, indexed by pair_id.
+    config : dict
+        Configuration dictionary; only visssGen is used here.
+    lv2File : str
+        Output filename, used only for the diagnostic log message when no
+        data remains.
+
+    Returns
+    -------
+    xarray.Dataset or None
+        Filtered level1dat with the blur variable removed, or None if no
+        particles remain after filtering.
+    """
+    blurThresh = _blurThreshold(config.visssGen)
+
+    # discard huge ones so that the trick with the look up table works
+    sizeCond = (level1dat.Dmax <= 350).values
+    level1dat = level1dat.isel(pair_id=sizeCond)
+
+    # this works liek a lookup table. We use the Dmax rounded to next
+    # integer as an index for blurThresh
+    appliedblurThresh = blurThresh[np.around(level1dat.Dmax.values).astype(int)]
+
+    blurCond = (level1dat.blur >= appliedblurThresh).values
+    log.info(
+        tools.concat(
+            "blurCond applies to",
+            (blurCond.sum() / len(blurCond)) * 100,
+            "% of data",
+        )
+    )
+    level1dat = level1dat.isel(pair_id=blurCond)
+
+    del level1dat["blur"]
+
+    if len(level1dat.pair_id) == 0:
+        log.warning("no data remains after blurCond filtering %s" % lv2File)
+        return None
+
+    return level1dat
+
+
 def _createLevel2part(
     case,
     config,
@@ -1937,8 +2486,6 @@ def _createLevel2part(
     """
     import dask
     import pandas as pd
-    import scipy.stats
-    from tqdm import tqdm
 
     assert sublevel in ["match", "track", "detect"]
 
@@ -1966,6 +2513,15 @@ def _createLevel2part(
         with xr.open_mfdataset(
             lv1Files, preprocess=_preprocess, combine="nested", concat_dim="pair_id"
         ) as level1dat:
+            # load *before* applying the boolean pair_id mask below: doing the
+            # boolean isel while level1dat is still dask-backed (per-file
+            # chunked) routes through dask's fancy-indexing "shuffle", which
+            # deep-copies per-chunk graph state for every selected element and
+            # measured several seconds per hourly chunk on real data. Loading
+            # first means the mask is applied with plain numpy indexing
+            # instead, with the same end result.
+            level1dat.load()
+
             # camera variable exists only for track and match
             try:
                 # limit to period of interest
@@ -1983,367 +2539,12 @@ def _createLevel2part(
                     pair_id=(level1dat.capture_time >= fL.datetime64).values
                     & (level1dat.capture_time < (fL.datetime64 + endTime)).values
                 )
-
-            level1dat.load()
     # make chunks more regular
     # level1dat = level1dat.chunk(pair_id=10000)
 
     if sublevel == "detect":
-        # apply blur threshold
-        if config.visssGen == "visss":
-            """
-            # coefficients developed from winer 2021/22 in Hyytiälä
-            The idea is to estimate the cummulated total PSD for detect and match data
-            and find a blur threshold so that both distributions agree. See
-            match_analyze_blur_vs_size.ipynb Filters are applied:
-
-                processing failed by selecting only detect files where match is present
-                blocked data by VISSSlib quality control
-                smaller sampling volume of matched data is considered by estimatign correction factor
-
-            """
-            blurThresh = np.array(
-                [
-                    np.nan,
-                    800.0,
-                    773.0,
-                    360.0,
-                    363.0,
-                    436.0,
-                    523.0,
-                    568.0,
-                    633.0,
-                    621.0,
-                    607.0,
-                    574.0,
-                    556.0,
-                    534.0,
-                    506.0,
-                    477.0,
-                    465.0,
-                    435.0,
-                    416.0,
-                    394.0,
-                    374.0,
-                    356.0,
-                    327.0,
-                    314.0,
-                    300.0,
-                    292.0,
-                    275.0,
-                    263.0,
-                    256.0,
-                    248.0,
-                    237.0,
-                    232.0,
-                    226.0,
-                    220.0,
-                    207.0,
-                    202.0,
-                    196.0,
-                    191.0,
-                    183.0,
-                    176.0,
-                    172.0,
-                    170.0,
-                    161.0,
-                    158.0,
-                    153.0,
-                    151.0,
-                    148.0,
-                    144.0,
-                    141.0,
-                    138.0,
-                    140.0,
-                    132.0,
-                    132.0,
-                    131.0,
-                    130.0,
-                    129.0,
-                    125.0,
-                    126.0,
-                    124.0,
-                    123.0,
-                    119.0,
-                    119.0,
-                    120.0,
-                    120.0,
-                    119.0,
-                    117.0,
-                    117.0,
-                    117.0,
-                    118.0,
-                    117.0,
-                    115.0,
-                    114.0,
-                    115.0,
-                    115.0,
-                    115.0,
-                    118.0,
-                    113.0,
-                    114.0,
-                    116.0,
-                    113.0,
-                    112.0,
-                    114.0,
-                    112.0,
-                    112.0,
-                    116.0,
-                    115.0,
-                    112.0,
-                    113.0,
-                    114.0,
-                    111.0,
-                    111.0,
-                    113.0,
-                    112.0,
-                ]
-                + 400 * [110.0]
-            )  # by using 2000 we make sure even huge particles are treated and do not raise an error
-        elif config.visssGen == "visss2":
-            # coefficients developed from early 2023 in NYA cases with low wind speed
-            # "20230213", "20230223", "20230409", "20230429",
-            blurThresh = np.array(
-                [
-                    np.nan,
-                    323.0,
-                    450.0,
-                    282.0,
-                    330.0,
-                    351.0,
-                    378.0,
-                    363.0,
-                    370.0,
-                    352.0,
-                    339.0,
-                    322.0,
-                    305.0,
-                    291.0,
-                    275.0,
-                    259.0,
-                    252.0,
-                    234.0,
-                    225.0,
-                    214.0,
-                    206.0,
-                    196.0,
-                    188.0,
-                    181.0,
-                    173.0,
-                    167.0,
-                    159.0,
-                    154.0,
-                    149.0,
-                    142.0,
-                    137.0,
-                    133.0,
-                    130.0,
-                    124.0,
-                    120.0,
-                    117.0,
-                    114.0,
-                    111.0,
-                    107.0,
-                    105.0,
-                    102.0,
-                    99.0,
-                    97.0,
-                    95.0,
-                    93.0,
-                    91.0,
-                    89.0,
-                    88.0,
-                    85.0,
-                    83.0,
-                    82.0,
-                    81.0,
-                    79.0,
-                    78.0,
-                    77.0,
-                    76.0,
-                    75.0,
-                    74.0,
-                    73.0,
-                    72.0,
-                    72.0,
-                    70.0,
-                    69.0,
-                    69.0,
-                    68.0,
-                    67.0,
-                    66.0,
-                    66.0,
-                    66.0,
-                    64.0,
-                    64.0,
-                    63.0,
-                    63.0,
-                    62.0,
-                    62.0,
-                    61.0,
-                    60.0,
-                ]
-                + 400 * [60.0]
-            )
-
-        elif config.visssGen == "visss3":
-            # coefficients developed from winer 2023/24 in Hyytiälä
-            blurThresh = np.array(
-                [
-                    np.nan,
-                    584.0,
-                    1005.0,
-                    1181.0,
-                    1537.0,
-                    1587.0,
-                    1397.0,
-                    1312.0,
-                    1261.0,
-                    1181.0,
-                    1107.0,
-                    1054.0,
-                    986.0,
-                    931.0,
-                    875.0,
-                    818.0,
-                    788.0,
-                    735.0,
-                    704.0,
-                    668.0,
-                    641.0,
-                    611.0,
-                    585.0,
-                    567.0,
-                    545.0,
-                    525.0,
-                    501.0,
-                    487.0,
-                    472.0,
-                    455.0,
-                    441.0,
-                    427.0,
-                    419.0,
-                    404.0,
-                    391.0,
-                    384.0,
-                    373.0,
-                    366.0,
-                    354.0,
-                    348.0,
-                    342.0,
-                    335.0,
-                    327.0,
-                    320.0,
-                    315.0,
-                    309.0,
-                    303.0,
-                    297.0,
-                    292.0,
-                    289.0,
-                    283.0,
-                    278.0,
-                    275.0,
-                    271.0,
-                    266.0,
-                    263.0,
-                    259.0,
-                    257.0,
-                    253.0,
-                    251.0,
-                    247.0,
-                    244.0,
-                    242.0,
-                    238.0,
-                    235.0,
-                    232.0,
-                    229.0,
-                    228.0,
-                    226.0,
-                    224.0,
-                    221.0,
-                    220.0,
-                    219.0,
-                    216.0,
-                    214.0,
-                    211.0,
-                    209.0,
-                    207.0,
-                    205.0,
-                    203.0,
-                    201.0,
-                    203.0,
-                    199.0,
-                    200.0,
-                    198.0,
-                    198.0,
-                    195.0,
-                    194.0,
-                    194.0,
-                    192.0,
-                    192.0,
-                    190.0,
-                    192.0,
-                    189.0,
-                    187.0,
-                    188.0,
-                    187.0,
-                    184.0,
-                    184.0,
-                    187.0,
-                    179.0,
-                    181.0,
-                    183.0,
-                    183.0,
-                    183.0,
-                    184.0,
-                    181.0,
-                    177.0,
-                    181.0,
-                    180.0,
-                    176.0,
-                    175.0,
-                    175.0,
-                    177.0,
-                    172.0,
-                    173.0,
-                    174.0,
-                    175.0,
-                    172.0,
-                    174.0,
-                    174.0,
-                    176.0,
-                    176.0,
-                    174.0,
-                    171.0,
-                ]
-                + 400 * [170.0]
-            )
-
-        else:
-            raise ValueError(f"VISSS Generation {config.visssGen} not supported")
-
-        # discard huge ones so that the trick with the look up table works
-        sizeCond = (level1dat.Dmax <= 350).values
-        level1dat = level1dat.isel(pair_id=sizeCond)
-
-        # this works liek a lookup table. We use the Dmax rounded to next
-        # integer as an index for blurThresh
-        appliedblurThresh = blurThresh[np.around(level1dat.Dmax.values).astype(int)]
-
-        blurCond = (level1dat.blur >= appliedblurThresh).values
-        log.info(
-            tools.concat(
-                "blurCond applies to",
-                (blurCond.sum() / len(blurCond)) * 100,
-                "% of data",
-            )
-        )
-        level1dat = level1dat.isel(pair_id=blurCond)
-
-        del level1dat["blur"]
-
-        if len(level1dat.pair_id) == 0:
-            log.warning("no data remains after blurCond filtering %s" % lv2File)
+        level1dat = _applyBlurThreshold(level1dat, config, lv2File)
+        if level1dat is None:
             return None
 
     else:  # match or track
@@ -2586,9 +2787,14 @@ def _createLevel2part(
             "std",
         ]
 
-        # fix angle because we want the circular mean
-        level1dat_camAve["angle"].loc["mean"] = level1dat_time["angle"].reduce(
-            scipy.stats.circmean, "camera", high=360, nan_policy="omit"
+        # fix angle because we want the circular mean; closed-form via
+        # grouped sin/cos means instead of a scipy.stats.circmean callback
+        # applied per (fitMethod, pair_id) slice through apply_along_axis,
+        # which profiled as the dominant cost of this function once the
+        # per-minute distribution loop below was vectorized.
+        _angleRad = np.deg2rad(level1dat_time["angle"])
+        level1dat_camAve["angle"].loc["mean"] = _circularMeanDeg(
+            np.sin(_angleRad).mean("camera"), np.cos(_angleRad).mean("camera")
         )
 
         # position_3D is the same for all
@@ -2680,19 +2886,6 @@ def _createLevel2part(
     log.info(f"add additonal variables")
     level1dat_4timeAve = addPerParticleVariables(level1dat_4timeAve, config)
 
-    # split data in 1 min chunks
-    level1datG = level1dat_4timeAve.groupby_bins(
-        "time", timeIndex1, right=False, squeeze=False
-    )
-    level1datG_angle = level1dat_4timeAve["angle"].groupby_bins(
-        "time", timeIndex1, right=False, squeeze=False
-    )
-    individualDataPointsG = individualDataPoints.groupby_bins(
-        "time", timeIndex1, right=False, squeeze=False
-    )
-
-    del level1dat_4timeAve
-
     sizeDefinitions = ["Dmax", "Dequiv"]
     data_vars = [
         "area",
@@ -2706,135 +2899,57 @@ def _createLevel2part(
         data_vars += ["velocity", "track_angle"]
 
     log.info(f"get time resolved distributions")
-    # process each 1 min chunks
-    res = {}
-    nParticles = {}
+    # Bin the whole case against time x size in one flox call per
+    # (coord, sizeDefinition) pair instead of looping over every 1-minute
+    # interval and re-deriving pandas.cut bin edges from scratch each time
+    # (up to ~2000 groupby_bins calls/hour previously - see profiling notes
+    # referenced from AI.md). "time" is a plain coordinate on "pair_id" for
+    # match/detect, but *is* the reduced dimension itself for track (after
+    # the track_id/track_step -> pair_id -> time swap above), so the
+    # reduction dim is derived from where "time" actually lives rather than
+    # hardcoded.
+    reduceDim = level1dat_4timeAve["time"].dims[0]
+    timeBins = pd.IntervalIndex.from_breaks(np.asarray(timeIndex1), closed="left")
+    sizeBins = pd.IntervalIndex.from_breaks(
+        np.asarray(list(DbinsPixel), dtype=float), closed="left"
+    )
 
     if sublevel == "detect":
-        # iterate through every 1 min piece
-        for interv, level1datG1 in tqdm(level1datG, file=sys.stdout, desc=case):
-            # estimate counts
-            tmpXr = []
-            for sizeDefinition in sizeDefinitions:
-                tmpXr1 = (
-                    level1datG1[[sizeDefinition]]
-                    .groupby_bins(sizeDefinition, DbinsPixel, right=False)
-                    .count()
-                    .fillna(0)
-                )
+        coordVar = None
+        coords = [None]
+    elif sublevel == "track":
+        coordVar = "cameratrack"
+        coords = level1dat_4timeAve[coordVar].values
+    elif sublevel == "match":
+        coordVar = "camera"
+        coords = level1dat_4timeAve[coordVar].values
 
-                tmpXr1 = tmpXr1.rename({sizeDefinition: "N"})
-                tmpXr1 = tmpXr1.rename({f"{sizeDefinition}_bins": "D_bins"})
+    resPerCoord = []
+    for coord in coords:
+        resPerSizeDef = [
+            _binTimeAndSize(
+                level1dat_4timeAve,
+                reduceDim,
+                timeBins,
+                sizeBins,
+                sizeDefinition,
+                data_vars,
+                sublevel,
+                coordVar,
+                coord,
+            )
+            for sizeDefinition in sizeDefinitions
+        ]
+        tmpXr = xr.concat(resPerSizeDef, dim="size_definition")
+        tmpXr["size_definition"] = sizeDefinitions
+        resPerCoord.append(tmpXr)
 
-                # import pdb; pdb.set_trace()
-                # estimate mean values for "area", "angle", "aspectRatio", "perimeter"
-                # Dmax is only for technical resaons and is removed afterwards
-                data_vars1 = data_vars + [sizeDefinition]
-                data_vars1.remove("angle")  # treated seperately
-
-                otherVars1 = (
-                    level1datG1[data_vars1]
-                    .groupby_bins(sizeDefinition, DbinsPixel, right=False)
-                    .mean()
-                )
-                angleVars = (
-                    level1datG1[["angle", sizeDefinition]]
-                    .groupby_bins(sizeDefinition, DbinsPixel, right=False)
-                    .reduce(scipy.stats.circmean, high=360, nan_policy="omit")
-                )
-                otherVars1["angle"] = angleVars["angle"]
-                del otherVars1[sizeDefinition]
-
-                otherVars1 = otherVars1.rename(
-                    {k: f"{k}_dist" for k in otherVars1.data_vars}
-                )
-                otherVars1 = otherVars1.rename({f"{sizeDefinition}_bins": "D_bins"})
-                tmpXr1.update(otherVars1)
-                tmpXr.append(tmpXr1)
-
-            tmpXr = xr.concat(tmpXr, dim="size_definition")
-            tmpXr["size_definition"] = sizeDefinitions
-
-            res[interv.left] = tmpXr.copy()#xr.Dataset(tmpXr)
-
-        # clean up
-        del tmpXr, tmpXr1
-
-        dist = xr.concat(res.values(), dim="time")
-        dist["time"] = list(res.keys())
-
+    if coordVar is not None:
+        dist = xr.concat(resPerCoord, dim=coordVar)
+        dist[coordVar] = list(coords)
     else:
-        if sublevel == "track":
-            coordVar = "cameratrack"
-        elif sublevel == "match":
-            coordVar = "camera"
-
-        # iterate through every 1 min piece
-        for interv, level1datG1 in tqdm(level1datG, file=sys.stdout, desc=case):
-            # print(interv)
-            tmp = []
-            # for each track&camera/min/max/mean seperately
-            for coord in level1datG1[coordVar].values:
-                # estimate counts
-                tmpXr = []
-                for sizeDefinition in sizeDefinitions:
-                    # for the PSD, caemra min/max etc applied to the binning
-                    tmpXr1 = (
-                        level1datG1[[sizeDefinition]]
-                        .sel(**{coordVar: coord})
-                        .groupby_bins(sizeDefinition, DbinsPixel, right=False)
-                        .count()
-                        .fillna(0)
-                    )
-
-                    tmpXr1 = tmpXr1.rename({sizeDefinition: "N"})
-                    tmpXr1 = tmpXr1.rename({f"{sizeDefinition}_bins": "D_bins"})
-
-                    # import pdb; pdb.set_trace()
-                    # estimate mean values for "area", "angle", "aspectRatio", "perimeter"
-                    # Dmax is only for technical resaons and is removed afterwards
-                    data_vars1 = data_vars + [sizeDefinition]
-                    data_vars1.remove("angle")  # treated seperately
-
-                    # for all variabvles except the PSD, min/max etc is applied to the variable
-                    # the binning uses max observed Dmax or Deq
-                    binningVar = level1datG1[sizeDefinition].sel(**{coordVar: "max"})
-                    otherVars1 = (
-                        level1datG1[data_vars1]
-                        .sel(drop=True, **{coordVar: coord})
-                        .groupby_bins(binningVar, DbinsPixel, right=False)
-                        .mean()
-                    )
-                    angleVars = (
-                        level1datG1[["angle", sizeDefinition]]
-                        .sel(drop=True, **{coordVar: coord})
-                        .groupby_bins(binningVar, DbinsPixel, right=False)
-                        .reduce(scipy.stats.circmean, high=360, nan_policy="omit")
-                    )
-                    otherVars1["angle"] = angleVars["angle"]
-
-                    otherVars1 = otherVars1.rename(
-                        {k: f"{k}_dist" for k in otherVars1.data_vars}
-                    )
-                    otherVars1 = otherVars1.rename({f"{sizeDefinition}_bins": "D_bins"})
-                    tmpXr1.update(otherVars1)
-                    tmpXr.append(tmpXr1)
-
-                tmpXr = xr.concat(tmpXr, dim="size_definition")
-                tmpXr["size_definition"] = sizeDefinitions
-
-                #tmp.append(xr.Dataset(tmpXr))
-                tmp.append(tmpXr.copy())
-            # merge camera/min/max/mean reults
-            res[interv.left] = xr.concat(tmp, dim=coordVar)
-            # add camera/min/max/mean information
-            res[interv.left][coordVar] = level1datG1[coordVar]
-
-        # clean up
-        del tmpXr, tmp, tmpXr1
-
-        dist = xr.concat(res.values(), dim="time")
-        dist["time"] = list(res.keys())
+        dist = resPerCoord[0]
+    dist["time"] = [a.left for a in dist["time"].values]
 
     # fill data gaps with zeros
     with warnings.catch_warnings():
@@ -2845,11 +2960,38 @@ def _createLevel2part(
     log.info("do temporal mean values")
     # estimate mean values
     # to do: data is weighted with number of obs not considering the smalle robservation volume for larger particles
+    level1datG = level1dat_4timeAve.groupby_bins(
+        "time", timeIndex1, right=False, squeeze=False
+    )
+    individualDataPointsG = individualDataPoints.groupby_bins(
+        "time", timeIndex1, right=False, squeeze=False
+    )
+
+    # closed-form circular mean/std (grouped mean sin/cos, see
+    # _circularMeanDeg/_circularStdDeg) instead of a scipy.stats.circmean/
+    # circstd Python callback invoked once per time bin via .reduce()
+    import flox.xarray
+
+    angleRad = np.deg2rad(level1dat_4timeAve["angle"])
+    sinMeanT = flox.xarray.xarray_reduce(
+        np.sin(angleRad),
+        level1dat_4timeAve["time"],
+        func="mean",
+        expected_groups=timeBins,
+        isbin=True,
+        dim=reduceDim,
+    )
+    cosMeanT = flox.xarray.xarray_reduce(
+        np.cos(angleRad),
+        level1dat_4timeAve["time"],
+        func="mean",
+        expected_groups=timeBins,
+        isbin=True,
+        dim=reduceDim,
+    )
 
     meanValues = level1datG.mean()
-    meanValues["angle"] = level1datG_angle.reduce(
-        scipy.stats.circmean, high=360, nan_policy="omit"
-    )
+    meanValues["angle"] = _circularMeanDeg(sinMeanT, cosMeanT)
     meanValues = meanValues.rename({k: f"{k}_mean" for k in meanValues.data_vars})
     meanValues = meanValues.rename(time_bins="time")
     # we want time stamps not intervals
@@ -2859,9 +3001,7 @@ def _createLevel2part(
     # estimate mean values
     # to do: data is weighted with number of obs not considering the smalle robservation volume for larger particles
     stdValues = level1datG.std()
-    stdValues["angle"] = level1datG_angle.reduce(
-        scipy.stats.circstd, high=360, nan_policy="omit"
-    )
+    stdValues["angle"] = _circularStdDeg(sinMeanT, cosMeanT)
     stdValues = stdValues.rename({k: f"{k}_std" for k in stdValues.data_vars})
     stdValues = stdValues.rename(time_bins="time")
     # we want tiem stamps not intervals
@@ -2878,7 +3018,7 @@ def _createLevel2part(
     calibDat = calibrateData(level2dat, level1dat_time, config, DbinsPixel, timeIndex1)
 
     # clean up!
-    del level1datG, level1dat_time
+    del level1dat_4timeAve, level1datG, level1dat_time
     return calibDat
 
 
@@ -3039,6 +3179,19 @@ def addVariables(
     ) = getDataQuality(case, config, timeIndex, timeIndex1, sublevel, camera=camera)
     assert np.all(blockedPixels.time == calibDat.time)
 
+    # zResidualTooWide: like tracksTooShort below, this is a *flag*, not a
+    # filter -- it never NaNs or drops data, it just sets a bit in
+    # qualityFlags so a consumer can decide whether to trust a bin. See
+    # getZResidualQuality's docstring and config.quality.maxZSigma's
+    # comment for why this needs a scan independent of the aggregate
+    # matchScore. Valid for both "match" and "track" (unlike
+    # tracksTooShort, which is inherently track-only) since both trace
+    # back to matched leader/follower pairs; getZResidualQuality itself
+    # returns all-False for "detect".
+    zResidualTooWide = getZResidualQuality(
+        case, config, timeIndex, timeIndex1, sublevel, camera=config.leader
+    )
+
     if sublevel == "detect":
         processingFailed.values[:] = False  # not relevant becuase it is about matching
         cameraBlocked = blockedPixels > config.quality.blockedPixThresh
@@ -3108,6 +3261,14 @@ def addVariables(
                 "% of data",
             )
         )
+    if sublevel != "detect":
+        log.info(
+            tools.concat(
+                "zResidualTooWide flagged",
+                zResidualTooWide.values.sum() / len(zResidualTooWide) * 100,
+                "% of data",
+            )
+        )
     allFilter = (
         recordingFailed
         | processingFailed
@@ -3115,6 +3276,7 @@ def addVariables(
         | blowingSnow
         | obervationsDiffer
         | tracksTooShort
+        | zResidualTooWide
     )
     log.info(
         tools.concat(
@@ -3132,6 +3294,7 @@ def addVariables(
             blowingSnow,
             obervationsDiffer,
             tracksTooShort,
+            zResidualTooWide,
         ],
         axis=-1,
     )
@@ -3195,7 +3358,6 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
         time-resolved track data, individual particle data, and number of cuts.
     """
     import pandas as pd
-    import scipy.stats
 
     log.info(f"reshape tracks")
 
@@ -3303,13 +3465,16 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
     level1dat_trackAve = xr.concat(level1dat_trackAve, dim="cameratrack")
     level1dat_trackAve["cameratrack"] = trackOps
 
-    # fix  circular mean & std for angle
-    level1dat_trackAve["angle"].loc["mean"] = level1dat_track2D_4ave["angle"].reduce(
-        scipy.stats.circmean, ["track_step", "camera"], high=360, nan_policy="omit"
-    )
-    level1dat_trackAve["angle"].loc["std"] = level1dat_track2D_4ave["angle"].reduce(
-        scipy.stats.circstd, ["track_step", "camera"], high=360, nan_policy="omit"
-    )
+    # fix circular mean & std for angle; closed-form via grouped sin/cos
+    # means instead of scipy.stats.circmean/circstd callbacks applied per
+    # slice through apply_along_axis, which profiled as a dominant cost for
+    # the track sublevel once the per-minute distribution loop in
+    # _createLevel2part was vectorized.
+    _angleRad = np.deg2rad(level1dat_track2D_4ave["angle"])
+    _sinMean = np.sin(_angleRad).mean(["track_step", "camera"])
+    _cosMean = np.cos(_angleRad).mean(["track_step", "camera"])
+    level1dat_trackAve["angle"].loc["mean"] = _circularMeanDeg(_sinMean, _cosMean)
+    level1dat_trackAve["angle"].loc["std"] = _circularStdDeg(_sinMean, _cosMean)
 
     # use Dmax as arbitrary variable with only one dimension
     level1dat_trackAve["track_length"] = (
@@ -3443,7 +3608,7 @@ def estimateObservationVolume(level1dat_time, config, DbinsPixel, timeIndex1):
         )
 
     else:
-        log.info("do NOT adjust observation volujme for smallest particles")
+        log.info("do NOT adjust observation volume for smallest particles")
         maxSharpnessSizes = tuple()
         maxSharpnessLeader = tuple()
         maxSharpnessFollower = tuple()
@@ -3612,15 +3777,35 @@ def _getDataQuality1(case, config, timeIndex, timeIndex1, sublevel, camera):
     graceTime = 2  # s
     newfiles1 = event1.isel(file_starttime=(event1.event == "newfile"))
 
+    # VISSS only stores frames with detected motion, so a minute with zero
+    # stored frames is not by itself evidence the camera was down -- it
+    # could just be clear sky. What *is* evidence, regardless of motion, is
+    # the acquisition software's own per-file start/end bookkeeping
+    # (file_starttime/capture_lasttime), which is written continuously.
+    # Sum each file's actual recorded span overlapping this minute (a file
+    # that crashed early, e.g. a camera restart, stops covering minutes
+    # well before file_starttime + newFileInt would suggest) and flag the
+    # minute whenever more than graceTime seconds of it aren't covered by
+    # any file's actual span -- catching both fully-missing minutes and
+    # partially-covered ("incomplete") ones. Falls back to the nominal
+    # duration when capture_lasttime is unavailable (e.g. an in-progress
+    # file).
+    freqSeconds = int(timeIndex.freq.nanos * 1e-9)
+    fileStart = newfiles1.file_starttime.values
+    fileEndRaw = newfiles1.capture_lasttime.values
+    nominalEnd = fileStart + np.timedelta64(config.newFileInt, "s")
+    fileEnd = np.where(np.isnat(fileEndRaw), nominalEnd, fileEndRaw)
+
     dataRecorded = []
     processingFailed = []
     for tt, tI1min in enumerate(timeIndex):
-        tDiff1 = (
-            np.datetime64(tI1min) - newfiles1.file_starttime
-        ).values / np.timedelta64(1, "s")
-        dataRecorded1 = np.any(
-            tDiff1[tDiff1 >= -graceTime] < (config.newFileInt - graceTime)
-        )
+        minuteStart = np.datetime64(tI1min)
+        minuteEnd = minuteStart + np.timedelta64(freqSeconds, "s")
+        overlapStart = np.maximum(fileStart, minuteStart)
+        overlapEnd = np.minimum(fileEnd, minuteEnd)
+        overlapSeconds = (overlapEnd - overlapStart) / np.timedelta64(1, "s")
+        covered = np.clip(overlapSeconds, 0, None).sum()
+        dataRecorded1 = (freqSeconds - covered) <= graceTime
         #     print(tI1min, dataRecordedF, dataRecorded)
         dataRecorded.append(dataRecorded1)
 
@@ -3660,6 +3845,198 @@ def _getDataQuality1(case, config, timeIndex, timeIndex1, sublevel, camera):
         blowingSnowRatio1,
         nDetected,
     )
+
+
+def _readZResidualFlagFromLevel2Match(case, config, timeIndex, camera):
+    """
+    Read the already-computed zResidualTooWide flag off the same day's
+    level2match file, for level2track to reuse instead of recomputing an
+    ineffective version from level1track data -- see getZResidualQuality's
+    docstring for why. Requires level2match to exist for this case/camera
+    (see products.py's level2track parents, which now include
+    leader_level2match precisely so this dependency is enforced) -- falls
+    back to all-False if it doesn't (e.g. a nodata day), same as any other
+    missing-input case in this module.
+
+    Parameters
+    ----------
+    case : str
+        Case identifier.
+    config : dict
+        Configuration settings.
+    timeIndex : pandas.DatetimeIndex
+        This call's (level2track's) own output time axis.
+    camera : str
+        Camera whose level2match file to read.
+
+    Returns
+    -------
+    xarray.DataArray
+        Boolean, dims=["time"], coords=[timeIndex].
+    """
+    import pandas as pd
+
+    allFalse = xr.DataArray(
+        np.zeros(len(timeIndex), dtype=bool), dims=["time"], coords=[timeIndex]
+    )
+
+    fL = files.FindFiles(case, camera, config)
+    lv2MatchFiles = fL.listFiles("level2match")
+    if len(lv2MatchFiles) == 0:
+        return allFalse
+
+    with xr.open_dataset(lv2MatchFiles[0]) as ds:
+        if "qualityFlags" not in ds:
+            return allFalse
+        quality = tools.unpackQualityFlags(ds.qualityFlags)
+        flag = quality.sel(flag="zResidualTooWide", drop=True).values.astype(bool)
+        matchTime = ds.time.values
+
+    # level2match and level2track are built with the same case/freq, so
+    # matchTime should already equal timeIndex exactly -- reindex anyway
+    # to be robust to any edge-case mismatch, defaulting to unflagged.
+    aligned = pd.Series(flag, index=pd.DatetimeIndex(matchTime)).reindex(
+        pd.DatetimeIndex(timeIndex), fill_value=False
+    )
+    return xr.DataArray(aligned.values.astype(bool), dims=["time"], coords=[timeIndex])
+
+
+def getZResidualQuality(case, config, timeIndex, timeIndex1, sublevel, camera="leader"):
+    """
+    Per-time-bin flag for whether the Z-consistency residual (see
+    matching.zResidualSigma) is too wide to trust -- see
+    config.quality.maxZSigma's comment for the empirical basis. Unlike
+    matchParticles' own self-heal escalation (which checks this per-FILE
+    before attempting a rotation refit), this checks it per aggregation
+    time bin on already-written output, independent of the aggregate
+    matchScore -- a bin can have a "passing" median matchScore (e.g.
+    because nPairs was below config.newFileInt so the self-heal gate never
+    ran, or because other terms compensate for a bad Z term) while still
+    showing a suspiciously wide Z residual.
+
+    Only meaningful for sublevel in ["match", "track"] (both trace back to
+    matched leader/follower pairs); returns all-False for "detect" (no
+    matching happens at that level).
+
+    **sublevel == "track" reuses level2match's own flag rather than
+    recomputing one from level1track.** Tracking itself filters out
+    exactly the particles that would show a wide Z residual -- a
+    correspondence with a wildly wrong Z estimate can't form a
+    continuous multi-frame track, so it doesn't survive into level1track
+    at all. Confirmed empirically: even on days with strong
+    level1match-level problems, level1track's own residual never
+    exceeded ~3.5 (well under `config.quality.maxZSigma`), so computing
+    this independently from level1track data is systematically too
+    insensitive to ever fire. level2track therefore depends on
+    level2match for this flag specifically (see tools.py's
+    `LEVEL_REGISTRY["level2track"]["parents"]`, which lists
+    `leader_level2match`, and _createLevel2's checkForExisting call,
+    which resolves that same declared dependency via `fL`/`level` rather
+    than a hand-written list) rather than being a self-contained
+    per-level computation like the other quality flags.
+
+    Like tracksTooShort in addVariables, this is a *flag*, not a filter:
+    the caller folds it into the per-timestep qualityFlags bitmask without
+    dropping or NaN-ing any data -- it is up to whoever consumes the
+    level2 output to decide whether to exclude data flagged this way.
+
+    For sublevel == "match", reads level1match files independently (same
+    listFilesWithNeighbors approach _createLevel2part uses for the main
+    aggregation, and the same "second lightweight read" pattern
+    getDataQuality/_getDataQuality1 already uses for metaEvents-based
+    flags) rather than threading a new value through _createLevel2part's
+    performance-tuned internals, which subset away position3D_center
+    before this would be needed and have several non-obvious
+    dimension/broadcast dependencies.
+
+    Parameters
+    ----------
+    case : str
+        Case identifier (see other level2 functions).
+    config : dict
+        Configuration settings (for config.quality.maxZSigma).
+    timeIndex : pandas.DatetimeIndex
+        Left edges of the aggregation bins (the output time axis).
+    timeIndex1 : pandas.DatetimeIndex
+        timeIndex plus one trailing edge, used as bin boundaries.
+    sublevel : str
+        One of ["match", "track", "detect"].
+    camera : str, optional
+        Camera whose level1{sublevel}/level2match files to read (default
+        "leader" -- matching/tracking output is leader-only regardless of
+        camera).
+
+    Returns
+    -------
+    xarray.DataArray
+        Boolean, dims=["time"], coords=[timeIndex].
+    """
+    import pandas as pd
+
+    allFalse = xr.DataArray(
+        np.zeros(len(timeIndex), dtype=bool), dims=["time"], coords=[timeIndex]
+    )
+    if sublevel not in ("match", "track"):
+        return allFalse
+
+    if sublevel == "track":
+        return _readZResidualFlagFromLevel2Match(case, config, timeIndex, camera)
+
+    fL = files.FindFiles(case, camera, config)
+    lv1Files = fL.listFilesWithNeighbors(f"level1{sublevel}")
+    if len(lv1Files) == 0:
+        return allFalse
+
+    def _preprocessZ(dat):
+        if "pair_id" not in dat.coords:
+            dat = dat.rename(pid="pair_id")
+        return dat[["capture_time", "position3D_center"]]
+
+    with xr.open_mfdataset(
+        lv1Files, preprocess=_preprocessZ, combine="nested", concat_dim="pair_id"
+    ) as dat:
+        dat = dat.load()
+
+    if len(dat.pair_id) == 0:
+        return allFalse
+
+    time = dat.capture_time.isel(camera=0).values
+    diffZ = (
+        dat.position3D_center.sel(dim3D="z")
+        - dat.position3D_center.sel(dim3D="z_rotated")
+    ).values
+
+    binCode = pd.cut(
+        pd.DatetimeIndex(time), bins=pd.DatetimeIndex(timeIndex1), right=False,
+        labels=False,
+    )
+    diffZBinned = pd.Series(diffZ, index=binCode).dropna()
+    # index is now the bin code (float, since NaN codes were dropped via
+    # the Series NaN-drop above, not the bin code's own dtype)
+    grouped = diffZBinned.groupby(level=0)
+    sigmaPerBin = grouped.std()
+    countPerBin = grouped.count()
+
+    # A std from only a handful of pairs is itself noisy, and matching
+    # from few particles is inherently harder regardless (matchParticles'
+    # own gate skips scoring entirely below config.newFileInt pairs for
+    # the same reason -- see zResidualSigma's docstring). Scale that same
+    # "~1 pair per second" bar to this bin's own duration rather than
+    # reusing config.newFileInt directly, which assumes a full
+    # level1match file's ~config.newFileInt-second span. A bin below this
+    # is left unflagged (not enough signal to judge either way), same as
+    # a quiet period with too few files to check at all.
+    binSeconds = (
+        pd.Timestamp(timeIndex1[1]) - pd.Timestamp(timeIndex1[0])
+    ).total_seconds()
+    minPairsPerBin = max(1, round(binSeconds))
+
+    tooWide = np.zeros(len(timeIndex), dtype=bool)
+    validBins = sigmaPerBin.index.astype(int)
+    enoughPairs = countPerBin.values >= minPairsPerBin
+    tooWide[validBins] = enoughPairs & (sigmaPerBin.values > config.quality.maxZSigma)
+
+    return xr.DataArray(tooWide, dims=["time"], coords=[timeIndex])
 
 
 def getDataQuality(case, config, timeIndex, timeIndex1, sublevel, camera=None):

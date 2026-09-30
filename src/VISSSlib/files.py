@@ -21,6 +21,7 @@ from .tools import (
     getCaseRange,
     globList,
     nicerNames,
+    open2,
     otherCamera,
     readSettings,
 )
@@ -65,7 +66,7 @@ quicklookLevelsComb = [
 imageLevels = ["imagesL1detect"]
 
 
-def findLastFile(config, prod, camera):
+def findLastFile(config, prod, camera, beforeCase=None):
     """
     Find the last available file and related metadata for a given product and camera.
 
@@ -77,29 +78,52 @@ def findLastFile(config, prod, camera):
         Product name (e.g., 'level1detect').
     camera : str
         Camera identifier (e.g., 'leader' or 'follower').
+    beforeCase : str, optional
+        If given, only consider cases up to and including this one
+        (YYYYMMDD), searching backward from there instead of from the
+        end of the configured deployment period. Use this when looking
+        for "the last real file before a specific historical case" --
+        e.g. seeding a backfill for a case deep in the past -- since
+        without it, this function finds the most recent file over the
+        *entire* deployment (which may well postdate the case actually
+        being processed and answers a different question).
 
     Returns
     -------
     tuple
         Tuple containing:
         - foundLastFile: bool indicating if last file was found
-        - lastCase: str, the last case found
+        - lastCase: str, the last *complete* case found (not
+          necessarily the case lastFile/lastFileTime belong to -- a
+          complete case can be a confirmed data gap with no real file
+          at all; see lastFileCase for that)
         - lastFile: str, the path to the last file
         - lastFileTime: datetime obj, the timestamp of the last file
+        - lastFileCase: str, the case lastFile/lastFileTime actually
+          belong to
 
     Notes
     -----
     This function iterates through recent cases to find the most recent file
-    of the requested product and camera combination.
+    of the requested product and camera combination. It keeps searching
+    backward until both a file and a complete case have been found (or
+    cases are exhausted) -- stopping as soon as either one alone is
+    found would risk missing the other, e.g. a confirmed data-gap case
+    (trivially "complete", but with no real file) sitting in front of
+    an earlier case that does have one.
     """
     config = readSettings(config)
-    cases = getCaseRange(0, config, endYesterday=False)[::-1]
+    cases = getCaseRange(0, config, endYesterday=False)
+    if beforeCase is not None:
+        cases = [c for c in cases if c <= beforeCase]
+    cases = cases[::-1]
 
     foundLastFile = False
     foundComplete = False
     lastCase = "n/a"
     lastFileTime = "n/a"
     lastFile = "n/a"
+    lastFileCase = "n/a"
     for case in cases:
         # find files
         ff = FindFiles(case, camera, config)
@@ -113,15 +137,18 @@ def findLastFile(config, prod, camera):
                     f1 = Filenames(fnames[-1], config)
                 foundLastFile = True
                 lastFileTime = f1.datetime
+                lastFileCase = case
 
         if not foundComplete:
             foundComplete = ff.isComplete(
                 prod, ignoreBrokenFiles=True, requireL0Files=True
             )
-        else:
+            if foundComplete:
+                lastCase = case
+
+        if foundLastFile and foundComplete:
             break
-        lastCase = case
-    return foundLastFile, lastCase, lastFile, lastFileTime
+    return foundLastFile, lastCase, lastFile, lastFileTime, lastFileCase
 
 
 class FindFiles(object):
@@ -212,6 +239,7 @@ class FindFiles(object):
             self.camera = camera
         self.config = config
         self.version = version
+        self.versionShort = ".".join(version.split(".")[:2])
 
         computerDict = {}
         for computer1, camera1 in zip(config["computers"], config["instruments"]):
@@ -251,11 +279,11 @@ class FindFiles(object):
         self.outpath = DictNoDefault({})
         for dL in fileLevels + hourlyLevels:
             self.outpath[dL] = outpath.format(
-                site=config.site, level=dL, version=self.version
+                site=config.site, level=dL, version=self.versionShort
             )
         for dL in dailyLevels:
             self.outpath[dL] = outpathDaily.format(
-                site=config.site, level=dL, version=self.version
+                site=config.site, level=dL, version=self.versionShort
             )
         self.outpath["level0"] = (
             config["path"].format(site=config["site"], level="level0")
@@ -267,7 +295,7 @@ class FindFiles(object):
             self.fnamesPattern[dL] = "%s/%s_V%s*%s*%s*.nc" % (
                 self.outpath[dL],
                 dL,
-                version,
+                self.versionShort,
                 self.camera,
                 self.case,
             )
@@ -309,7 +337,7 @@ class FindFiles(object):
             self.fnamesPattern[dL] = "%s/%s_V%s_*%s*%s%s%s.nc" % (
                 self.outpath[dL],
                 dL,
-                version,
+                self.versionShort,
                 self.camera,
                 self.year,
                 self.month,
@@ -319,7 +347,7 @@ class FindFiles(object):
             self.fnamesPattern[dL] = "%s/%s_V%s_*%s*%s%s%s-%s%s.nc" % (
                 self.outpath[dL],
                 dL,
-                version,
+                self.versionShort,
                 self.camera,
                 self.year,
                 self.month,
@@ -342,7 +370,7 @@ class FindFiles(object):
             self.fnamesPatternExt[dL] = "%s/%s_V%s_*%s*%s*nc.[b,n][r,o]*" % (
                 self.outpath[dL],
                 dL,
-                version,
+                self.versionShort,
                 self.camera,
                 self.case,
             )  # finds broken & nodata
@@ -361,7 +389,7 @@ class FindFiles(object):
             self.fnamesDaily[dL] = "%s/%s_V%s_%s_%s_%s_%s_%s%s%s.nc" % (
                 self.outpath[dL],
                 dL,
-                version,
+                self.versionShort,
                 config.site,
                 self.computer,
                 config["visssGen"],
@@ -382,7 +410,7 @@ class FindFiles(object):
             self.fnamesHourly[dL] = "%s/%s_V%s_%s_%s_%s_%s_%s%s%s-%s%s.nc" % (
                 self.outpath[dL],
                 dL,
-                version,
+                self.versionShort,
                 config.site,
                 self.computer,
                 config["visssGen"],
@@ -400,7 +428,7 @@ class FindFiles(object):
         for qL in quicklookLevelsSep + quicklookLevelsComb:
             self.quicklookPath[
                 qL
-            ] = f'{config["pathQuicklooks"].format(version=version, site=config["site"], level=qL)}/{self.year}'
+            ] = f'{config["pathQuicklooks"].format(version=self.versionShort, site=config["site"], level=qL)}/{self.year}'
 
         for qL in quicklookLevelsSep:
             if self.hour == "":
@@ -413,7 +441,7 @@ class FindFiles(object):
                 ] = f"{self.quicklookPath[qL]}/{qL}_V{version.split('.')[0]}_{config['site']}_{nicerNames(self.camera).split('_')[0]}_{self.year}{self.month}{self.day}T{self.hour}.png"
             self.quicklookCurrent[
                 qL
-            ] = f"{config['pathQuicklooks'].format(version=version,site=config['site'], level=qL)}/{qL}_{config['site']}_{nicerNames(self.camera).split('_')[0]}_current.png"
+            ] = f"{config['pathQuicklooks'].format(version=self.versionShort,site=config['site'], level=qL)}/{qL}_{config['site']}_{nicerNames(self.camera).split('_')[0]}_current.png"
         for qL in quicklookLevelsComb:
             if self.hour == "":
                 self.quicklook[
@@ -503,7 +531,7 @@ class FindFiles(object):
     @functools.cache
     def getEvents(self, skipExisting=True):
         """
-        Retrieve and optionally create the event dataset for this case and camera.
+        Retrieve the event dataset for this case and camera.
 
         Parameters
         ----------
@@ -516,18 +544,14 @@ class FindFiles(object):
             Tuple of (event_filename, event_dataset) or (None, None) if not found
         """
         # just in case it is missing
-        metadata.createEvent(
-            self.case,
-            self.camera,
-            self.config,
-            skipExisting=skipExisting,
-            quiet=True,
-        )
         try:
-            eventFile = self.listFiles("metaEvents")[0]
+            eventFile = self.listFilesExt("metaEvents")[0]
         except IndexError:
             print("no event file")
             return None, None
+
+        if eventFile.endswith("nodata") or eventFile.endswith("broken.txt"):
+            return eventFile, None
 
         eventDat = xr.open_dataset(eventFile).load()
         # opening it several times can cause segfaults
@@ -624,6 +648,25 @@ class FindFiles(object):
             self.fnamesPatternExt[level], search=".[b,n][r,o]*", replace=".nodata"
         )
 
+    def writeStatus(self, level, status, message):
+        """
+        Write a `.nodata`/`.broken.txt`/`.notenoughframes` sentinel for
+        this case's daily `level` output.
+
+        Parameters
+        ----------
+        level : str
+            Daily processing level whose output should be marked (e.g.
+            'metaEvents', 'metaRotation', 'level2match').
+        status : str
+            "nodata", "broken.txt", or "notenoughframes".
+        message : str
+            Human-readable reason, written into the sentinel file.
+        """
+        assert status in ("nodata", "broken.txt", "notenoughframes")
+        with open2(f"{self.fnamesDaily[level]}.{status}", self.config, "w") as f:
+            f.write(message)
+
     @functools.cache
     def listFilesWithNeighbors(self, level):
         """
@@ -650,6 +693,48 @@ class FindFiles(object):
         fnames = [f for f in fnames if f is not None]
 
         return fnames
+
+    def markerPath(self, level, kind):
+        """
+        Path of a small sentinel file used to cache freshness-check
+        results for `level` (this case/camera/day), instead of
+        re-globbing and re-stat'ing every one of this level's own files
+        on every check.
+
+        Parameters
+        ----------
+        level : str
+            Processing level (e.g. 'level1match').
+        kind : {"touch", "done"}
+            "touch" is bumped (its content rewritten to a fresh random
+            token, see tools._touchLevelMarker) by every real write to
+            `level` (see tools.open2/to_netcdf2) and is a race-safe
+            fence for this level's freshness cache: concurrent writers
+            never corrupt it, whichever write lands last simply wins,
+            and it is always touched no earlier than the write it
+            corresponds to. A random token rather than the marker
+            file's own mtime is used so that two touches issued within
+            the same filesystem clock tick are still distinguishable.
+            "done" is the richer cache (file count + oldest/newest
+            mtime), but is only ever trusted by a reader if "touch" has
+            not changed since "done" was written -- so a writer that was
+            mid-scan while another worker wrote a new file can never
+            resurrect a stale summary after that write already
+            invalidated it. See tools.readLevelSummary/writeLevelSummary.
+
+        Returns
+        -------
+        str
+            Marker file path.
+        """
+        return "%s/%s_V%s_%s_%s.%s" % (
+            self.outpath[level],
+            level,
+            self.versionShort,
+            self.camera,
+            self.case,
+            kind,
+        )
 
     @property
     def isCompleteL0(self):
@@ -737,6 +822,68 @@ class FindFiles(object):
             )
             == 0
         )
+
+    def isGenuineDataGap(self, level="level0"):
+        """
+        Check whether the absence of data for this case is a genuine data
+        gap rather than data that simply has not arrived/been processed
+        yet, by checking whether newer data of `level` has already been
+        found for this camera. See also isDataTransferPending, which
+        combines this with a presence check into the single question
+        callers usually actually want to ask.
+
+        Parameters
+        ----------
+        level : str, optional
+            Processing level to check for newer data (default is 'level0').
+
+        Returns
+        -------
+        bool
+            True if data newer than this case (by more than a day) has
+            been found, confirming this case's missing data is a gap.
+        """
+        foundLastFile, _, _, lastFileTime, _ = findLastFile(
+            self.config, level, self.camera
+        )
+        return foundLastFile and (
+            lastFileTime > (self.datetime + datetime.timedelta(days=1))
+        )
+
+    def isDataTransferPending(self, level="level0txt"):
+        """
+        Check whether this case's data status is still unresolved: no
+        `level` data has arrived yet, and that absence has not been
+        confirmed as a genuine gap (see isGenuineDataGap). This is the
+        distinction between "no data (yet?)" and "no data (confirmed)"
+        that callers need before deciding whether it is safe to treat a
+        case as final -- e.g. write a nodata sentinel, or skip generating
+        commands for it -- versus simply waiting and retrying later.
+
+        Parameters
+        ----------
+        level : str, optional
+            Processing level to check for presence, and (via
+            isGenuineDataGap) for a confirmed gap (default is
+            'level0txt').
+
+        Returns
+        -------
+        bool
+            True if still pending (caller should wait and retry later).
+            False if resolved: either data is already here, or the gap
+            has been confirmed (newer data exists elsewhere for this
+            camera).
+        """
+        if len(self.listFiles(level)) > 0:
+            return False
+        if self.isGenuineDataGap(level):
+            log.warning(
+                f"Newer {level} files have been found for {self.case}, "
+                "likely a genuine data gap rather than a pending transfer"
+            )
+            return False
+        return True
 
     @property
     def nL0(self):
@@ -1056,6 +1203,7 @@ class Filenames(object):
 
         self.config = config
         self.version = version
+        self.versionShort = ".".join(version.split(".")[:2])
 
         self.basename = os.path.basename(fname).split(".")[0]
         self.dirname = os.path.dirname(fname)
@@ -1110,10 +1258,10 @@ class Filenames(object):
         for fL in fileLevels:
             self.fname[fL] = "%s/%s_V%s_%s_%s.nc" % (
                 self.outpath.format(
-                    version=self.version, site=config["site"], level=fL
+                    version=self.versionShort, site=config["site"], level=fL
                 ),
                 fL,
-                version,
+                self.versionShort,
                 config["site"],
                 self.basename,
             )
@@ -1121,10 +1269,10 @@ class Filenames(object):
         for fL in dailyLevels:
             self.fname[fL] = "%s/%s_V%s_%s_%s.nc" % (
                 self.outpathDaily.format(
-                    version=self.version, site=config["site"], level=fL
+                    version=self.versionShort, site=config["site"], level=fL
                 ),
                 fL,
-                version,
+                self.versionShort,
                 config["site"],
                 self.basenameShort,
             )
@@ -1159,6 +1307,113 @@ class Filenames(object):
 
     def __repr__(self):
         return json.dumps(self.fname, indent=4)
+
+    def markerPath(self, level, kind):
+        """
+        See FindFiles.markerPath. Scoped to this file's day (not its
+        possibly-sub-day case, e.g. a single 10-minute level1match file),
+        matching the case granularity freshness checks actually operate
+        at, so a marker written from here resolves to the same path a
+        FindFiles instance for that (level, camera, day) would compute.
+        """
+        outpath = self.outpath if level in fileLevels else self.outpathDaily
+        dayCase = f"{self.year}{self.month}{self.day}"
+        return "%s/%s_V%s_%s_%s.%s" % (
+            outpath.format(
+                version=self.versionShort, site=self.config["site"], level=level
+            ),
+            level,
+            self.versionShort,
+            self.camera,
+            dayCase,
+            kind,
+        )
+
+    def isNoData(self, level):
+        """
+        Check whether this file's output at `level` is marked nodata.
+
+        Parameters
+        ----------
+        level : str
+            Processing level (e.g. 'metaRotation', 'level1match').
+
+        Returns
+        -------
+        bool
+            True if a `.nodata` sentinel exists for this level's output.
+        """
+        return os.path.isfile(f"{self.fname[level]}.nodata")
+
+    def isBroken(self, level):
+        """
+        Check whether this file's output at `level` is marked broken.
+
+        Parameters
+        ----------
+        level : str
+            Processing level (e.g. 'metaRotation', 'level1match').
+
+        Returns
+        -------
+        bool
+            True if a `.broken.txt` sentinel exists for this level's output.
+        """
+        return os.path.isfile(f"{self.fname[level]}.broken.txt")
+
+    def writeStatus(self, level, status, message):
+        """
+        Write a `.nodata`/`.broken.txt`/`.notenoughframes` sentinel for
+        this file's `level` output.
+
+        Parameters
+        ----------
+        level : str
+            Processing level whose output should be marked.
+        status : str
+            "nodata", "broken.txt", or "notenoughframes".
+        message : str
+            Human-readable reason, written into the sentinel file.
+        """
+        assert status in ("nodata", "broken.txt", "notenoughframes")
+        with open2(f"{self.fname[level]}.{status}", self.config, "w") as f:
+            f.write(message)
+
+    def propagateNoData(self, fromLevel, toLevel, message=None):
+        """
+        If `fromLevel`'s output for this file is marked nodata, mark
+        `toLevel`'s output nodata too (same reasoning: nothing will ever
+        be produced downstream of a confirmed-empty input).
+
+        Only nodata is propagated this way -- a broken parent is
+        deliberately not auto-propagated here, since "broken" usually
+        means a human should look at it, and callers differ on whether
+        that should raise or propagate (see matching.matchParticles vs.
+        tracking.trackParticles).
+
+        Parameters
+        ----------
+        fromLevel : str
+            Processing level to check.
+        toLevel : str
+            Processing level to mark nodata if fromLevel is nodata.
+        message : str, optional
+            Reason written into the sentinel file. Defaults to a message
+            naming fromLevel.
+
+        Returns
+        -------
+        bool
+            True if toLevel was marked nodata (caller should stop here).
+        """
+        if not self.isNoData(fromLevel):
+            return False
+        self.writeStatus(
+            toLevel,
+            "nodata",
+            message or f"{fromLevel} is nodata: {self.fname[fromLevel]}",
+        )
+        return True
 
     @property
     def yesterday(self):
@@ -1679,7 +1934,7 @@ class Filenames(object):
     @functools.cache
     def getEvents(self, skipExisting=True):
         """
-        Get (and create if necessary) event dataset for this case and camera.
+        Get event dataset for this case and camera.
 
         Parameters
         ----------
@@ -1698,14 +1953,7 @@ class Filenames(object):
         """
 
         eventFile = self.fname.metaEvents
-        # # just in case it is missing
-        # metadata.createEvent(
-        #     self.case,
-        #     self.camera,
-        #     self.config,
-        #     skipExisting=skipExisting,
-        #     quiet=True,
-        # )
+
         eventDat = xr.open_dataset(eventFile).load()
         # opening it several times can cause segfaults
         eventDat.close()

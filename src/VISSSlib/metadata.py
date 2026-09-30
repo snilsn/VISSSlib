@@ -105,6 +105,7 @@ def getMetaData(
 
     beyondRepair = False
     metaDat = []
+    droppedFrames = 0
     for ii in range(len(fnames)):
         metaDat1 = _getMetaData1(
             fnames[ii],
@@ -116,51 +117,26 @@ def getMetaData(
             includeHeader=includeHeader,
         )
         if (metaDat1 is not None) and (len(metaDat1.capture_time) > 0):
-            metaDat.append(metaDat1)
+            # must run on each source individually, in its own original
+            # recording order, and before the cross-source concat+sort
+            # below: a capture_time flip is only visible while the data is
+            # still in the order it was physically written in (see
+            # fixes.removeFlippedCaptureTimeFrames docstring).
+            if "removeFlippedCaptureTimeFrames" in config.dataFixes:
+                metaDat1, nDropped = fixes.removeFlippedCaptureTimeFrames(
+                    metaDat1, fnames[ii]
+                )
+                droppedFrames += nDropped
+            if len(metaDat1.capture_time) > 0:
+                metaDat.append(metaDat1)
 
     if len(metaDat) == 0:
         metaDat = None
-        droppedFrames = 0
     else:
         metaDat = xr.concat(metaDat, dim="capture_time").sortby("capture_time")
 
-        droppedFrames = 0
-
-        # fix time stamps are jumping around
-        jumps = np.diff(metaDat.capture_time.astype(int)) < 0
-        nJumps = np.sum(jumps)
-        droppedIndices = []
-        if nJumps > 0:
-            # At mosaic, it looks like frames are sometimes swapped when caption_id overflows
-            # dont try to fix but remove meta data
-            if config.visssGen == "visss":
-                ss = np.where(jumps)[0]
-                assert nJumps < 20, "more than 20 is very fishy..."
-                if len(ss) > 1:
-                    assert np.all(np.diff(ss) == 1), (
-                        "if there is more than one "
-                        "time index going backwards, they must be in a group"
-                    )
-                for s1 in ss:
-                    print(fnames, "TIME JUMPED, DROPPING FRAMES around %i " % (s1))
-                    droppedIndices.append(s1 - 1)
-                    droppedIndices.append(s1)
-                    droppedIndices.append(s1 + 1)
-                droppedIndices = np.unique(droppedIndices)
-                metaDat = metaDat.drop_isel(capture_time=droppedIndices)
-            elif config.visssGen == "visss2":
-                if nJumps == 1:  # teh usual at the beginnign of the file
-                    raise RuntimeError("develop fix!!!")
-                    ss = np.where(jumps)[0][0]
-                    droppedIndices = list(range(ss + 1))
-                    metaDat = metaDat.drop_isel(capture_time=droppedIndices)
-                else:
-                    raise NotImplementedError
-            else:
-                raise RuntimeError("unknown VISSS generation %s" % config.visssGen)
-
-        droppedFrames += len(droppedIndices)
-        # end fix time stamps are jumping around
+        metaDat, nDropped = _repairTimeJumps(metaDat, fnames, config)
+        droppedFrames += nDropped
 
         # unclear whether it works, MX oct 2023
         # if "removeGhostFrames" in config.dataFixes:
@@ -176,6 +152,65 @@ def getMetaData(
         #         metaDat = makeCaptureTimeEven(metaDat, config)
 
     return metaDat, droppedFrames, beyondRepair
+
+
+def _repairTimeJumps(metaDat, fnames, config):
+    """
+    Drop frames around backwards jumps in capture_time.
+
+    Split out of getMetaData() so the repair logic (pure function of an
+    already-concatenated metaDat, no file I/O) can be unit tested without
+    real video/csv files.
+
+    Parameters
+    ----------
+    metaDat : xarray.Dataset
+        Concatenated, capture_time-sorted metadata, as produced by
+        getMetaData() before this repair step.
+    fnames : list
+        Source filenames, used only for the diagnostic print.
+    config : dict
+        Configuration dictionary; only visssGen is used here.
+
+    Returns
+    -------
+    tuple
+        (metaDat, droppedFrames) with the frames around each backwards
+        jump removed and the count of dropped frames.
+    """
+    jumps = np.diff(metaDat.capture_time.astype(int)) < 0
+    nJumps = np.sum(jumps)
+    droppedIndices = []
+    if nJumps > 0:
+        # At mosaic, it looks like frames are sometimes swapped when caption_id overflows
+        # dont try to fix but remove meta data
+        if config.visssGen == "visss":
+            ss = np.where(jumps)[0]
+            assert nJumps < 20, "more than 20 is very fishy..."
+            if len(ss) > 1:
+                assert np.all(np.diff(ss) == 1), (
+                    "if there is more than one "
+                    "time index going backwards, they must be in a group"
+                )
+            for s1 in ss:
+                print(fnames, "TIME JUMPED, DROPPING FRAMES around %i " % (s1))
+                droppedIndices.append(s1 - 1)
+                droppedIndices.append(s1)
+                droppedIndices.append(s1 + 1)
+            droppedIndices = np.unique(droppedIndices)
+            metaDat = metaDat.drop_isel(capture_time=droppedIndices)
+        elif config.visssGen == "visss2":
+            if nJumps == 1:  # teh usual at the beginnign of the file
+                raise RuntimeError("develop fix!!!")
+                ss = np.where(jumps)[0][0]
+                droppedIndices = list(range(ss + 1))
+                metaDat = metaDat.drop_isel(capture_time=droppedIndices)
+            else:
+                raise NotImplementedError
+        else:
+            raise RuntimeError("unknown VISSS generation %s" % config.visssGen)
+
+    return metaDat, len(droppedIndices)
 
 
 def _readHeaderData(fname, returnLasttime=False):
@@ -310,10 +345,23 @@ def _readHeaderData(fname, returnLasttime=False):
             capture_lasttime = capture_firsttime
             last_id = None
         elif lastLine.startswith("# Last capture time"):
-            # meta data version 0.4 and later
+            # meta data version 0.4 and later -- unlike every other
+            # timestamp in this file (the "us since epoche" header, and
+            # the raw Capture time/Record time columns), this trailer
+            # line's value is written in whole SECONDS since epoch, not
+            # microseconds (e.g. "1782691799", 10 digits, vs. the
+            # ~16-digit microsecond values used everywhere else in the
+            # same file). Multiplying by 1e-6 here as if it were
+            # microseconds silently produced a ~1970-01-01
+            # capture_lasttime for essentially every file, which then
+            # poisoned distributions._getDataQuality1's per-minute
+            # recording-coverage check (a non-NaT capture_lasttime is
+            # trusted outright, so the bogus ~1970 "file end" made every
+            # minute look zero-covered) into flagging "cameras off"
+            # (recordingFailed) for ~100% of level2 output fleet-wide.
             capture_lasttime = int(lastLine.split(":")[1])
             capture_lasttime = datetime.datetime.fromtimestamp(
-                int(capture_lasttime) * 1e-6, datetime.UTC
+                capture_lasttime, datetime.UTC
             )
             last_id = None
         else:
@@ -843,14 +891,13 @@ def createMetaFrames1(fname0, camera, config, skipExisting=True, writeNc=True):
         log.info("%s exists" % fn.fname.metaFrames)
         return None
 
-    if os.path.isfile(f"{fn.fname.metaFrames}.nodata") and skipExisting:
+    if fn.isNoData("metaFrames") and skipExisting:
         log.info("%s.nodata exists" % fn.fname.metaFrames)
         return None
 
     if os.path.getsize(fname0.replace(config.movieExtension, "txt")) == 0:
         log.error("%s has size 0!" % fname0)
-        with tools.open2(fn.fname.metaFrames + ".nodata", config, "w") as f:
-            f.write("%s has size 0!" % fname0)
+        fn.writeStatus("metaFrames", "nodata", "%s has size 0!" % fname0)
         return None
 
     # sometimes one thread file is missing. carefully check whether it migth be stuck in transfer
@@ -860,8 +907,9 @@ def createMetaFrames1(fname0, camera, config, skipExisting=True, writeNc=True):
     campaignEnded = config.end != "today"
     if tooFewThreads and (nextDayAvailable or campaignEnded):
         log.error("%s file of second thread missing!" % fname0)
-        with tools.open2(fn.fname.metaFrames + ".nodata", config, "w") as f:
-            f.write("%s file of second thread missing!" % fname0)
+        fn.writeStatus(
+            "metaFrames", "nodata", "%s file of second thread missing!" % fname0
+        )
         return None
 
     metaDat, droppedFrames, beyondRepair = getMetaData(
@@ -878,8 +926,7 @@ def createMetaFrames1(fname0, camera, config, skipExisting=True, writeNc=True):
         if writeNc:
             tools.to_netcdf2(metaDat, config, fn.fname.metaFrames)
     else:
-        with tools.open2(fn.fname.metaFrames + ".nodata", config, "w") as f:
-            f.write("no data recorded")
+        fn.writeStatus("metaFrames", "nodata", "no data recorded")
 
     return metaDat
 
@@ -1323,12 +1370,25 @@ def createEvent(
         if len(eventDat.data_vars) == 0:
             log.info("eventDat empty, redoing event file")
 
-        # check whether status file is newer than event file, consider 6 hour buffer for data transfer
+        # redo only if the status file is *meaningfully* newer than the
+        # event file (more than the 6h data-transfer buffer) -- the
+        # buffer must be subtracted, not added, otherwise this is true
+        # for basically every eventFile created within 6h of its status
+        # file, which is the normal case for near-real-time processing,
+        # so this branch fired on every single call regardless of
+        # whether anything had actually changed
         elif (fname0status is not None) and (
-            os.path.getmtime(eventFile) < (os.path.getmtime(fname0status) + 60 * 60 * 6)
+            os.path.getmtime(fname0status) > (os.path.getmtime(eventFile) + 60 * 60 * 6)
         ):
-            log.info("status file was recently updated, redoing event file")
-
+            log.info(
+                "txt status file was more recent than nc event file, redoing event file"
+            )
+            log.info(
+                f"{eventFile} {datetime.datetime.fromtimestamp(os.path.getmtime(eventFile))}"
+            )
+            log.info(
+                f"{fname0status} {datetime.datetime.fromtimestamp(os.path.getmtime(fname0status))}"
+            )
         else:
             if "noLevel0Files" in eventDat.attrs:
                 nFiles = eventDat.attrs["noLevel0Files"]
@@ -1339,10 +1399,19 @@ def createEvent(
                 nFiles = int(nFiles.values)
 
             if nFiles == len(fnames0):
-                if not quiet:
-                    log.info(tools.concat("Skipping", case, eventFile))
+                if np.any(
+                    os.path.getmtime(eventFile)
+                    < np.array([0] + [os.path.getmtime(f) for f in fnames0])
+                ):
+                    if not quiet:
+                        log.warning(
+                            f"file exists but older than lv0 files, redoing {eventFile}"
+                        )
+                else:
+                    if not quiet:
+                        log.info(tools.concat("Skipping", case, eventFile))
 
-                return None
+                    return None
             else:
                 log.info(
                     tools.concat(
@@ -1367,5 +1436,17 @@ def createEvent(
 
     except (ValueError, AssertionError):
         print("NO DATA", case, eventFile)
+        # Check whether there is newer L0 data available; if so this is a
+        # confirmed data gap. metaEvents is built purely from raw level0
+        # file listings, so having none of them is always a raw-data
+        # problem (instrument offline, transfer broken, ...), never a
+        # quiet no-precipitation day -- that distinction only applies to
+        # levels that actually look at particle content (level1detect,
+        # level2*). Mark it .broken.txt, not .nodata, so it isn't mistaken
+        # for the latter downstream.
+        if fn.isGenuineDataGap("level0"):
+            mes = f"no raw level0 data for {camera} on {fn.case}, likely data gap"
+            log.warning(mes)
+            fn.writeStatus("metaEvents", "broken.txt", mes)
 
     return metaDats

@@ -19,3 +19,8 @@ extend-exclude = '''
 pythonVersion = '3.9'
 venvPath = ''
 venv = ''
+
+[tool.pytest.ini_options]
+markers = [
+    "unit: fast tests with no network access and no downloaded sample data (synthetic fixtures only)",
+]

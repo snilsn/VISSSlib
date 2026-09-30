@@ -114,9 +114,17 @@ def main():
             args.case, args.settings, skipExisting=args.skip_existing
         )
 
-    elif cmd == "quicklooks.createMetaCoefQuicklook":
-        quicklooks.createMetaCoefQuicklook(
+    elif cmd == "quicklooks.metaRotationQuicklook":
+        quicklooks.metaRotationQuicklook(
             args.case, args.settings, skipExisting=args.skip_existing
+        )
+
+    elif cmd == "quicklooks.metaFramesQuicklook":
+        quicklooks.metaFramesQuicklook(
+            args.case,
+            args.camera,
+            args.settings,
+            skipExisting=args.skip_existing,
         )
 
     elif cmd == "quicklooks.level0Quicklook":

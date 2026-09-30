@@ -7,11 +7,13 @@ import io
 import json
 import multiprocessing
 import os
+import re
 import shutil
 import socket
 import struct
 import subprocess
 import time
+import uuid
 import warnings
 import zipfile
 import zlib
@@ -25,7 +27,201 @@ import xarray as xr
 from addict import Dict
 from loguru import logger as log
 
-from . import __version__, __versionFull__, files, fixes
+from . import __version__, files, fixes
+
+
+def _allDoneParents(camera, config):
+    parents = [
+        "leader_metaEvents",
+        "follower_metaEvents",
+    ]
+    if config.level1match.processL1match:
+        parents += ["leader_level2track", "leader_level2match"]
+    if config.level2.processL2detect:
+        parents += ["leader_level2detect", "follower_level2detect"]
+    # combinedRiming depends on level2track, so it can only be pulled in
+    # when the matching/tracking branch is actually enabled -- otherwise
+    # a deployment with processL1match: false but a stray
+    # combinedRiming.processRetrieval: true would make allDone try (and
+    # fail) to build level2track anyway.
+    if config.level1match.processL1match and config.level3.combinedRiming.processRetrieval:
+        parents += ["leader_level3combinedRiming"]
+    return parents
+
+
+# Single source of truth for "what depends on what" and "how is it built"
+# for every processing level. `parents` is a callable(camera, config) ->
+# list of f"{camera}_{level}" parent names (a callable because a few
+# levels' parents depend on the camera or on config flags, e.g. allDone).
+# `leaderOnly=True` means the level only ever exists for camera="leader".
+# `command` describes how products.DataProduct.generateCommands() builds
+# the shell command:
+#   ("none",)                                  no command (raw input levels)
+#   ("daily", call)                             one command for the whole day
+#   ("l1", originLevel, call, extraOrigin)      one command per level0/L1 file
+#   ("touch",)                                  the allDone sentinel file
+#
+# Every processing function's own skip-check (tools.checkForExisting) should
+# resolve its parents/events list from this via resolveLevelParents rather
+# than hand-writing one -- a hand-written list can silently drift out of
+# sync with what's declared here (e.g. distributions._createLevel2's
+# level2track check not knowing about its level2match dependency, fixed
+# alongside this comment), leaving the DAG orchestrator (products.py)
+# correctly regenerating a command that the processing function itself
+# then immediately skips again, forever.
+LEVEL_REGISTRY = {
+    "level0": {
+        "parents": lambda camera, config: [],
+        "command": ("none",),
+    },
+    "level0txt": {
+        "parents": lambda camera, config: [],
+        "command": ("none",),
+    },
+    "metaEvents": {
+        "parents": lambda camera, config: [f"{camera}_level0txt"],
+        "command": ("daily", "metadata.createEvent"),
+    },
+    "metaFrames": {
+        "parents": lambda camera, config: [f"{camera}_level0txt"],
+        "command": ("daily", "metadata.createMetaFrames"),
+    },
+    "level1detect": {
+        "parents": lambda camera, config: [],
+        "command": ("l1", "level0txt", "detection.detectParticles", None),
+    },
+    "metaRotation": {
+        "parents": lambda camera, config: [
+            "leader_level1detect",
+            "follower_level1detect",
+            # metaEvents are added to all the L2 products to force
+            # regeneration when event file is updated (ie more data is
+            # transferred)
+            "leader_metaEvents",
+            "follower_metaEvents",
+        ],
+        "command": ("daily", "matching.createMetaRotation"),
+        "leaderOnly": True,
+    },
+    "level1match": {
+        "parents": lambda camera, config: [f"{camera}_metaRotation"],
+        "command": (
+            "l1",
+            "level1detect",
+            "matching.matchParticles",
+            "metaRotation",
+        ),
+        "leaderOnly": True,
+    },
+    "level1track": {
+        "parents": lambda camera, config: [f"{camera}_level1match"],
+        "command": ("l1", "level1match", "tracking.trackParticles", None),
+        "leaderOnly": True,
+    },
+    "level2detect": {
+        "parents": lambda camera, config: [
+            f"{camera}_level1detect",
+            f"{camera}_metaEvents",
+        ],
+        "command": ("daily", "distributions.createLevel2detect"),
+    },
+    "level2match": {
+        "parents": lambda camera, config: [
+            f"{camera}_level1match",
+            # metaEvents are added to all the L2 products to force
+            # regeneration when events file is updated (ie more data is
+            # transferred)
+            "leader_metaEvents",
+            "follower_metaEvents",
+        ],
+        "command": ("daily", "distributions.createLevel2match"),
+        "leaderOnly": True,
+    },
+    "level2track": {
+        "parents": lambda camera, config: [
+            f"{camera}_level1track",
+            "leader_level2match",
+            "leader_metaEvents",
+            "follower_metaEvents",
+        ],
+        "command": ("daily", "distributions.createLevel2track"),
+        "leaderOnly": True,
+    },
+    "level3combinedRiming": {
+        "parents": lambda camera, config: [
+            f"{camera}_level2track",
+            "leader_metaEvents",
+            "follower_metaEvents",
+        ],
+        "command": ("daily", "level3.retrieveCombinedRiming"),
+        "leaderOnly": True,
+    },
+    "allDone": {
+        "parents": _allDoneParents,
+        "command": ("touch",),
+        "leaderOnly": True,
+    },
+}
+
+
+def resolveLevelParents(level, camera, case, config):
+    """
+    Resolve LEVEL_REGISTRY[level]'s declared parents into (FindFiles,
+    parentLevel) pairs for this camera+case, ready to pass straight into
+    checkForExisting's `parents=` (or `events=`) kwarg.
+
+    This exists so a processing function's own skip-check can't silently
+    drift out of sync with the DAG orchestrator's dependency declaration
+    the way distributions._createLevel2's did for level2track/level2match
+    (level2track reuses level2match's own zResidualTooWide flag, so it's
+    genuinely stale whenever level2match changes -- LEVEL_REGISTRY already
+    declared that dependency, the skip-check just never asked about it,
+    so products.py kept correctly regenerating a command that immediately
+    skipped itself again, forever). Every checkForExisting call site
+    should build its parents/events list from this instead of
+    hand-writing one, so LEVEL_REGISTRY stays the actual enforced source
+    of truth.
+
+    Parameters
+    ----------
+    level : str
+        The level that is checking for existing/up-to-date output --
+        i.e. whose declared parents (not its own identity) get resolved.
+    camera : str
+        "leader" or "follower" -- this level's own camera role.
+    case : str
+        Case identifier (day, "YYYYMMDD").
+    config : dict
+        Settings (as returned by readSettings).
+
+    Returns
+    -------
+    list of (files.FindFiles, str)
+        One (FindFiles, parentLevel) pair per declared parent, each
+        FindFiles instance built for that parent's own camera role
+        (which may differ from `camera`, e.g. a "follower_metaEvents"
+        parent of a "leader"-camera level).
+    """
+    # LEVEL_REGISTRY's "parents" lambdas format their {camera}_{level}
+    # parent names against the camera *role* ("leader"/"follower"), but
+    # callers of this function are inconsistent about which form of
+    # `camera` they hold at that point -- e.g. distributions._createLevel2
+    # receives the role for "match"/"track" (via @tools.loopify, which
+    # never touches camera at all) but the fully-resolved camera id for
+    # "detect" (via @tools.loopify_with_camera, which resolves "leader"/
+    # "follower" to config.leader/config.follower before calling in).
+    # files.FindFiles already tolerates both forms transparently; do the
+    # same normalization here instead of assuming the role.
+    if camera not in ("leader", "follower"):
+        camera = "leader" if camera == config.leader else "follower"
+    parentNames = LEVEL_REGISTRY[level]["parents"](camera, config)
+    resolved = []
+    for parentName in parentNames:
+        parentCamera, parentLevel = parentName.split("_")
+        cameraFull = config.leader if parentCamera == "leader" else config.follower
+        resolved.append((files.FindFiles(case, cameraFull, config), parentLevel))
+    return resolved
+
 
 DEFAULT_SETTINGS = {
     # settings that must be provided in YAML file
@@ -76,7 +272,10 @@ DEFAULT_SETTINGS = {
         "slope": None,
         "slope_err": None,
     },
-    "dataFixes": [],
+    # applied to every deployment regardless of what a yaml's own dataFixes
+    # lists -- see the merge in readSettings(), which unions this with the
+    # yaml's value instead of letting it be overridden like other settings
+    "dataFixes": ["removeFlippedCaptureTimeFrames", "dropUnrecordedTrailingFrames"],
     "dirMode": 0o775,  # 509
     "fileMode": 0o664,  # 436
     "goodFiles": ["None", "None"],
@@ -94,6 +293,17 @@ DEFAULT_SETTINGS = {
         "blurSigma": 1,
         "check4childCntLength": True,  # discard short child contours instead of dilate/erose
         "cropImage": None,  # (offsetX, offsetY)
+        "cv2NumThreads": None,  # cv2's own thread pool is not covered by the OMP_NUM_THREADS/
+        # OPENBLAS_NUM_THREADS/etc. env vars products.py already exports for detect jobs, so
+        # by default it happily grabs os.cpu_count() threads per process; with
+        # tools.workers() launching os.cpu_count() worker processes, that oversubscribes
+        # cores badly (measured ~2-3x slower aggregate throughput). Left at the default
+        # (None), detectParticles follows the OMP_NUM_THREADS env var products.py already
+        # sets per job (falling back to cv2's own default if that isn't set either, e.g.
+        # interactive use outside the task queue). Set an explicit int here to override
+        # both and force a specific value regardless of environment -- including -1, which
+        # cv2 itself defines as "reset to system default", i.e. the escape hatch to force
+        # cv2 back to using all cores even when OMP_NUM_THREADS is set for everything else.
         "dilateErodeFgMask": False,  # turns out to be not so smart because it makes holes insides particles smaller
         "dilateFgMask4Contours": True,
         "dilateIterations": 1,  # to close gaps in canny edges (the default is 1 whic is sufficient)
@@ -136,7 +346,6 @@ DEFAULT_SETTINGS = {
     "level3": {
         "combinedRiming": {
             "extraFileStr": "",
-            "habit": "mean",  # SSRG particle habit
             "maxTemp": 275.15,  # +2°C
             "minNParticles": 100,
             "minZe": -10,
@@ -150,6 +359,22 @@ DEFAULT_SETTINGS = {
     "quality": {
         "blowingSnowFrameThresh": 0.05,
         "blockedPixThresh": 0.1,
+        # pixels (level1's native unit -- this residual is computed
+        # directly on level1-stage pixel data, before level2's SI/meter
+        # calibration is ever applied); max tolerable std of the per-pair
+        # Z-consistency residual (matching.zResidualSigma) before a
+        # rotation refit is considered
+        # futile -- a refit can only correct a *biased* residual (shift
+        # the mean), not shrink a wide one. Used both to skip pointless
+        # refit attempts during matchParticles' self-heal escalation and,
+        # independent of matchScore, to flag already-passing level1match
+        # files with suspiciously inconsistent pairs (scripts/qc_report.py
+        # --matchscore-check). Empirically derived on hyytiala2_v3
+        # (2026-08-30): a fixable file had pre-refit sigma ~1.4, a
+        # partially-fixable extreme-density file ~3.9, a confirmed
+        # unfixable file (15 refit attempts, ~zero bias) ~5.5 -- a
+        # starting heuristic, expect it to need tuning per deployment.
+        "maxZSigma": 5.0,
         "minMatchScore": 1e-3,
         "minSize4insituM": 10,
         "obsRatioThreshold": 0.7,
@@ -157,7 +382,6 @@ DEFAULT_SETTINGS = {
     },
     "rotate": {},
 }
-
 
 niceNames = (
     ("master", "leader"),
@@ -183,12 +407,15 @@ def loopify_with_camera(func=None, *, endYesterday=True):
 
     Examples
     --------
-    @loopify_with_camera
-    def my_func(case, camera, config):
-        pass
-    @loopify_with_camera(endYesterday=False)
-    def my_func(case, camera, config):
-        pass
+    ::
+
+        @loopify_with_camera
+        def my_func(case, camera, config):
+            pass
+
+        @loopify_with_camera(endYesterday=False)
+        def my_func(case, camera, config):
+            pass
     """
 
     def decorator(f):
@@ -248,13 +475,15 @@ def loopify(func=None, *, endYesterday=True):
 
     Examples
     --------
-    @loopify
-    def my_func(case, config):
-        pass
+    ::
 
-    @loopify(endYesterday=False)
-    def my_func(case, config):
-        pass
+        @loopify
+        def my_func(case, config):
+            pass
+
+        @loopify(endYesterday=False)
+        def my_func(case, config):
+            pass
     """
 
     def decorator(f):
@@ -352,6 +581,19 @@ def readSettings(fname):
                     log.warning(
                         f"Key {key} in settings file is not in the default settings and might be unused."
                     )
+            # dataFixes is additive, not overridden like every other setting:
+            # DEFAULT_SETTINGS["dataFixes"] holds fixes meant to apply to every
+            # deployment regardless of what a specific yaml lists, so union it
+            # with the yaml's own value instead of letting the plain update()
+            # below silently drop the defaults whenever a yaml declares its
+            # own (even empty) dataFixes list.
+            dataFixesKey = ("dataFixes",)
+            if dataFixesKey in loadedSettings:
+                merged = list(DEFAULT_SETTINGS["dataFixes"])
+                for fix in loadedSettings[dataFixesKey] or []:
+                    if fix not in merged:
+                        merged.append(fix)
+                loadedSettings[dataFixesKey] = merged
             config.update(loadedSettings)
         # unflatten again and convert to addict.Dict
         config = DictNoDefault(flatten_dict.unflatten(config))
@@ -405,9 +647,15 @@ def isBadPeriod(case, config, product=None):
             start = datetime.datetime.strptime(
                 str(period.start.split("-")[0]), "%Y%m%d"
             )
+            # end-of-day exclusive upper bound (the day after period.end);
+            # must be compared with `<`, not `<=` -- the case string for
+            # that following day itself parses to this same midnight, so
+            # `<=` would incorrectly also flag the day right after the
+            # configured end date as bad.
             end = datetime.datetime.strptime(
                 str(period.end.split("-")[0]), "%Y%m%d"
             ) + datetime.timedelta(days=1)
+            inRange = start <= case_dt < end
         else:
             start = datetime.datetime.strptime(
                 str(period.start).ljust(15, "0"), "%Y%m%d-%H%M%S"
@@ -415,9 +663,9 @@ def isBadPeriod(case, config, product=None):
             end = datetime.datetime.strptime(
                 str(period.end).ljust(15, "0"), "%Y%m%d-%H%M%S"
             )
+            inRange = start <= case_dt <= end
 
-
-        if not (start <= case_dt <= end):
+        if not inRange:
             continue
         # Period matches time range - check product
         if (period.products is None) or (product is None) or (product in period.products):
@@ -537,7 +785,7 @@ def getDateRange(nDays, config, endYesterday=True):
                     inclusive="both",
                 )
         else:
-            days = pd.DatetimeIndex(days)
+            days = pd.DatetimeIndex(days).tz_localize("UTC")
 
     else:
         days = pd.date_range(
@@ -676,9 +924,10 @@ def open_mfmetaFrames(fnames, config, start=None, end=None, skipFixes=[]):
 
         return dat
 
-    dat = xr.open_mfdataset(
+    with xr.open_mfdataset(
         fnames, combine="nested", concat_dim="capture_time", preprocess=preprocess
-    ).load()
+    ) as ds:
+        dat = ds.load()
 
     if skipFixes != "all":
         # fix potential integer overflows if necessary
@@ -774,9 +1023,10 @@ def open_mflevel1detect(
     if len(fnames) == 0:
         return None
 
-    dat = xr.open_mfdataset(
+    with xr.open_mfdataset(
         fnames, combine="nested", concat_dim="pid", preprocess=preprocess
-    ).load()
+    ) as ds:
+        dat = ds.load()
 
     if start is not None:
         dat = dat.isel(pid=(dat.capture_time >= start))
@@ -876,9 +1126,10 @@ def open_mflevel1match(fnamesExt, config, datVars="all"):
             dat = dat[datVars]
         return dat
 
-    dat = xr.open_mfdataset(
+    with xr.open_mfdataset(
         fnames, combine="nested", concat_dim="pair_id", preprocess=preprocess
-    ).load()
+    ) as ds:
+        dat = ds.load()
     # replace pid by empty dimesnion to allow concatenating files without jumps in dimension pid
     dat = dat.swap_dims({"pair_id": "fpair_id"})
 
@@ -911,7 +1162,8 @@ def identifyBlockedBlowingSnowData(fnames, config, timeIndex1, sublevel):
     movingObjects = []
 
     for fna in fnames:
-        movingObjects.append(xr.open_dataset(fna).movingObjects)
+        with xr.open_dataset(fna) as ds:
+            movingObjects.append(ds.movingObjects.load())
     movingObjects = xr.concat(movingObjects, dim="capture_time")
     # movingObjects = xr.open_mfdataset(fnames,  combine='nested', preprocess=preprocess).movingObjects.load()
     movingObjects = movingObjects.sortby("capture_time")
@@ -1149,28 +1401,63 @@ def estimateCaptureIdDiffCore(
         timeDimFollower = "capture_time_even"
     else:
         timeDimFollower = timeDim
+    if (timeDim == "capture_time") and ("capture_time_even" in leaderDat.data_vars):
+        timeDimLeader = "capture_time_even"
+    else:
+        timeDimLeader = timeDim
 
     # cut number of investigated points in time if required
     if len(leaderDat[dim]) > nPoints:
         points = np.linspace(0, len(leaderDat[dim]), nPoints, dtype=int, endpoint=False)
     else:
-        points = range(len(leaderDat[dim]))
+        points = np.arange(len(leaderDat[dim]))
 
-    # loop through all points
-    idDiffs = []
-    for point in points:
-        absDiff = np.abs(
-            leaderDat[timeDim].isel(**{dim: point}).values
-            - followerDat[timeDimFollower]
-        )
-        pMin = np.min(absDiff).values
-        if pMin < np.timedelta64(int(maxDiffMs), "ms"):
-            pII = absDiff.argmin().values
-            idDiff = (
-                followerDat.capture_id.values[pII]
-                - leaderDat.capture_id.isel(**{dim: point}).values
-            )
-            idDiffs.append(idDiff)
+    # Find, for every sampled leader point, the nearest follower
+    # timestamp -- vectorized instead of a Python loop that recomputed
+    # |t - followerTimes| against the *entire* follower array for every
+    # single point (O(nPoints * N_follower), and paying xarray
+    # per-element isel/argmin overhead nPoints times on top of that).
+    #
+    # followerDat[timeDimFollower] is *nearly* sorted (particles are
+    # appended in capture order) but not guaranteed to be: the follower
+    # camera's onboard clock is resynced to the computer clock close to
+    # the start of each 10-minute file, which can make a handful of
+    # frames right at a file-rotation boundary compare out of order by a
+    # few tens/hundreds of microseconds even though their append order is
+    # correct. Checking only the two immediate searchsorted neighbours
+    # (as if the array were exactly sorted) can silently return the wrong
+    # nearest match right at such a boundary, with no assertion to catch
+    # it. Instead, use searchsorted as an approximate locator only, then
+    # check a padded window of candidates around it and take the true
+    # (order-independent) minimum within that window -- wide enough to
+    # comfortably contain the true nearest neighbour even right at a
+    # boundary perturbation, while still vectorized and far cheaper than
+    # the original per-point full-array search.
+    followerTimes = followerDat[timeDimFollower].values
+    followerCaptureId = followerDat.capture_id.values
+
+    leaderTimes = leaderDat[timeDimLeader].isel(**{dim: points}).values
+    leaderCaptureId = leaderDat.capture_id.isel(**{dim: points}).values
+
+    nFollower = len(followerTimes)
+    windowRadius = 25
+    idxApprox = np.clip(
+        np.searchsorted(followerTimes, leaderTimes, side="left"), 0, nFollower - 1
+    )
+    offsets = np.arange(-windowRadius, windowRadius + 1)
+    # increasing offsets -> increasing (pre-clip) candidate index, so
+    # ties within the window resolve to the lowest original index first,
+    # matching np.argmin's first-occurrence tie-break on the original
+    # full-array search.
+    candidateIdx = np.clip(idxApprox[:, None] + offsets[None, :], 0, nFollower - 1)
+    candidateDiff = np.abs(followerTimes[candidateIdx] - leaderTimes[:, None])
+    bestInWindow = np.argmin(candidateDiff, axis=1)
+    rows = np.arange(len(leaderTimes))
+    nearestIdx = candidateIdx[rows, bestInWindow]
+    pMin = candidateDiff[rows, bestInWindow]
+
+    keep = pMin < np.timedelta64(int(maxDiffMs), "ms")
+    idDiffs = followerCaptureId[nearestIdx[keep]] - leaderCaptureId[keep]
 
     nIdDiffs = len(idDiffs)
     print(f"using {nIdDiffs} of {len(points)}")
@@ -1254,12 +1541,37 @@ def cutFollowerToLeader(leader, follower, gracePeriod=1, dim="fpid"):
     )
     end = leader.capture_time[-1].values + np.timedelta64(int(gracePeriod * 1000), "ms")
 
-    if start is not None:
-        follower = follower.isel({dim: (follower.capture_time >= start)})
-    if end is not None:
-        follower = follower.isel({dim: (follower.capture_time <= end)})
+    captureTimeValues = follower.capture_time.values
 
-    return follower
+    # Follower particles are appended in capture order, so capture_time is
+    # *nearly* monotonic -- but not guaranteed to be: the follower
+    # camera's onboard clock is resynced to the computer clock close to
+    # the start of each 10-minute file, which can make a handful of
+    # frames right at a file-rotation boundary compare out of order by a
+    # few tens/hundreds of microseconds even though their append order is
+    # correct (the previous file's tail carries drift-inflated
+    # timestamps; the new file's head is freshly accurate). Sorting by
+    # that faulty comparison would flip those frames into the wrong
+    # order, so we must never assume or enforce global sortedness here.
+    #
+    # Instead, use searchsorted purely as an approximate locator (only
+    # exactly correct for genuinely sorted input, but off by no more than
+    # a handful of positions for data that's this close to sorted), pad
+    # generously on each side to comfortably cover that uncertainty, and
+    # then apply an exact, order-independent boolean filter within that
+    # local slice. This keeps 66ac0bd's win of not copying/scanning the
+    # entire (potentially much larger) follower dataset on every leader
+    # chunk in doMatchSlicer -- only the small padded slice is touched --
+    # without ever assuming order anywhere a correctness-affecting
+    # decision is made.
+    nFollower = len(captureTimeValues)
+    padFrames = 200
+    lo = max(np.searchsorted(captureTimeValues, start, side="left") - padFrames, 0)
+    hi = min(np.searchsorted(captureTimeValues, end, side="right") + padFrames, nFollower)
+
+    candidate = follower.isel({dim: slice(lo, hi)})
+    mask = (candidate.capture_time.values >= start) & (candidate.capture_time.values <= end)
+    return candidate.isel({dim: mask})
 
 
 def nextCase(case):
@@ -1451,14 +1763,14 @@ class ZipFile(zipfile.ZipFile):
 
 
 def imageZipFile(fname, **kwargs):
-    """
+    r"""
     Create appropriate archive file handler.
 
     Parameters
     ----------
     fname : str
         File name.
-    **kwargs : dict
+    \*\*kwargs : dict
         Additional arguments for archive creation.
 
     Returns
@@ -1679,7 +1991,7 @@ def createParentDir(file, mode=None):
 def savefig(
     fig, config, filename, fnames=None, addLogo=True, w_pad=None, h_pad=None, **kwargs
 ):
-    """
+    r"""
     Save a matplotlib Figure to `filename` with proper permissions.
 
     This function saves a matplotlib figure to a file with appropriate directory
@@ -1703,7 +2015,7 @@ def savefig(
         Width padding for tight layout. Default is None.
     h_pad : float, optional
         Height padding for tight layout. Default is None.
-    **kwargs : dict
+    \*\*kwargs : dict
         Additional keyword arguments passed to matplotlib's savefig function.
 
     Returns
@@ -1782,6 +2094,8 @@ def _statusText(fig, fnames, config, addLogo=True):
         thisDate = ""
     except FileNotFoundError:
         thisDate = ""
+    except TypeError:
+        thisDate = ""
     else:
         thisDate = timestamp2str(thisDate)
     string = f"VISSSlib {__version__}, created  "
@@ -1806,6 +2120,117 @@ def _statusText(fig, fnames, config, addLogo=True):
             fig.figimage(np.asarray(im), 0, fig.bbox.ymax - im.height, zorder=10)
 
     return fig
+
+
+_HISTORY_VERSION_RE = re.compile(r"created with VISSSlib (\S+)")
+
+
+def collectVersionAttrs(level, parentFiles):
+    """
+    Build version-provenance attrs for `finishNc`'s `extra=`.
+
+    Records this level's own __version__ under "{level}_version",
+    plus every "*_version"/"*_versions" attr already recorded on each
+    direct parent's files, folded forward under its own key -- so the
+    whole ancestor chain (e.g. level1detect -> level1match ->
+    level1track -> level2track) accumulates without each level needing
+    to know its grandparents. If a parent's underlying files disagree
+    (e.g. partial reprocessing), the key becomes the plural
+    "*_versions" form with a sorted, comma-joined list of the distinct
+    values seen.
+
+    A direct parent file that predates this feature entirely (no
+    "*_version" attrs of its own at all -- the case for every existing
+    level1detect file, since reprocessing level1detect is not
+    feasible and it will never gain a clean "level1detect_version" attr
+    on its own) falls back to parsing its "history" attr (every file
+    already gets one from `ncAttrs`, of the form "...created with
+    VISSSlib X.Y.Z..."), so the chain still records *something* for
+    that ancestor instead of silently dropping it forever.
+
+    Parameters
+    ----------
+    level : str
+        This level's name, e.g. "level1match".
+    parentFiles : dict of str -> list of str
+        Maps each DIRECT parent level name to the already-produced
+        file(s) of that level this product was built from, e.g.
+        {"level1detect": [leaderFile, *followerFiles]} for level1match,
+        or {"level1track": [...], "level2match": [...]} for
+        level2track. The level name is only used for the "history"
+        fallback above (a file that already carries its own clean
+        version attr doesn't need it). Files that don't exist or aren't
+        valid netCDF (e.g. broken.txt/nodata sentinels) are silently
+        skipped.
+
+    Returns
+    -------
+    dict
+        Attrs to pass as `finishNc(..., extra=...)`.
+    """
+    merged = {}
+
+    def addVersion(base, value):
+        merged.setdefault(base, set()).update(str(value).split(","))
+
+    for parentLevel, files_ in parentFiles.items():
+        for f in files_:
+            try:
+                with xr.open_dataset(f) as pds:
+                    attrs = dict(pds.attrs)
+            except Exception:
+                continue
+            foundOwn = False
+            for k, v in attrs.items():
+                if k.endswith("_versions"):
+                    addVersion(k[: -len("_versions")], v)
+                    foundOwn = True
+                elif k.endswith("_version"):
+                    addVersion(k[: -len("_version")], v)
+                    foundOwn = True
+            if not foundOwn:
+                m = _HISTORY_VERSION_RE.search(attrs.get("history", ""))
+                if m:
+                    addVersion(parentLevel, m.group(1))
+
+    result = {}
+    for base, vs in merged.items():
+        vs = sorted(vs)
+        key = f"{base}_version" if len(vs) == 1 else f"{base}_versions"
+        result[key] = ",".join(vs)
+
+    result[f"{level}_version"] = __version__
+    return result
+
+
+# Per-level minimum acceptable output mtime ("breakpoint"). An existing
+# output file with an mtime older than this is treated as stale and
+# reprocessed regardless of how its parents' mtimes compare -- for code
+# changes that alter a level's own logic without changing any parent file
+# (the normal mtime-based skipExisting check already handles every other
+# case, and does so essentially for free since it's already comparing
+# mtimes -- deliberately NOT doing this via a per-file version attr, which
+# would mean opening every existing file just to check a string; mtime
+# reuses what's already being stat'd). Remove an entry once the fleet has
+# caught up.
+REPROCESS_AFTER = {
+    "level1track": datetime.datetime(2026, 9, 2, 17, 0, 0),  # Dmax cost-variance + dropped-frame fixes (a5aeb2c, 92bb6ce)
+    "level2detect": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
+    "level2match": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
+    "level2track": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
+}
+
+
+def reprocessBreakpoint(level):
+    """
+    Minimum acceptable mtime (POSIX timestamp) for existing `level`
+    output files, or None if there is no pending breakpoint for this
+    level. See REPROCESS_AFTER.
+    """
+    cutoff = REPROCESS_AFTER.get(level)
+    if cutoff is None:
+        return None
+    return cutoff.timestamp()
 
 
 def ncAttrs(site, visssGen, extra={}):
@@ -1839,7 +2264,7 @@ def ncAttrs(site, visssGen, extra={}):
     attrs = {
         "title": f"Video In Situ Snowfall Sensor (VISSS) observations at {site}",
         "source": f"{visssGen} observations at {site}",
-        "history": f"{str(datetime.datetime.now(datetime.UTC))}: created with VISSSlib {__versionFull__} and OpenCV {cv2.__version__} on {socket.getfqdn()}{user}",
+        "history": f"{str(datetime.datetime.now(datetime.UTC))}: created with VISSSlib {__version__} and OpenCV {cv2.__version__} on {socket.getfqdn()}{user}",
         "command": myCommand,
         "references": "Maahn, M., D. Moisseev, I. Steinke, N. Maherndl, and M. D. Shupe, 2024: Introducing the Video In Situ Snowfall Sensor (VISSS). Atmospheric Measurement Techniques, 17, 899–919, https://doi.org/10.5194/amt-17-899-2024.",
     }
@@ -1990,6 +2415,13 @@ def rotXr2dict(dat, config=None):
     if config is None:
         config = {}
         config["rotate"] = {}
+    elif "rotate" not in config:
+        # an explicitly empty `rotate: {}` in the settings yaml does not
+        # survive flatten_dict's flatten/unflatten round-trip (an empty
+        # dict has no leaves to flatten), so config["rotate"] is simply
+        # absent rather than present-and-empty for a deployment that relies
+        # entirely on metaRotation-retrieved rotation with no static prior
+        config["rotate"] = {}
     for ii, tt in enumerate(dat.file_starttime):
         t1 = pd.to_datetime(str(tt.values)).strftime("%Y%m%d-%H%M%S")
         config["rotate"][t1] = {
@@ -2084,12 +2516,12 @@ def execute_stdout(command):
 
 
 def concat(*strs):
-    """
+    r"""
     Concatenate strings with spaces.
 
     Parameters
     ----------
-    *strs : str
+    \*strs : str
         Strings to concatenate.
 
     Returns
@@ -2164,8 +2596,229 @@ def concatImgX(im1, im2, background=0):
     return imT
 
 
-def open2(file, config, mode="r", cleanUp=True, **kwargs):
+def _levelMarkerPaths(file, config):
     """
+    Best-effort: resolve the (touch, done) marker paths for the
+    DataProduct level+camera+day that `file` belongs to, so a completed
+    write can invalidate any cached freshness-check summary for that
+    level (see files.FindFiles.markerPath, products.DataProduct).
+
+    Returns (None, None) for anything that isn't a recognized VISSSlib
+    level output -- e.g. files written by level3/aux.py's Cloudnet
+    downloads, which don't follow the "<level>_V<version>_..." naming
+    convention at all -- so marker bookkeeping never blocks or breaks a
+    write it doesn't understand, it just skips it. Sentinel writes
+    (.nodata/.broken.txt) piggyback on a real level's filename, so those
+    are matched too by stripping the suffix first.
+    """
+    base = file
+    for suffix in (".nodata", ".broken.txt"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    try:
+        ff = files.FilenamesFromLevel(base, config)
+    except Exception:
+        return None, None
+    for level, path in ff.fname.items():
+        if path == base:
+            return ff.markerPath(level, "touch"), ff.markerPath(level, "done")
+    return None, None
+
+
+def _touchLevelMarker(file, config):
+    """
+    Bump the "touch" marker for the level+camera+day `file` belongs to
+    (creating it if missing), and drop any cached "done" summary for it.
+
+    The marker's fence value is a random token written into the file's
+    content, not its mtime: two touches issued close together can land
+    in the same tick of the filesystem's (often coarse, ~1-4ms
+    resolution) mtime clock and come out with an identical mtime, which
+    would let a concurrent write slip past the fence check undetected.
+    A fresh random token on every touch has no such resolution limit,
+    so any two touches -- however close in time -- are always
+    distinguishable.
+
+    Concurrent writers touching the same marker never corrupt it or
+    each other: the write is atomic (tmp file + os.replace), whichever
+    touch lands last simply wins, and every touch happens right after
+    this process's own write completed, so it is always a valid
+    stand-in for "most recent write to this level" (see
+    files.FindFiles.markerPath and readLevelSummary/writeLevelSummary
+    for how a cached summary is fenced against this marker instead of
+    trusted on its own -- that's what makes it safe under many
+    concurrent SLURM workers writing the same level+camera+day).
+
+    Caveat: this only works if every writer of this level is running
+    code that calls this hook. A write from an un-upgraded worker (e.g.
+    a mixed-version rollout across the realtime and SLURM-batch
+    environments) would not bump the marker, so a cached summary could
+    stay trusted past that write. Roll this out to all writers of a
+    level together, the same way a `version` bump already implicitly
+    requires.
+    """
+    touchPath, donePath = _levelMarkerPaths(file, config)
+    if touchPath is None:
+        return
+    _invalidateLevelCacheAt(touchPath, donePath, config)
+
+
+def touchOutputFile(file, config):
+    """
+    Safely bump an existing VISSSlib output file's mtime to now.
+
+    A bare shell/`os.utime` touch on a managed output file (e.g. to mark
+    an already-correct file as "fresh" again after a downstream/upstream
+    freshness check started flagging it as stale for no real reason)
+    changes the file's real mtime but does *not* bump this level's
+    "touch" fence marker, since it bypasses the tools.open2/to_netcdf2
+    hooks that normally do that. `_freshnessSummary` then keeps returning
+    whatever (n, oldest, newest) was cached before the touch -- fenced
+    against a marker that never moved, so the cache never even notices
+    there was a write -- so every DataProduct built afterwards keeps
+    reporting the pre-touch mtime, silently as if the touch never
+    happened. `repairStaleFreshnessCache` can find and fix this after
+    the fact, but it has to be told to look, and it's easy to forget: a
+    raw touch during an interactive investigation (see
+    feedback_raw_touch_bypasses_freshness_cache_fence in project memory)
+    cost a long detour before the mismatch was traced back to this.
+
+    Use this instead of a raw `touch`/`os.utime` on any file under a
+    level's output directory: it updates the real mtime and invalidates
+    this level+camera+day's cached summary in the same step, so there is
+    no window where the cache can disagree with the file it's supposed
+    to describe.
+
+    Parameters
+    ----------
+    file : str
+        Path to the existing output file to touch (a real `.nc`, or a
+        `.nodata`/`.broken.txt` sentinel -- both are recognized the same
+        way `_touchLevelMarker` already handles them).
+    config : dict
+        Settings, as returned by `readSettings`.
+    """
+    os.utime(file, None)
+    _touchLevelMarker(file, config)
+
+
+def _invalidateLevelCacheAt(touchPath, donePath, config):
+    """
+    Core of `_touchLevelMarker`, split out so a caller that already has
+    the marker paths in hand -- e.g. products.DataProduct.repairStaleCache,
+    which derives them from files.FindFiles.markerPath directly -- doesn't
+    need a real output filename for `_levelMarkerPaths` to reverse-engineer
+    a level+camera+day from (that reverse-engineering requires the file to
+    match the full "<level>_V<version>_<site>_<computer>_<visssGen>_<type>_
+    <serial>_<timestamp>" naming convention, which not every level actually
+    uses, e.g. the "l1" per-file levels' own marker paths are still built
+    from the case/camera FindFiles already has on hand rather than from a
+    filename at all -- see files.FindFiles.markerPath).
+
+    See `_touchLevelMarker` for what this does and why.
+    """
+    token = uuid.uuid4().hex
+    tmpPath = f"{touchPath}.{os.getpid()}.{token}.tmp"
+    try:
+        createParentDir(touchPath, mode=config.dirMode)
+        with open(tmpPath, "w") as f:
+            f.write(token)
+        os.chmod(tmpPath, config.fileMode)
+        os.replace(tmpPath, touchPath)
+    except OSError:
+        tryRemovingFile(tmpPath)
+        return
+    # optimization only, not required for correctness: readLevelSummary
+    # already refuses a summary whose fence doesn't match the touch
+    # marker's current token, which is now guaranteed to differ from
+    # whatever "done" was fenced against before this write.
+    tryRemovingFile(donePath)
+
+
+def getLevelTouchTime(fn, level):
+    """
+    Current fence token for `level`'s "touch" marker on `fn` (a
+    files.FindFiles instance), or 0 if none exists yet -- i.e. nothing
+    has ever been written for this level+camera+day through the
+    open2/to_netcdf2 hooks. 0 is a legitimate, stable fence value (it
+    only changes once the first such write happens), not an error.
+
+    Despite the name, this is no longer a timestamp -- it's an opaque
+    per-write token (see `_touchLevelMarker`) that is only ever used
+    for equality comparison, never ordering.
+    """
+    try:
+        with open(fn.markerPath(level, "touch")) as f:
+            return f.read()
+    except OSError:
+        return 0
+
+
+def readLevelSummary(fn, level):
+    """
+    Read the cached (n, oldest, newest) freshness summary for `level`
+    on `fn` (a files.FindFiles instance), if one exists and is still
+    valid -- i.e. the "touch" marker it was fenced against has not
+    moved since it was written, so nothing has been (re)written for
+    this level+camera+day since. Returns None on any cache miss
+    (missing, corrupt, or invalidated by a write since it was cached);
+    the caller must then fall back to a real scan. This is purely an
+    optimization, never the source of truth.
+    """
+    fence = getLevelTouchTime(fn, level)
+    try:
+        with open(fn.markerPath(level, "done")) as f:
+            summary = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if summary.get("fence") != fence:
+        return None
+    try:
+        return summary["n"], summary["oldest"], summary["newest"]
+    except KeyError:
+        return None
+
+
+def writeLevelSummary(fn, level, n, oldest, newest, fenceBefore, config):
+    """
+    Cache a freshness summary for `level` on `fn`, fenced against the
+    level's "touch" marker.
+
+    `fenceBefore` must be the value `getLevelTouchTime` returned right
+    before the scan that produced n/oldest/newest started. Only
+    publishes if the touch marker's mtime is still exactly that value
+    -- i.e. nothing was written for this level+camera+day while the
+    scan was running. This is what makes the cache safe under many
+    concurrent SLURM workers: a slow scan can never resurrect stale
+    data after a fast concurrent write already invalidated it, because
+    *publishing* itself is conditional on the fence, not just
+    invalidation-on-write. If the fence moved, the freshly computed
+    summary is discarded instead of published -- the next reader just
+    falls back to a real scan again, same as if nothing had ever been
+    cached. A missed optimization, never a correctness gap.
+    """
+    if getLevelTouchTime(fn, level) != fenceBefore:
+        return
+    donePath = fn.markerPath(level, "done")
+    payload = json.dumps(
+        {"fence": fenceBefore, "n": n, "oldest": oldest, "newest": newest}
+    )
+    createParentDir(donePath, mode=config.dirMode)
+    tmpPath = f"{donePath}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    with open(tmpPath, "w") as f:
+        f.write(payload)
+    os.chmod(tmpPath, config.fileMode)
+    # re-check right before publishing: closes the window between the
+    # check above and the rename becoming visible to readers.
+    if getLevelTouchTime(fn, level) != fenceBefore:
+        tryRemovingFile(tmpPath)
+        return
+    os.rename(tmpPath, donePath)
+
+
+def open2(file, config, mode="r", cleanUp=True, **kwargs):
+    r"""
     Open file with directory creation and permissions.
 
     Parameters
@@ -2178,7 +2831,7 @@ def open2(file, config, mode="r", cleanUp=True, **kwargs):
         File mode, by default "r".
     cleanUp : bool, optional
         Clean up temporary files, by default True.
-    **kwargs : dict
+    \*\*kwargs : dict
         Additional arguments for opening.
 
     Returns
@@ -2196,7 +2849,9 @@ def open2(file, config, mode="r", cleanUp=True, **kwargs):
         pass
     f = open(file, mode, **kwargs)
     os.chmod(file, config.fileMode)
-
+    log.warning(f"writing {file}")
+    if mode not in ("r", "rb"):
+        _touchLevelMarker(file, config)
     return f
 
 
@@ -2220,7 +2875,7 @@ def tryRemovingFile(file):
 
 
 def to_netcdf2(dat, config, file, **kwargs):
-    """
+    r"""
     Save dataset to NetCDF with directory creation.
     Write to random file and move to final file to
     avoid errors due to race conditions or exisiting files
@@ -2233,7 +2888,7 @@ def to_netcdf2(dat, config, file, **kwargs):
         Configuration settings.
     file : str
         Output file name.
-    **kwargs : dict
+    \*\*kwargs : dict
         Additional arguments for saving.
 
     Returns
@@ -2254,7 +2909,7 @@ def to_netcdf2(dat, config, file, **kwargs):
         if hasattr(dat[var].dtype, 'na_value'):
             dat[var] = dat[var].astype(object)
 
-    tmpFile = f"{file}.{np.random.randint(0, 99999 + 1)}.tmp.cdf"
+    tmpFile = f"{file}.{os.getpid()}.{uuid.uuid4().hex}.tmp.cdf"
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         if dat[list(dat.data_vars)[-1]].chunks is not None:
@@ -2268,6 +2923,7 @@ def to_netcdf2(dat, config, file, **kwargs):
 
     tryRemovingFile(f"{file}.nodata")
     tryRemovingFile(f"{file}.broken.txt")
+    _touchLevelMarker(file, config)
 
     return res
 
@@ -2329,6 +2985,10 @@ def cart2pol(x, y):
     phi = np.arctan2(y, x)
     return (rho, phi)
 
+# Entfernt ANSI escape codes (Farben, Cursor-Steuerung etc.)
+ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE.sub("", text)
 
 @taskqueue.queueable
 def runCommandInQueue(IN, stdout=subprocess.DEVNULL):
@@ -2373,7 +3033,7 @@ def runCommandInQueue(IN, stdout=subprocess.DEVNULL):
             # Poll process for new output until finished
             if proc.stdout is not None:
                 for line in proc.stdout:
-                    line = line.decode()
+                    line = strip_ansi(line.decode())
                     log.info(line)
                     f.write(line)
                     f.flush()
@@ -2388,6 +3048,22 @@ def runCommandInQueue(IN, stdout=subprocess.DEVNULL):
             if exitCode != 0:
                 success = False
                 log.error(f"BROKEN {fOut} {exitCode}")
+            elif not (
+                os.path.isfile(fOut)
+                or os.path.isfile(f"{fOut}.nodata")
+                or os.path.isfile(f"{fOut}.broken.txt")
+            ):
+                # exited cleanly but produced none of the three recognized
+                # terminal artifacts (the real output, a .nodata sentinel, or
+                # its own .broken.txt). A clean exit code alone used to be
+                # treated as success, so a task that ever hit an edge case
+                # exiting 0 without writing anything recognizable would be
+                # silently deleted from the queue with zero trace of what
+                # happened. Surface it as broken instead so it's visible.
+                success = False
+                log.error(
+                    f"BROKEN {fOut} exited 0 but produced no output/nodata/broken.txt"
+                )
             else:
                 log.info(f"SUCCESS {fOut} {exitCode}")
 
@@ -2402,18 +3078,73 @@ def runCommandInQueue(IN, stdout=subprocess.DEVNULL):
 
     if not success:
         shutil.copy(tmpFile, "%s.broken.txt" % tmpFile)
+        tryRemovingFile(fOut)
+        tryRemovingFile(f"{fOut}.nodata")
         try:
             createParentDir(fOut)
             shutil.copy(tmpFile, "%s.broken.txt" % fOut)
+            # This write bypasses open2/to_netcdf2 (it's a plain
+            # shutil.copy, not a real product write), so it would
+            # otherwise never bump the level's touch marker -- leaving
+            # _freshnessSummary's cached (oldest, newest) permanently
+            # stuck at whatever it was before this failure, even though
+            # a brand new .broken.txt with today's mtime now exists.
+            # That silently reproduces the exact allDone caching bug for
+            # every level that ever fails via the task queue (e.g. a
+            # known-bad metaRotation day: it succeeds at being marked
+            # broken, but keeps looking "not up to date" forever
+            # afterwards and gets regenerated -- harmlessly, since it
+            # just re-fails and re-writes the same broken.txt, but
+            # noisily -- on every single DAG check). Every generated
+            # command's settings yaml is always the first positional arg
+            # right after `-m VISSSlib <call>` (see
+            # products.py's _commandTemplateDaily/_commandTemplateL1), so
+            # recover it from the command string to bump the marker here
+            # too. Best-effort: ad hoc commands pushed straight into the
+            # queue (see reference_task_queue_submission) or the allDone
+            # touch command don't match and are silently skipped, same as
+            # _levelMarkerPaths already does for anything it doesn't
+            # recognize.
+            settingsMatch = re.search(r"-m\s+VISSSlib\s+\S+\s+(\S+\.ya?ml)", command)
+            if settingsMatch is not None:
+                _touchLevelMarker(fOut, readSettings(settingsMatch.group(1)))
         except:
             pass
+
     if not running:
         tryRemovingFile(tmpFile)
 
     return success
 
 
-def worker1(queue, ww=0, status=None, waitTime=5):
+def _queueHasLeasableTask(tq):
+    """
+    Whether the queue currently has at least one task with an expired
+    (or no) lease, i.e. one `tq.poll` could actually lease right now.
+
+    `tq.is_empty()` only checks whether the queue directory has zero
+    files at all, so it stays False as long as a single task is still
+    leased (in-flight, or abandoned by a crashed worker) even though
+    nothing is actually leasable. Calling `tq.poll` in that state makes
+    it busy-spin internally (`QueueEmptyError` never grows its own
+    `tries` counter, so its backoff stays ~0-1s) for up to
+    `leaseSeconds`, which is exactly what blocks a SLURM node once
+    `leaseSeconds` is hours long. Callers should use this instead of
+    `tq.is_empty()` to decide whether to poll at all.
+    """
+    from taskqueue.file_queue_api import get_timestamp, nowfn
+
+    now = nowfn()
+    try:
+        for entry in os.scandir(tq.api.queue_path):
+            if get_timestamp(entry.name) <= now:
+                return True
+    except FileNotFoundError:
+        pass
+    return False
+
+
+def worker1(queue, ww=0, status=None, waitTime=5, leaseSeconds=21600, maxIdleSeconds=60):
     """
     Worker function for processing queue items.
 
@@ -2427,6 +3158,35 @@ def worker1(queue, ww=0, status=None, waitTime=5):
         Status array, by default None.
     waitTime : int, optional
         Wait time between checks, by default 5.
+    leaseSeconds : int, optional
+        Visibility timeout for a leased task, in seconds, by default
+        21600 (6h). `tq.poll` leases one task, then runs it fully
+        synchronously (`runCommandInQueue` blocks on the subprocess for
+        the task's entire runtime) before leasing the next -- the lease
+        is never renewed while a task is executing. Once `leaseSeconds`
+        elapses, other workers treat the task as abandoned and lease it
+        again even though the original worker is still correctly,
+        actively running it, causing duplicate concurrent execution of
+        the same command (the file lock in `runCommandInQueue` then
+        makes the duplicates no-op quickly, which drains the *queue*
+        long before the *task* actually finishes -- queue-empty stops
+        being a valid "done" signal). Must comfortably exceed the
+        slowest realistic single-file runtime for whatever commands
+        this queue carries, not just the typical one.
+    maxIdleSeconds : int, optional
+        Every worker in this job must simultaneously report idle
+        (status all 0) for this many seconds, checked every `waitTime`
+        seconds, before this worker gives up and exits, by default 60.
+        This is deliberately short -- SLURM jobs should free their
+        allocation for other cluster users promptly once a queue is
+        genuinely empty, rather than sit idle. It does mean a worker
+        can exit during a brief real gap between two submission stages
+        (e.g. one script finishes draining a batch, then computes what
+        to submit next) -- that CPU slot is then gone until a new
+        `workers()`/SLURM job is launched. Guarding against that is the
+        job of whoever is orchestrating multi-stage submissions (launch
+        workers right before submitting each stage), not this worker's
+        patience.
 
     Returns
     -------
@@ -2436,16 +3196,18 @@ def worker1(queue, ww=0, status=None, waitTime=5):
     time.sleep(ww / 5.0)  # to avoid race conditions
     tq = taskqueue.TaskQueue(f"fq://{queue}")
     out = None
+    idleRounds = 0
+    idleRoundsBeforeExit = max(1, round(maxIdleSeconds / waitTime))
     while True:
-        if not tq.is_empty():
+        if _queueHasLeasableTask(tq):
             if status is not None:
                 status[ww] = 1
             try:
                 out = tq.poll(
                     verbose=True,
                     tally=True,
-                    stop_fn=tq.is_empty,
-                    lease_seconds=2,
+                    stop_fn=lambda: not _queueHasLeasableTask(tq),
+                    lease_seconds=leaseSeconds,
                     backoff_exceptions=[BlockingIOError],
                 )
             except:
@@ -2454,13 +3216,18 @@ def worker1(queue, ww=0, status=None, waitTime=5):
                 if status is not None:
                     status[ww] = 0
         else:
-            log.warning(f"worker {ww} queue {queue} empty")
+            log.warning(f"worker {ww} queue {queue} empty or fully leased elsewhere")
         if status is not None:
             if np.all([ss == 0 for ss in status]):
-                log.warning(
-                    f"do not restart worker {ww} because all empty {[status[i] for i in range(len(status))]}"
-                )
-                break
+                idleRounds += 1
+                if idleRounds >= idleRoundsBeforeExit:
+                    log.warning(
+                        f"do not restart worker {ww} because all empty for "
+                        f"{idleRounds} consecutive rounds {[status[i] for i in range(len(status))]}"
+                    )
+                    break
+            else:
+                idleRounds = 0
             summary = [status[i] for i in range(len(status))]
         else:
             summary = ""
@@ -2470,7 +3237,14 @@ def worker1(queue, ww=0, status=None, waitTime=5):
     return out
 
 
-def workers(queue, nJobs=os.cpu_count(), waitTime=60, join=True):
+def workers(
+    queue,
+    nJobs=os.cpu_count(),
+    waitTime=60,
+    join=True,
+    leaseSeconds=21600,
+    maxIdleSeconds=60,
+):
     """
     Start multiple worker processes.
 
@@ -2484,6 +3258,15 @@ def workers(queue, nJobs=os.cpu_count(), waitTime=60, join=True):
         Wait time between checks, by default 60.
     join : bool, optional
         Join processes, by default True.
+    leaseSeconds : int, optional
+        Passed through to `worker1` -- see its docstring for why this
+        must exceed the slowest realistic task runtime, by default
+        21600 (6h).
+    maxIdleSeconds : int, optional
+        Passed through to `worker1` -- see its docstring; by default 60.
+        Callers that don't care about freeing a real SLURM allocation
+        promptly (e.g. tests walking many DAG stages back to back) can
+        pass a much smaller value to avoid paying this wait per stage.
 
     Returns
     -------
@@ -2502,12 +3285,30 @@ def workers(queue, nJobs=os.cpu_count(), waitTime=60, join=True):
                 "ww": ww,
                 "status": status,
                 "waitTime": waitTime,
+                "leaseSeconds": leaseSeconds,
+                "maxIdleSeconds": maxIdleSeconds,
             },
         )
         x.start()
         workerList.append(x)
     if join:
-        [x.join() for x in workerList]
+        # Reap whichever processes have actually finished, not in launch
+        # order: `[x.join() for x in workerList]` blocks on workerList[0]
+        # first, so any later-indexed process that already exited sits
+        # as a zombie (<defunct>, invisible to `ps` as doing real work)
+        # until every earlier process's blocking join() finally returns
+        # -- which can be a very long time if an early worker is still
+        # genuinely mid-task. Polling is_alive() and joining only the
+        # already-dead ones reaps them immediately regardless of exit
+        # order.
+        remaining = list(workerList)
+        while remaining:
+            remaining = [x for x in remaining if x.is_alive()]
+            for x in workerList:
+                if not x.is_alive():
+                    x.join(timeout=0)
+            if remaining:
+                time.sleep(1)
     return workerList
 
 
@@ -2548,7 +3349,46 @@ def copyCurrentQuicklook(level, ff):
     return
 
 
-def checkForExisting(ffOut, level0=None, events=None, parents=None):
+def _isLevelGroup(item):
+    """True for a (files.FindFiles, level) pair, as opposed to a plain
+    file path -- see checkForExisting's events/parents docstring."""
+    return (
+        isinstance(item, tuple)
+        and len(item) == 2
+        and isinstance(item[1], str)
+        and hasattr(item[0], "markerPath")
+    )
+
+
+def _newestMtime(items):
+    """
+    Newest mtime across `items`, a list that may freely mix plain file
+    paths with (files.FindFiles, level) pairs (see checkForExisting).
+    A (fn, level) pair is resolved through the on-disk freshness cache
+    (readLevelSummary) when available -- no glob, no per-file stat --
+    falling back to a real scan of that level's files (fn.listFilesExt)
+    only on a cache miss. Empty/None `items` -> 0.
+    """
+    newest = 0.0
+    for item in items or []:
+        if _isLevelGroup(item):
+            fn, level = item
+            cached = readLevelSummary(fn, level)
+            if cached is not None:
+                newest = max(newest, cached[2])  # newest
+                continue
+            item = fn.listFilesExt(level)
+        else:
+            item = [item]
+        if item:
+            newest = max(newest, max(os.path.getmtime(f) for f in item))
+    return newest
+
+
+def checkForExisting(
+    ffOut, level0=None, events=None, parents=None, breakpointLevel=None,
+    fL=None, level=None,
+):
     """
     Check if file exists and is up-to-date including potential parents.
 
@@ -2558,10 +3398,36 @@ def checkForExisting(ffOut, level0=None, events=None, parents=None):
         Output file path.
     level0 : list, optional
         Level 0 data files, by default None.
-    events : list, optional
-        Event files, by default None.
-    parents : list, optional
-        Parent files, by default None.
+    events, parents : list, optional
+        What `ffOut` must not be older than, by default None. Each
+        element is either a plain file path (stat'd directly, as
+        before), or a (files.FindFiles, level) pair -- e.g.
+        `(fL, "level1match")` in place of pre-globbing
+        `fL.listFilesExt("level1match")` yourself -- resolved through
+        the on-disk freshness-summary cache when possible instead of
+        globbing and stat'ing every one of that level's files (see
+        _newestMtime/readLevelSummary). The two forms can be mixed
+        freely within one list. Combines with `fL`/`level` below if
+        both are given (the registry-resolved parents are appended to
+        this list, not a replacement for it).
+    fL : files.FindFiles, optional
+        Given together with `level`, resolve `level`'s declared
+        LEVEL_REGISTRY parents (see resolveLevelParents) for `fL`'s own
+        case/camera/config and check `ffOut` against those too -- the
+        caller doesn't hand-write (and risk drifting out of sync with)
+        its own parents/events list for whatever LEVEL_REGISTRY already
+        declares. Only makes sense for a level checked at day/whole-file
+        granularity; a per-file check against a specific matching
+        upstream file (e.g. matchParticles against one particular
+        level1detect file) still needs an explicit `parents=`/`events=`
+        entry instead, since LEVEL_REGISTRY only knows "day's worth of
+        level X", not "this one specific file".
+    level : str, optional
+        Which level's declared parents to resolve via `fL` (see above).
+    breakpointLevel : str, optional
+        If given, treat `ffOut` as needing regeneration when its mtime
+        is older than `tools.reprocessBreakpoint(breakpointLevel)` --
+        see REPROCESS_AFTER. By default None (no such check).
 
     Returns
     -------
@@ -2571,22 +3437,25 @@ def checkForExisting(ffOut, level0=None, events=None, parents=None):
     if not os.path.isfile(ffOut):
         # file does not exist yet
         return False
+    minMtime = reprocessBreakpoint(breakpointLevel) if breakpointLevel else None
+    if minMtime is not None and os.path.getmtime(ffOut) < minMtime:
+        log.warning(
+            f"file exists but predates the {breakpointLevel} reprocessing "
+            f"breakpoint (REPROCESS_AFTER), redoing {ffOut}"
+        )
+        return False
     if level0 is not None:
         if len(level0) == 0:
-            log.warning("fno level0 data {ffOut}")
+            log.warning(f"no level0 data {ffOut}")
             return True
     if events is not None:
-        if np.any(
-            os.path.getmtime(ffOut)
-            < np.array([0] + [os.path.getmtime(f) for f in events])
-        ):
+        if os.path.getmtime(ffOut) < _newestMtime(events):
             log.warning(f"file exists but older than event file, redoing {ffOut}")
             return False
+    if fL is not None and level is not None:
+        parents = (parents or []) + resolveLevelParents(level, fL.camera, fL.case, fL.config)
     if parents is not None:
-        if np.any(
-            os.path.getmtime(ffOut)
-            < np.array([0] + [os.path.getmtime(f) for f in parents])
-        ):
+        if os.path.getmtime(ffOut) < _newestMtime(parents):
             log.warning(f"file exists but older than parents files, redoing {ffOut}")
             return False
     log.warning(f"output file exists already: {ffOut}")
@@ -2617,6 +3486,7 @@ def unpackQualityFlags(quality, doubleTimestamps=False):
             "blowingSnow",
             "obervationsDiffer",
             "tracksTooShort",
+            "zResidualTooWide",
         ],
         dims=["flag"],
         name="flag",
@@ -2756,7 +3626,7 @@ def reportLastFiles(
             ):
                 continue
 
-            foundLastFile, completeCase, lastFile, lastFileTime = files.findLastFile(
+            foundLastFile, completeCase, lastFile, lastFileTime, _ = files.findLastFile(
                 config, prod, camera
             )
             camera_name = (camera.split('_')[0]).ljust(8)
@@ -2804,7 +3674,7 @@ For information about the commands, run
         p, has_fname=False, has_case=True, has_camera=False, has_skip=True
     ):
         """Add standard arguments to a subparser."""
-        skip_default = True
+        skip_default = False
         p.add_argument("settings", help="Settings YAML file")
         if has_fname:
             p.add_argument("fname", help="Input file path")
@@ -2821,7 +3691,7 @@ For information about the commands, run
                 "--skip-existing",
                 action="store_true",
                 default=skip_default,
-                help=f"Skip if exists (default: {skip_default})",
+                help=f"Skip if output already exists (default: {skip_default})",
             )
 
     # Metadata commands
@@ -2847,10 +3717,15 @@ For information about the commands, run
     _add_std_args(p)
 
     p = subparsers.add_parser(
-        "quicklooks.createMetaCoefQuicklook",
-        help="Create metadata coefficient quicklook",
+        "quicklooks.metaRotationQuicklook",
+        help="Create camera rotation coefficient quicklook",
     )
     _add_std_args(p)
+
+    p = subparsers.add_parser(
+        "quicklooks.metaFramesQuicklook", help="Create metaFrames quicklook"
+    )
+    _add_std_args(p, has_camera=True)
 
     p = subparsers.add_parser(
         "quicklooks.level0Quicklook", help="Create Level 0 quicklook"

@@ -15,3 +15,4 @@ tests/data
 tests/data.zip
 *processing.txt
 *broken.txt
+scripts/golden_outputs

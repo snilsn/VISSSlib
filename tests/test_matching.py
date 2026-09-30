@@ -1,5 +1,9 @@
+import inspect
+from unittest import mock
+
 import numpy as np
 import pytest
+from VISSSlib import matching as matching_module
 from VISSSlib.matching import *
 
 from helpers import get_test_data_path, get_test_path, readTestSettings
@@ -187,3 +191,78 @@ class TestMatch(object):
                 },
             }
         }
+
+    def testMatchSegmentsIsolated(self):
+        # _matchSegments is the file-I/O-free matching/rotation-retrieval
+        # core of matchParticles. Spy on the real call matchParticles makes
+        # (so the already-opened leader/follower/event datasets don't have
+        # to be hand-built here) and then re-invoke it standalone with a
+        # fresh copy of the mutable `errors` argument: it must reproduce
+        # exactly the same result, proving it depends only on its
+        # arguments and is independently callable/testable.
+        fname = f"{self.testPath}/test_0.6/products/level1detect/2026/01/10/level1detect_V1.2_test_visss11gb_visss_leader_S1145792_20260110-083000.nc"
+
+        captured = {}
+        original = matching_module._matchSegments
+
+        def spy(*args, **kwargs):
+            result = original(*args, **kwargs)
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            captured["result"] = result
+            return result
+
+        with mock.patch.object(matching_module, "_matchSegments", side_effect=spy):
+            (
+                _,
+                matchedDats,
+                rotate_final,
+                rotate_err_final,
+                nLeader,
+                nFollower,
+                nPairs,
+                _,
+            ) = matchParticles(fname, self.config, writeNc=False, skipExisting=False)
+
+        assert "args" in captured, "_matchSegments was not called"
+        assert nPairs == 1035
+
+        callArgs = dict(
+            inspect.signature(matching_module._matchSegments)
+            .bind(*captured["args"], **captured["kwargs"])
+            .arguments
+        )
+        callArgs["errors"] = callArgs["errors"].copy()
+
+        (
+            matchedDats2,
+            matchedDat2,
+            errorStrs2,
+            nSamples2,
+            matchedDat4Rot2,
+            rotate_result2,
+            rotate_err_result2,
+            rotate_final2,
+            rotate_err_final2,
+            nLeader2,
+            nFollower2,
+        ) = matching_module._matchSegments(**callArgs)
+
+        assert nLeader2 == nLeader
+        assert nFollower2 == nFollower
+        assert sum(len(d.pair_id) for d in matchedDats2) == nPairs
+        assert dict(rotate_final2) == pytest.approx(dict(rotate_final))
+        assert dict(rotate_err_final2) == pytest.approx(dict(rotate_err_final))
+
+    def testMatchParticlesOffsetsOnly(self):
+        # offsetsOnly short-circuits out of the middle of the segment loop
+        # with a differently-shaped 2-tuple; this is now implemented via
+        # _MatchEarlyReturn inside _matchSegments and must still surface
+        # through matchParticles unchanged.
+        fname = f"{self.testPath}/test_0.6/products/level1detect/2026/01/10/level1detect_V1.2_test_visss11gb_visss_leader_S1145792_20260110-083000.nc"
+        result = matchParticles(
+            fname, self.config, writeNc=False, skipExisting=False, offsetsOnly=True
+        )
+        assert len(result) == 2
+        captureIdOffset, nMatched = result
+        assert nMatched > 0

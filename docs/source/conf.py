@@ -45,7 +45,11 @@ templates_path = ["_templates"]
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = []
+# *.sync-conflict-* files are left behind by the Syncthing sync this
+# directory lives under (see docs discussion) -- exclude them so a stray
+# conflict copy of e.g. index.rst doesn't get built as its own page with
+# its own (duplicate-label-producing) toctree.
+exclude_patterns = ["*.sync-conflict-*", "**/*.sync-conflict-*"]
 
 
 # -- Options for HTML output -------------------------------------------------

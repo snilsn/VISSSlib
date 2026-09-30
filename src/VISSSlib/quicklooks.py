@@ -506,9 +506,10 @@ def createLevel1detectQuicklook(
         return None, None
 
     if site != "mosaic":
-        if (len(ff.listFiles("level0")) == 0) and (
+        noLevel0Yet = (len(ff.listFiles("level0")) == 0) and (
             len(ff.listFiles("level0status")) == 0
-        ):
+        )
+        if noLevel0Yet and ff.isDataTransferPending("level0"):
             print("NO DATA YET (TRANSFERRED?)", ffOut)
             return None, None
 
@@ -755,8 +756,7 @@ def createLevel1detectQuicklook(
                             # im = particleImages[fname][0].extractimage(imfname)
                             im = particleImages[fname].extractnpy(pidStr)
                         except KeyError:
-                            print("NOT FOUND ", pidStr)
-                            raise ValueError
+                            log.error(f"Particle image {pidStr} NOT FOUND ")
                             continue
                         # apply alpha channel
                         # im[...,0][im[...,1] == 0] = background
@@ -1203,7 +1203,10 @@ def metaFramesQuicklook(
 
     print("reading events")
     if len(ff.listFiles("metaEvents")) == 0:
-        log.error(f"event data not found")
+        if len(ff.listFilesExt("metaEvents")) == 0:
+            log.error(f"event data not found")
+        else:
+            log.warning(f"{case} metaEvents is nodata/broken, skipping quicklook")
         return None, None
     try:
         events = xr.open_dataset(ff.listFiles("metaEvents")[0])
@@ -1504,7 +1507,10 @@ def createLevel1matchQuicklook(
     ):
         return None, None
 
-    if (len(fl.listFiles("level0")) == 0) and (len(fl.listFiles("level0status")) == 0):
+    noLevel0Yet = (len(fl.listFiles("level0")) == 0) and (
+        len(fl.listFiles("level0status")) == 0
+    )
+    if noLevel0Yet and fl.isDataTransferPending("level0"):
         print(
             "NO DATA YET (TRANSFERRED?)",
             fl.fnamesPattern["level0"],
@@ -1686,9 +1692,21 @@ def createLevel1matchQuicklook(
     )
     cax[5].axis("off")
 
-    defaultRotation, prevTime = tools.getPrevRotationEstimate(
-        ff.datetime64, "transformation", config
-    )
+    try:
+        defaultRotation, prevTime = tools.getPrevRotationEstimate(
+            ff.datetime64, "transformation", config
+        )
+    except RuntimeError as e:
+        # e.g. case predates every entry in config.rotate (a legitimate
+        # deployment date with no rotation prior configured yet) --
+        # the reference axhlines below are a plotting nicety, not
+        # essential, but the gap itself should stay visible in the log
+        # rather than silently vanishing.
+        log.warning(
+            f"{case}: no rotation prior available for the theta/phi/Ofz "
+            f"reference lines ({e}); plotting without them"
+        )
+        defaultRotation = None
 
     theta = datM.camera_theta.sel(camera_rotation="mean").values.squeeze()
     _, _ = _plotVar(
@@ -1696,7 +1714,7 @@ def createLevel1matchQuicklook(
         datM.capture_time.isel(camera=0),
         ax[6],
         "theta",
-        axhline=defaultRotation["camera_theta"],
+        axhline=defaultRotation["camera_theta"] if defaultRotation else None,
         resample=resample,
     )
     phi = datM.camera_phi.sel(camera_rotation="mean").values.squeeze()
@@ -1705,7 +1723,7 @@ def createLevel1matchQuicklook(
         datM.capture_time.isel(camera=0),
         ax[7],
         "phi",
-        axhline=defaultRotation["camera_phi"],
+        axhline=defaultRotation["camera_phi"] if defaultRotation else None,
         resample=resample,
     )
     Ofz = datM.camera_Ofz.sel(camera_rotation="mean").values.squeeze()
@@ -1714,7 +1732,7 @@ def createLevel1matchQuicklook(
         datM.capture_time.isel(camera=0),
         ax[8],
         "Ofz",
-        axhline=defaultRotation["camera_Ofz"],
+        axhline=defaultRotation["camera_Ofz"] if defaultRotation else None,
         resample=resample,
     )
 
@@ -2104,7 +2122,10 @@ def metaRotationQuicklook(case, config, version=__version__, skipExisting=True):
 
     print("reading events")
     if len(ff.listFiles("metaEvents")) == 0:
-        log.error(f"event data not found")
+        if len(ff.listFilesExt("metaEvents")) == 0:
+            log.error(f"event data not found")
+        else:
+            log.warning(f"{case} metaEvents is nodata/broken, skipping quicklook")
         return None, None
 
     try:
@@ -2114,7 +2135,8 @@ def metaRotationQuicklook(case, config, version=__version__, skipExisting=True):
         return None, None
 
     try:
-        events = xr.open_dataset(eventFile)
+        with xr.open_dataset(eventFile) as ds:
+            events = ds.load()
     except:
         print(f"{eventFile} broken")
         return None, None
@@ -2126,7 +2148,8 @@ def metaRotationQuicklook(case, config, version=__version__, skipExisting=True):
         return None, None
 
     try:
-        events2 = xr.open_dataset(eventFile)
+        with xr.open_dataset(eventFile) as ds:
+            events2 = ds.load()
     except:
         print(f"{eventFile} broken")
         return None, None
@@ -2144,7 +2167,8 @@ def metaRotationQuicklook(case, config, version=__version__, skipExisting=True):
         return None, None
 
     try:
-        rotDat = xr.open_dataset(ff.listFiles("metaRotation")[0])
+        with xr.open_dataset(ff.listFiles("metaRotation")[0]) as ds:
+            rotDat = ds.load()
     except:
         print(f'{ff.listFiles("metaRotation")[0]} broken')
         return None, None
@@ -2388,6 +2412,7 @@ def createLevel2detectQuicklook(
     version = __version__
 
     nodata = False
+    noRawData = False
     # get level 0 file names
     ff = files.FindFiles(case, camera, config, version)
     fOut = ff.quicklook.level2detect
@@ -2410,8 +2435,15 @@ def createLevel2detectQuicklook(
         lv2 = lv2[0]
 
     if len(ff.listFiles("metaEvents")) == 0:
-        log.error(f"{case} event data not found")
-        return None, None
+        if len(ff.listFilesExt("metaEvents")) == 0:
+            log.error(f"{case} event data not found")
+            return None, None
+        else:
+            # confirmed sentinel (nodata/broken.txt), not just "not
+            # processed yet" -- still worth a placeholder quicklook so the
+            # gallery has one image per day instead of a silent gap
+            log.warning(f"{case} metaEvents is nodata/broken, plotting as no raw data")
+            noRawData = True
 
     log.info(f"running {case} {fOut}")
 
@@ -2438,7 +2470,9 @@ def createLevel2detectQuicklook(
         fontweight="bold",
         x=mid,
     )
-    if nodata:
+    if noRawData:
+        axs[0, 0].set_title("no raw data")
+    elif nodata:
         axs[0, 0].set_title("no data")
     else:
         dat2 = xr.open_dataset(lv2)
@@ -2632,6 +2666,7 @@ def createLevel2matchQuicklook(
 
     camera = config.leader
     nodata = False
+    noRawData = False
     # get level 0 file names
     ff = files.FindFiles(case, camera, config, version)
     fOut = ff.quicklook.level2match
@@ -2656,8 +2691,12 @@ def createLevel2matchQuicklook(
         lv2match = lv2match[0]
 
     if len(ff.listFiles("metaEvents")) == 0:
-        log.error(f"{case} event data not found")
-        return None, None
+        if len(ff.listFilesExt("metaEvents")) == 0:
+            log.error(f"{case} event data not found")
+            return None, None
+        else:
+            log.warning(f"{case} metaEvents is nodata/broken, plotting as no raw data")
+            noRawData = True
 
     log.info(f"running {case} {fOut}")
 
@@ -2684,7 +2723,9 @@ def createLevel2matchQuicklook(
         fontweight="bold",
         x=mid,
     )
-    if nodata:
+    if noRawData:
+        axs[0, 0].set_title("no raw data")
+    elif nodata:
         axs[0, 0].set_title("no data")
     else:
         dat2 = xr.open_dataset(lv2match)
@@ -2757,6 +2798,7 @@ def createLevel2matchQuicklook(
         processingFailed = quality.sel(flag="processingFailed", drop=True)
         blowingSnow = quality.sel(flag="blowingSnow", drop=True)
         cameraBlocked = quality.sel(flag="cameraBlocked", drop=True)
+        zResidualTooWide = quality.sel(flag="zResidualTooWide", drop=True)
 
         for ax in axs[:, 0]:
             ax.set_title(None)
@@ -2812,6 +2854,16 @@ def createLevel2matchQuicklook(
                     alpha=0.25,
                     label=f"blowing snow > {config.quality.blowingSnowFrameThresh*100}%",
                 )  # , hatch='///')
+            cond = quality.time.where(zResidualTooWide)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(quality.time),
+                    [ylim[1]] * len(quality.time),
+                    color="cyan",
+                    alpha=0.2,
+                    label=f"Z-residual sigma > {config.quality.maxZSigma} px",
+                )
             ax.set_ylim(ylim)
 
             ax.tick_params(axis="both", labelsize=15)
@@ -2885,6 +2937,7 @@ def createLevel2trackQuicklook(
 
     camera = config.leader
     nodata = False
+    noRawData = False
     # get level 0 file names
     ff = files.FindFiles(case, camera, config, version)
     fOut = ff.quicklook.level2track
@@ -2906,8 +2959,12 @@ def createLevel2trackQuicklook(
         lv2track = lv2track[0]
 
     if len(ff.listFiles("metaEvents")) == 0:
-        log.error(f"{case} event data not found")
-        return None, None
+        if len(ff.listFilesExt("metaEvents")) == 0:
+            log.error(f"{case} event data not found")
+            return None, None
+        else:
+            log.warning(f"{case} metaEvents is nodata/broken, plotting as no raw data")
+            noRawData = True
 
     log.info(f"running {case} {fOut}")
 
@@ -2934,7 +2991,9 @@ def createLevel2trackQuicklook(
         fontweight="bold",
         x=mid,
     )
-    if nodata:
+    if noRawData:
+        axs[0, 0].set_title("VISSS did not operate, no raw data")
+    elif nodata:
         axs[0, 0].set_title("no data")
     else:
         dat2 = xr.open_dataset(lv2track)
@@ -3036,6 +3095,7 @@ def createLevel2trackQuicklook(
         blowingSnow = quality.sel(flag="blowingSnow", drop=True)
         cameraBlocked = quality.sel(flag="cameraBlocked", drop=True)
         tracksTooShort = quality.sel(flag="tracksTooShort", drop=True)
+        zResidualTooWide = quality.sel(flag="zResidualTooWide", drop=True)
 
         for ax in axs[:, 0]:
             ax.set_title(None)
@@ -3102,6 +3162,16 @@ def createLevel2trackQuicklook(
                     alpha=0.2,
                     label=f"mean track length < {config.quality.trackLengthThreshold}",
                     # hatch="X",
+                )
+            cond = quality.time.where(zResidualTooWide)
+            if cond.notnull().any():
+                ax.fill_between(
+                    cond,
+                    [ylim[0]] * len(quality.time),
+                    [ylim[1]] * len(quality.time),
+                    color="cyan",
+                    alpha=0.2,
+                    label=f"Z-residual sigma > {config.quality.maxZSigma} px",
                 )
 
             ax.set_ylim(ylim)
@@ -3252,9 +3322,10 @@ def createLevel1matchParticlesQuicklook(
         return None, None
 
     if site != "mosaic":
-        if (len(ff.listFiles("level0")) == 0) and (
+        noLevel0Yet = (len(ff.listFiles("level0")) == 0) and (
             len(ff.listFiles("level0status")) == 0
-        ):
+        )
+        if noLevel0Yet and ff.isDataTransferPending("level0"):
             print("NO DATA YET (TRANSFERRED?)", ffOut)
             return None, None
 
@@ -3693,6 +3764,7 @@ def createLevel3RimingQuicklook(
 
     camera = config.leader
     nodata = False
+    noRawData = False
     # get level 0 file names
     ff = files.FindFiles(case, camera, config, version)
     fOut = ff.quicklook.level3combinedRiming
@@ -3717,8 +3789,12 @@ def createLevel3RimingQuicklook(
         lv3 = lv3[0]
 
     if len(ff.listFiles("metaEvents")) == 0:
-        log.error(f"{case} event data not found")
-        return None, None
+        if len(ff.listFilesExt("metaEvents")) == 0:
+            log.error(f"{case} event data not found")
+            return None, None
+        else:
+            log.warning(f"{case} metaEvents is nodata/broken, plotting as no raw data")
+            noRawData = True
 
     log.info(f"running {case} {fOut}")
 
@@ -3745,7 +3821,9 @@ def createLevel3RimingQuicklook(
         fontweight="bold",
         x=mid,
     )
-    if nodata:
+    if noRawData:
+        axs[0].set_title("no raw data")
+    elif nodata:
         axs[0].set_title("no data")
     else:
         dat3 = xr.open_dataset(lv3)  # .sel(size_definition="Dmax", drop=True)
@@ -3778,7 +3856,9 @@ def createLevel3RimingQuicklook(
 
         dat3.Ze_0.plot(ax=ax1, label="Ze_0")
         dat3.Ze_ground.plot(ax=ax1, label="Ze_ground")
-        dat3.Ze_combinedRetrieval.plot(ax=ax1, label="Ze_combinedRetrieval")
+        dat3.Ze_combinedRetrieval.sel(shape="mean").plot(
+            ax=ax1, label="Ze_combinedRetrieval"
+        )
         dat3.Ze_ground_fitResidual.where(dat3.Ze_0 > -10).plot(
             ax=ax1, label="Ze_ground_fitResidual"
         )
@@ -3788,10 +3868,16 @@ def createLevel3RimingQuicklook(
         ax1.legend()
         ax1.set_ylim(-20, 40)
 
-        dat3.combinedNormalizedRimeMass.plot(ax=ax2, label="M (combined)")
+        dat3.combinedNormalizedRimeMass.sel(shape="mean").plot(
+            ax=ax2, label="M (combined, shape: mean)"
+        )
+        for shape in ["column", "dendrite", "needle", "plate", "rosette"]:
+            dat3.combinedNormalizedRimeMass.sel(shape=shape).plot(
+                ax=ax2, c="C0", alpha=0.3
+            )
         dat2.normalizedRimeMass_mean.plot(ax=ax2, label="M (in situ weighted mean)")
-        dat2.normalizedRimeMass_dist.mean("D_bins").plot(
-            ax=ax2, label="M (in situ mean)"
+        dat2.normalizedRimeMass_dist.quantile(0.9, dim="D_bins").plot(
+            ax=ax2, label="M (in situ 90th percentile)"
         )
 
         ax2.set_ylabel("M [-]")
@@ -3799,13 +3885,22 @@ def createLevel3RimingQuicklook(
         ax2.legend()
         ax2.set_ylim(1e-3, 10)
 
-        dat3.IWC.plot(ax=ax3, label="IWC (combined)")
+        dat3.IWC.sel(shape="mean").plot(ax=ax3, label="IWC (combined, shape: mean)")
+        for shape in ["column", "dendrite", "needle", "plate", "rosette"]:
+            dat3.IWC.sel(shape=shape).plot(ax=ax3, c="C0", alpha=0.3)
         ax3.set_ylabel("IWC [kg/m$^3$]")
         ax3.set_yscale("log")
         ax3.legend()
 
-        dat3.SR_M.plot(ax=ax4, label="SR (combined with meas. fall vel.)")
-        dat3.SR_M_heymsfield10.plot(ax=ax4, label="SR (combined with param. fall vel.)")
+        dat3.SR_M.sel(shape="mean").plot(
+            ax=ax4, label="SR (combined with meas. fall vel., shape: mean)"
+        )
+        dat3.SR_M_heymsfield10.sel(shape="mean").plot(
+            ax=ax4, label="SR (combined with param. fall vel., shape: mean)"
+        )
+        for shape in ["column", "dendrite", "needle", "plate", "rosette"]:
+            dat3.SR_M.sel(shape=shape).plot(ax=ax4, c="C0", alpha=0.3)
+            dat3.SR_M_heymsfield10.sel(shape=shape).plot(ax=ax4, c="C1", alpha=0.3)
         ax4.set_ylabel("SR [mm/h w.e.]")
         ax4.set_yscale("log")
         ax4.legend()
@@ -3872,16 +3967,15 @@ def createLevel3RimingQuicklook(
                     alpha=0.25,
                     label=f"blowing snow > {config.quality.blowingSnowFrameThresh*100}%",
                 )  # , hatch='///')
-            cond = quality.time.where(tracksTooShort)
-            if cond.notnull().any():
+            if tracksTooShort.sum() > 0:
                 ax.fill_between(
-                    cond,
-                    [ylim[0]] * len(quality.time),
-                    [ylim[1]] * len(quality.time),
+                    quality.time.values,
+                    ylim[0],
+                    ylim[1],
+                    where=tracksTooShort.values,
                     color="blue",
                     alpha=0.2,
                     label=f"mean track length < {config.quality.trackLengthThreshold}",
-                    # hatch="X",
                 )
 
             ax.set_ylim(ylim)

@@ -55,17 +55,14 @@ Description of the products
 
 
 
-``VISSSlib.scripts`` API
-------------------------
+Running the processing chain
+-----------------------------
 
-Various products at different levels need to be processed, typically by running a covenience function to ``VISSSlib.scripts``. See the ``scripts`` folder
-for sample shell scripts. 
-
-.. automodule:: VISSSlib.scripts
-    :members:
-    :undoc-members:
-    :show-inheritance:
-    :member-order: bysource
+Products are processed by invoking the corresponding module function via the
+``python -m VISSSlib`` command line interface, see :doc:`command_line` for the
+full list of subcommands. The ``scripts`` folder in the repository root contains
+sample shell scripts (e.g. for submission to a SLURM cluster) that drive this CLI
+for a full processing run.
 
 .. [*] The former text has been copied from Maahn, M., D. Moisseev, I. Steinke, N. Maherndl, and M. D. Shupe, 2024: Introducing the Video In Situ Snowfall Sensor (VISSS). Atmospheric Measurement Techniques, 17, 899–919, doi:10.5194/amt-17-899-2024.
 

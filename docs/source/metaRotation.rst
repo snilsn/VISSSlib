@@ -38,8 +38,8 @@ Mathematically, we need to transform the follower coordinate system
 (:math:`x_\textrm{F}`,\ :math:`y_\textrm{F}`,\ :math:`z_\textrm{F}`) to
 our leader reference coordinate system
 (:math:`x_\textrm{L}`,\ :math:`y_\textrm{L}`,\ :math:`z_\textrm{L}`)
-using rotation and shear matrices. In the appendix
-`4` (see VISSS paper Maahn et al. 2024), we show how the transformation matrices can be
+using rotation and shear matrices. In the `Coordinate transformation
+derivation`_ section below, we show how the transformation matrices can be
 arranged so that the follower’s vertical measure :math:`z_\textrm{F}`
 can be converted to :math:`z_\textrm{L}` depending on :math:`\varphi`
 and :math:`\theta` with
@@ -88,7 +88,7 @@ point for the iteration, the matching algorithm is applied for frames
 where only a single, relatively large (:math:`>` 10 px) particle is
 detected, so that the matching can be done based on particle height
 difference (:math:`\Delta h`) alone, ignoring vertical offset
-(:math:`\Delta z`). [*]_
+(:math:`\Delta z`).
 
 
 
@@ -96,17 +96,20 @@ difference (:math:`\Delta h`) alone, ignoring vertical offset
 Run metaRotation
 ----------------
 
-Run metaRotation with 
+Run metaRotation with
 
-.. autofunction:: VISSSlib.scripts.loopCreateMetaRotation
+.. autofunction:: VISSSlib.matching.createMetaRotation
+   :no-index:
 
-Or in a shell script with
+``createMetaRotation`` is decorated with :func:`VISSSlib.tools.loopify`, which turns
+the per-case function into one that loops over a case range, or in a shell script with
 
 .. code:: console
 
-    python3 -m VISSSlib scripts.loopCreateMetaRotation  $config_files.yaml $nDays $skipExisiting
+    python3 -m VISSSlib matching.createMetaRotation $config_file.yaml $case --skip-existing
 
-The script is **not** parallelized because previous results are typically required.
+where ``$case`` is either a number of days to look back, or ``YYYYMMDD``/``YYYYMMDD-YYYYMMDD``.
+The command is **not** parallelized because previous results are typically required.
 
 Manual adjustments
 ------------------
@@ -284,9 +287,149 @@ Now format the output so that we can copy paste it in the config files
           camera_theta: 0.021347
     
 
+Coordinate transformation derivation
+-------------------------------------------
+
+This is the derivation behind the forward-operator equation used above and
+implemented by :func:`VISSSlib.matching.shiftRotate_F2L` /
+:func:`VISSSlib.matching.rotate_F2L` and friends in :doc:`matching`
+(moved here from the paper's appendix, since it directly supports this
+retrieval and previously had no other home in this documentation — see
+:doc:`visss_paper_r2` for the rest of the hardware/paper background).
+
+We use a right handed coordinate system
+(:math:`x`,\ :math:`y`,\ :math:`z`) to define the position of particles
+in the observation volume, where :math:`z` points to the ground. The
+follower coordinate system
+(:math:`x_\textrm{F}`,\ :math:`y_\textrm{F}`,\ :math:`z_\textrm{F}`) can
+be transformed into the leader coordinate system
+(:math:`x_\textrm{L}`,\ :math:`y_\textrm{L}`,\ :math:`z_\textrm{L}`) by
+the standard transformation matrix
+
+.. math::
+
+   \begin{aligned}
+    \begin{pmatrix} x_\textrm{L} \\y_\textrm{L} \\ z_\textrm{L} \end{pmatrix} &=
+     \begin{pmatrix}
+      \cos \theta \cos \psi &
+      \sin \varphi \sin \theta \cos \psi - \cos \varphi \sin \psi &
+      \cos \varphi \sin \theta \cos \psi + \sin \varphi \sin \psi \\
+       \cos \theta \sin \psi &
+       \sin \varphi \sin \theta \sin \psi + \cos \varphi \cos \psi &
+       \cos \varphi \sin \theta \sin \psi - \sin \varphi \cos \psi \\
+       -\sin \theta &
+       \sin \varphi \cos \theta &
+       \cos \varphi \cos \theta
+     \end{pmatrix}
+     \begin{pmatrix} x_\textrm{F}' \\y_\textrm{F}' \\ z_\textrm{F}' \end{pmatrix}
+
+   \end{aligned}
+
+using the follower’s roll :math:`\varphi`, yaw :math:`\psi`, and pitch
+:math:`\theta`, analogous to airborne measurements, and with
+:math:`x_\textrm{F}' = x_\textrm{F} + O_{\textrm{f}x}`,
+:math:`y_\textrm{F}' = y_\textrm{F} + O_{\textrm{f}y}`, and
+:math:`z_\textrm{F}' = z_\textrm{F} + O_{\textrm{f}z}`, where
+:math:`O_{\textrm{f}x}`, :math:`O_{\textrm{f}y}`, and
+:math:`O_{\textrm{f}z}` are the offsets of the follower coordinate
+system in the :math:`x`, :math:`y`, and :math:`z` directions,
+respectively. Offsets in
+:math:`O_{\textrm{f}x}` and :math:`O_{\textrm{f}y}` are neglected,
+because they would only materialize in reduced particle sharpness, but
+not in the retrieved three-dimensional position. The opposite
+transformation can be described by:
+
+.. math::
+
+   \begin{aligned}
+     \begin{pmatrix} x_\textrm{F}' \\y_\textrm{F}' \\ z_\textrm{F}' \end{pmatrix} &=
+     \begin{pmatrix}
+      \cos \theta \cos \psi &
+       \cos \theta \sin \psi &
+      -\sin \theta \\
+       \sin \varphi \sin \theta \cos \psi - \cos \varphi \sin \psi &
+       \sin \varphi \sin \theta \sin \psi + \cos \varphi \cos \psi &
+       \sin \varphi \cos \theta \\
+       \cos \varphi \sin \theta \cos \psi + \sin \varphi \sin \psi &
+       \cos \varphi \sin \theta \sin \psi - \sin \varphi \cos \psi &
+       \cos \varphi \cos \theta
+     \end{pmatrix}
+     \begin{pmatrix} x_\textrm{L} \\y_\textrm{L} \\ z_\textrm{L} \end{pmatrix}
+   \end{aligned}
+
+Since we have only one measurement in the :math:`x` and :math:`y`
+dimensions, but two in :math:`z`, we use the difference between the
+measured :math:`z_\textrm{L}` and the estimated :math:`z_\textrm{L}`
+from matched particles to retrieve the misalignment angles and offsets
+
+.. math::
+
+   \label{eq:zl}
+       z_\textrm{L} =           -\sin\theta x_\textrm{F}' +
+           \sin\varphi \cos\theta y_\textrm{F}' +
+           \cos\varphi \cos\theta z_\textrm{F}'.
+
+In this equation, :math:`x_\textrm{F}'` is unknown so it is derived from
+
+.. math::
+
+   \label{eq:xf}
+       x_\textrm{F}' = \cos\theta \cos\psi x_\textrm{L} +
+       \cos\theta \sin\psi y_\textrm{L} -
+       \sin\theta z_\textrm{L}
+
+where, in turn :math:`y_\textrm{L}` is not observed. Therefore,
+:math:`y_\textrm{L}` is obtained from
+
+.. math::
+
+   \begin{split}
+   \label{eq:yl}
+       y_\textrm{L} = \cos\theta \sin\psi x_\textrm{F}'
+       + (\sin\varphi \sin\theta \sin\psi + \cos\varphi \cos\psi) y_\textrm{F}'
+       + (\cos\varphi \sin\theta \sin\psi - \sin\varphi \cos\psi) z_\textrm{F}'.
+   \end{split}
+
+Inserting equations `[eq:yl] <#eq:yl>`__ into `[eq:xf] <#eq:xf>`__
+yields after a couple of simplifications
+
+.. math::
+
+   \begin{aligned}
+   \begin{split}
+   \label{eq:xf3}
+       x_\textrm{F}'  & = \frac{\cos\theta \cos\psi}{1 - \cos^2\theta \sin^2\psi} x_\textrm{L} \\
+       & + \frac{(\cos\theta \sin\varphi \sin\theta \sin^2\psi + \cos\varphi \cos\psi \cos\theta \sin\psi )}{1 - \cos^2\theta \sin^2\psi} y_\textrm{F}' \\
+       & + \frac{(\cos\theta \cos\varphi \sin\theta \sin^2\psi - \sin\varphi \cos\psi \cos\theta \sin\psi )}{1 - \cos^2\theta \sin^2\psi} z_\textrm{F}' \\
+       & - \frac{\sin\theta }{1 - \cos^2\theta \sin^2\psi} z_\textrm{L}.
+   \end{split}
+   \end{aligned}
+
+Inserting equations `[eq:xf3] <#eq:xf3>`__ into `[eq:zl] <#eq:zl>`__
+yields:
+
+.. math::
+
+   \begin{aligned}
+   \begin{split}
+    \label{eq:zl2}
+       z_\textrm{L} =   -& \frac{  \sin\theta }{\cos\theta \cos\psi} x_\textrm{L} \\
+        -& \frac{\sin \theta \sin \psi \cos \varphi - \cos \psi \sin \varphi}{\cos\theta \cos\psi} y_\textrm{F}' \\+&  \frac{\sin \theta \sin \psi \sin \varphi + \cos \psi \cos \varphi}{\cos\theta \cos\psi}z_\textrm{F}' .
+   \end{split}
+   \end{aligned}
+
+We have no information about :math:`\psi`, therefore we have no choice
+but assuming :math:`\psi = 0` leading to
+
+.. math::
+
+   \begin{aligned}
+   \begin{split}
+       z_\textrm{L} =   -& \frac{  \sin\theta }{\cos\theta } x_\textrm{L}      + \frac{\sin \varphi}{\cos\theta } y_\textrm{F}'      +  \frac{\cos \varphi}{\cos\theta }z_\textrm{F}' .
+   \end{split}
+   \end{aligned}
+
 API
 ---
 
 metaRotation is handled in matching.py, see :doc:`matching`
-
-.. [*] The former text has been copied from Maahn, M., D. Moisseev, I. Steinke, N. Maherndl, and M. D. Shupe, 2024: Introducing the Video In Situ Snowfall Sensor (VISSS). Atmospheric Measurement Techniques, 17, 899–919, doi:10.5194/amt-17-899-2024.

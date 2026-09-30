@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=Warning)
 
 
-def retrieveM(y_obs, psd, air_temperature, Dmean, Dbound, frequency, config):
+def retrieveM(y_obs, psd, air_temperature, Dmean, Dbound, frequency, shape, config):
     """
     Perform optimal estimation retrieval for riming mass parameter.
 
@@ -68,7 +68,7 @@ def retrieveM(y_obs, psd, air_temperature, Dmean, Dbound, frequency, config):
         "bins": nBins,
         "dmean": Dmean,
         "dbound": Dbound,
-        "shape": config.level3.combinedRiming.habit,
+        "shape": shape,
         "frequency": frequency,
         "elevation": config.aux.radar.elevation,
     }
@@ -560,6 +560,8 @@ def retrieveCombinedRiming(
     """
     import pyPamtra
 
+    shapes = ["column", "dendrite", "needle", "plate", "rosette", "mean"]
+
     if type(config) is str:
         config = tools.readSettings(config)
     fL = files.FindFiles(case, config.leader, config)
@@ -568,12 +570,18 @@ def retrieveCombinedRiming(
 
     log.info(f"Processing {lv3File}")
 
+    # fL/level resolve level3combinedRiming's declared LEVEL_REGISTRY
+    # parents automatically (level2track *and* both cameras' metaEvents)
+    # instead of a hand-written list checking level2track alone -- which
+    # used to silently miss the metaEvents dependency entirely, the same
+    # class of bug fixed for level2track/level2match (see AI.md).
     if (
         writeNc
         and skipExisting
         and tools.checkForExisting(
             lv3File,
-            parents=fL.listFilesExt(f"level2track"),
+            fL=fL,
+            level="level3combinedRiming",
         )
     ):
         return None, None
@@ -583,7 +591,8 @@ def retrieveCombinedRiming(
         and skipExisting
         and tools.checkForExisting(
             "%s.nodata" % lv3File,
-            parents=fL.listFilesExt(f"level2track"),
+            fL=fL,
+            level="level3combinedRiming",
         )
     ):
         return None, None
@@ -595,8 +604,7 @@ def retrieveCombinedRiming(
 
     isEmpty = fL.listFilesExt(f"level2track")[0].endswith("nodata")
     if isEmpty:
-        with tools.open2("%s.nodata" % lv3File, config, "w") as f:
-            f.write("no data for %s" % case)
+        fL.writeStatus("level3combinedRiming", "nodata", "no data for %s" % case)
         log.warning("no data for %s" % case)
         log.warning("written: %s.nodata" % lv3File)
         return None, lv3File
@@ -624,12 +632,15 @@ def retrieveCombinedRiming(
     enoughParticles = lv2Dat.nParticles >= config.level3.combinedRiming.minNParticles
 
     if np.all(~coldEnough | ~isPrecip | ~goodQuality | ~enoughParticles):
-        with tools.open2("%s.nodata" % lv3File, config, "w") as f:
-            f.write("no snowfall for %s\r" % case)
-            f.write("coldEnough %i\r" % np.sum(coldEnough))
-            f.write("isPrecip %i\r" % np.sum(isPrecip))
-            f.write("goodQuality %i\r" % np.sum(goodQuality))
-            f.write("enoughParticles %i\r" % np.sum(enoughParticles))
+        fL.writeStatus(
+            "level3combinedRiming",
+            "nodata",
+            "no snowfall for %s\r" % case
+            + "coldEnough %i\r" % np.sum(coldEnough)
+            + "isPrecip %i\r" % np.sum(isPrecip)
+            + "goodQuality %i\r" % np.sum(goodQuality)
+            + "enoughParticles %i\r" % np.sum(enoughParticles),
+        )
         log.warning("coldEnough %i" % np.sum(coldEnough))
         log.warning("isPrecip %i" % np.sum(isPrecip))
         log.warning("goodQuality %i" % np.sum(goodQuality))
@@ -654,7 +665,7 @@ def retrieveCombinedRiming(
         ]
     ]
     lv3Dat = lv3Dat.sel(time=lv2Dat.time)
-
+    lv3Dat = lv3Dat.assign_coords(shape=shapes)
     #### do retrieval ####
 
     Dbound = np.append(
@@ -664,39 +675,45 @@ def retrieveCombinedRiming(
     Dmean = lv2Dat.D_bins.values
     psd = np.ma.masked_invalid(lv2Dat.PSD.values).filled(0.0)
 
-    M_oe = np.empty(lv2Dat.time.size) * np.nan
-    Ze_combinedRetrieval = np.empty(lv2Dat.time.size) * np.nan
-    M_err = np.empty(lv2Dat.time.size) * np.nan
+    M_oe = np.empty((lv2Dat.time.size, len(shapes))) * np.nan
+    Ze_combinedRetrieval = np.empty((lv2Dat.time.size, len(shapes))) * np.nan
+    M_err = np.empty((lv2Dat.time.size, len(shapes))) * np.nan
 
-    for j in np.where(goodData)[0]:
-        Ze_obs = lv2Dat[config.level3.combinedRiming.Zvar].isel(time=j).values
+    for ss, shape in enumerate(shapes):
+        for j in np.where(goodData)[0]:
+            Ze_obs = lv2Dat[config.level3.combinedRiming.Zvar].isel(time=j).values
 
-        print(j, Ze_obs)
+            print(ss, shape, j, Ze_obs)
 
-        M_oe[j], M_err[j], Ze_combinedRetrieval[j] = retrieveM(
-            Ze_obs,
-            psd[j],
-            lv2Dat.air_temperature.values[j],
-            Dmean,
-            Dbound,
-            frequency,
-            config,
-        )
+            M_oe[j, ss], M_err[j, ss], Ze_combinedRetrieval[j, ss] = retrieveM(
+                Ze_obs,
+                psd[j],
+                lv2Dat.air_temperature.values[j],
+                Dmean,
+                Dbound,
+                frequency,
+                shape,
+                config,
+            )
 
-    Mlog = xr.DataArray(M_oe, coords=[lv2Dat.time])
-    M_err = xr.DataArray(M_err, coords=[lv2Dat.time])
-    lv3Dat["Ze_combinedRetrieval"] = xr.DataArray(
-        Ze_combinedRetrieval, coords=[lv2Dat.time]
+    lv3Dat["Ze_combinedRetrieval"] = (["time", "shape"], Ze_combinedRetrieval)
+    lv3Dat["combinedNormalizedRimeMass"] = (["time", "shape"], 10**M_oe)
+    lv3Dat["combinedNormalizedRimeMassError"] = (
+        ["time", "shape"],
+        M_oe * np.log(10) * M_err,
     )
-    lv3Dat["combinedNormalizedRimeMass"] = 10**Mlog
 
     ### derive microphysical parameters
-    a, b = pyPamtra.descriptorFile.riming_dependent_mass_size(
-        lv3Dat["combinedNormalizedRimeMass"], config.level3.combinedRiming.habit
-    )
+    a = np.empty((lv2Dat.time.size, len(shapes))) * np.nan
+    b = np.empty((lv2Dat.time.size, len(shapes))) * np.nan
 
-    lv3Dat["massSizeA"] = ("time", a)
-    lv3Dat["massSizeB"] = ("time", b)
+    for ss, shape in enumerate(shapes):
+        a[:, ss], b[:, ss] = pyPamtra.descriptorFile.riming_dependent_mass_size(
+            lv3Dat["combinedNormalizedRimeMass"].sel(shape=shape), shape
+        )
+
+    lv3Dat["massSizeA"] = (("time", "shape"), a)
+    lv3Dat["massSizeB"] = (("time", "shape"), b)
 
     deltaD = lv2Dat.D_bins_right - lv2Dat.D_bins_left
 
@@ -704,12 +721,21 @@ def retrieveCombinedRiming(
         lv2Dat.PSD * lv3Dat.massSizeA * (lv2Dat.D_bins) ** lv3Dat.massSizeB * deltaD
     ).sum("D_bins")
 
-    lv3Dat["velocity_dist_heymsfield10"] = heymsfield10_particles_M(
-        lv2Dat.D_bins,
-        lv3Dat.combinedNormalizedRimeMass,
-        lv2Dat.air_temperature,
-        lv2Dat.air_pressure,
-        config.level3.combinedRiming.habit,
+    velocity_dist_heymsfield10 = (
+        np.empty((lv2Dat.time.size, len(shapes), len(lv2Dat.D_bins))) * np.nan
+    )
+
+    for ss, shape in enumerate(shapes):
+        velocity_dist_heymsfield10[:, ss] = heymsfield10_particles_M(
+            lv2Dat.D_bins,
+            lv3Dat.combinedNormalizedRimeMass.sel(shape=shape),
+            lv2Dat.air_temperature,
+            lv2Dat.air_pressure,
+            shape,
+        )
+    lv3Dat["velocity_dist_heymsfield10"] = (
+        ["time", "shape", "D_bins"],
+        velocity_dist_heymsfield10,
     )
 
     velocity_dist = lv2Dat.velocity_dist.where(
@@ -760,6 +786,19 @@ def retrieveCombinedRiming(
         extra={"settings": str(config.level3.combinedRiming)},
     )
     h1, h2 = config.aux.radar.heightRange
+
+    lv3Dat.D_bins.attrs.update(
+        dict(
+            units="m",
+            long_name="maximum particle dimension (maximum observed along particle track)",
+        )
+    )
+    lv3Dat.shape.attrs.update(
+        dict(
+            units="-",
+            long_name="aggregate monomer shape according to Maherndl et al. 2023",
+        )
+    )
 
     lv3Dat.combinedNormalizedRimeMass.attrs.update(
         dict(

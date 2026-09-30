@@ -1,4 +1,6 @@
+import datetime
 import glob
+import json
 import os
 import random
 import string
@@ -11,6 +13,14 @@ from loguru import logger as log
 
 from . import __version__, files, matching, metadata, quicklooks, tools
 from .tools import ipython_debug, runCommandInQueue
+
+
+# LEVEL_REGISTRY (the single authoritative "what depends on what, and how
+# is it built" statement for every processing level) lives in tools.py,
+# not here -- it needs to be reachable from tools.checkForExisting's own
+# call sites (distributions.py, matching.py, tracking.py, detection.py)
+# via tools.resolveLevelParents, and tools.py sits below products.py in
+# the import graph. Use tools.LEVEL_REGISTRY / tools.resolveLevelParents.
 
 
 class DataProduct(object):
@@ -96,82 +106,27 @@ class DataProduct(object):
 
         self.parents = tools.DictNoDefault({})
 
-        if self.level == "level0":
-            self.parentNames = []
-        elif self.level == "level0txt":
-            self.parentNames = []
-        elif level == "metaEvents":
-            self.parentNames = [f"{camera}_level0txt"]
-        elif level == "metaFrames":
-            self.parentNames = [f"{camera}_level0txt"]
-        elif level == "level1detect":
-            self.parentNames = [
-                # f"{camera}_metaFrames", # done by level1detect
-                # f"{camera}_metaEvents", # done by metaRotation
-            ]
-        elif level == "metaRotation":
-            assert camera == "leader"
-            self.parentNames = [
-                f"leader_level1detect",
-                f"follower_level1detect",
-                f"leader_metaEvents",  # metaEvents are added to all the L2 products to force regenration when event file is updated (ie more data is transferred)
-                f"follower_metaEvents",
-            ]
-        elif level == "level1match":
-            assert camera == "leader"
-            self.parentNames = [f"{camera}_metaRotation"]
-        elif level == "level1track":
-            assert camera == "leader"
-            self.parentNames = [f"{camera}_level1match"]
-        # elif level == "level1shape":
-        #     assert camera == "leader"
-        #     self.parentNames = [f"{camera}_level1track"]
-        elif level == "level2detect":
-            self.parentNames = [f"{camera}_level1detect", f"{camera}_metaEvents"]
-        elif level == "level2match":
-            assert camera == "leader"
-            self.parentNames = [
-                f"{camera}_level1match",
-                f"leader_metaEvents",  # metaEvents are aded to all the L2 products to force regenration when events file is updated (ie more data is transferred)
-                f"follower_metaEvents",
-            ]
-        elif level == "level2track":
-            assert camera == "leader"
-            self.parentNames = [
-                f"{camera}_level1track",
-                f"leader_metaEvents",
-                f"follower_metaEvents",
-            ]
-        elif level == "level3combinedRiming":
-            assert camera == "leader"
-            self.parentNames = [
-                f"{camera}_level2track",
-                f"leader_metaEvents",
-                f"follower_metaEvents",
-            ]
-        elif level == "allDone":
-            assert camera == "leader"
-            self.parentNames = [
-                f"leader_metaEvents",
-                f"follower_metaEvents",
-            ]
-            if self.config.level1match.processL1match:
-                self.parentNames += [
-                    "leader_level2track",
-                    "leader_level2match",
-                ]
-            if self.config.level2.processL2detect:
-                self.parentNames += [
-                    "leader_level2detect",
-                    "follower_level2detect",
-                ]
-            if self.config.level3.combinedRiming.processRetrieval:
-                self.parentNames += [
-                    "leader_level3combinedRiming",
-                ]
+        if (
+            level in ("metaRotation", "level1match", "level1track", "level2match", "level2track")
+            and not self.config.level1match.processL1match
+        ):
+            raise ValueError(
+                f"{level} was requested, but level1match.processL1match is "
+                f"False in {self.config.filename}. This deployment has the "
+                f"stereo-matching branch disabled; set "
+                f"level1match.processL1match: true in the settings file to "
+                f"process this level, or call the underlying "
+                f"matching.*/tracking.* function directly (bypassing "
+                f"DataProduct) if this is an intentional one-off."
+            )
 
-        else:
+        try:
+            levelSpec = tools.LEVEL_REGISTRY[level]
+        except KeyError:
             raise ValueError(f"Do not understand {level}")
+        if levelSpec.get("leaderOnly", False):
+            assert camera == "leader"
+        self.parentNames = levelSpec["parents"](self.camera, self.config)
         if addRelatives:
             for parentCam in self.parentNames:
                 # save time by not adding a product more than once
@@ -228,7 +183,7 @@ class DataProduct(object):
         # cache for this function
         isComplete = self.isComplete
 
-        if (not self.dataAvailable) and (self.config.end == "today"):
+        if (not self.dataTransfered) and (self.config.end == "today"):
             log.warning(
                 f"{self.case} {self.relatives}: no data found (yet?) in {self.fn.fnamesPattern.level0txt}"
             )
@@ -237,19 +192,19 @@ class DataProduct(object):
         if (
             skipExisting
             and isComplete
-            and self._youngerThanParents
+            and self._upToDateWithParents
             and self.parentsComplete
         ):
             if withParents:
                 log.info(f"{self.case} {self.relatives}: everything processed")
             return []
-        if isComplete and (not self._youngerThanParents):
-            for name, younger in self._youngerThanParentsDict.items():
-                if not younger:
+        if isComplete and (not self._upToDateWithParents):
+            for name, upToDate in self._upToDateWithParentsDict.items():
+                if not upToDate:
                     log.warning(
-                        f"{self.case} {self.relatives} redoing level, parent {name} is younger"
+                        f"{self.case} {self.relatives} redoing level, parent {name} was updated more recently"
                     )
-        if self.parentsComplete and self._parentsYoungerThanGrandparents:
+        if self.parentsComplete and self._parentsUpToDateWithGrandparents:
             commands = self.generateCommands(
                 skipExisting=skipExisting,
             )
@@ -263,10 +218,45 @@ class DataProduct(object):
             )
             commands = []
         else:
-            log.warning(
-                f"{self.case} {self.relatives} no commands generated, grandparents older"
+            # self._parentsUpToDateWithGrandparents is False: the coarse
+            # day-level heuristic behind _upToDateWithParentsDict (MIN of
+            # this product's own file mtimes vs MAX of a parent's -- see
+            # its docstring) flagged some parent as possibly stale
+            # relative to its own parents. That comparison is deliberately
+            # conservative for THIS product (see _upToDateWithParentsDict),
+            # but using it here to decide whether to even attempt
+            # generating a command is a different question: it can
+            # false-positive under partial/rolling reprocessing, e.g. one
+            # parent file touched at an unrelated time poisons the whole
+            # day's flag even though every parent file individually
+            # already reflects current grandparent content (confirmed via
+            # hyytiala2_v3's level2track getting permanently stuck this
+            # way after iterative level1match self-heal fixes touched
+            # scattered files across many days). Before giving up, ask
+            # each flagged parent directly (via its own, per-file-granular
+            # generateAllCommands) whether it actually still has real work
+            # pending -- if none do, the flag was a false positive and it's
+            # safe to generate this product's own command anyway.
+            stillPending = any(
+                len(
+                    parent.generateAllCommands(skipExisting=True, withParents=False)
+                )
+                > 0
+                for name, parent in self.parents.items()
+                if not parent._upToDateWithParents
             )
-            commands = []
+            if stillPending:
+                log.warning(
+                    f"{self.case} {self.relatives} no commands generated, grandparents older"
+                )
+                commands = []
+            else:
+                log.info(
+                    f"{self.case} {self.relatives} grandparents flagged older by the "
+                    "coarse day-level check, but have no real per-file work pending -- "
+                    "generating own command anyway"
+                )
+                commands = self.generateCommands(skipExisting=skipExisting)
         if withParents:
             for parent in self.parents.keys():
                 # parents always with skipExisting = True to avoid chain reaction
@@ -305,95 +295,35 @@ class DataProduct(object):
         ValueError
             If the level is not recognized
         """
-        if self.level == "level0":
+        try:
+            command = tools.LEVEL_REGISTRY[self.level]["command"]
+        except KeyError:
+            raise ValueError(f"Do not understand {self.level}")
+
+        kind = command[0]
+        if kind == "none":
             return []
-        elif self.level == "level0txt":
-            return []
-        elif self.level == "metaEvents":
+        elif kind == "daily":
+            _, call = command
             return self._commandTemplateDaily(
-                "metadata.createEvent", skipExisting=skipExisting, nCPU=nCPU, bin=bin
+                call, skipExisting=skipExisting, nCPU=nCPU, bin=bin
             )
-        elif self.level == "metaFrames":
-            return self._commandTemplateDaily(
-                "metadata.createMetaFrames",
-                skipExisting=skipExisting,
-                nCPU=nCPU,
-                bin=bin,
-            )
-        elif self.level == "level1detect":
-            originLevel = "level0txt"
-            call = "detection.detectParticles"
+        elif kind == "l1":
+            _, originLevel, call, extraOrigin = command
             return self._commandTemplateL1(
                 originLevel,
                 call,
                 skipExisting=skipExisting,
                 nCPU=nCPU,
                 bin=bin,
+                extraOrigin=extraOrigin,
             )
-        elif self.level == "metaRotation":
-            return self._commandTemplateDaily(
-                "matching.createMetaRotation",
-                skipExisting=skipExisting,
-                nCPU=nCPU,
-                bin=bin,
-            )
-        elif self.level == "level1match":
-            originLevel = "level1detect"
-            call = "matching.matchParticles"
-            return self._commandTemplateL1(
-                originLevel,
-                call,
-                skipExisting=skipExisting,
-                nCPU=nCPU,
-                bin=bin,
-                extraOrigin="metaRotation",
-            )
-        elif self.level == "level1track":
-            originLevel = "level1match"
-            call = "tracking.trackParticles"
-            return self._commandTemplateL1(
-                originLevel, call, skipExisting=skipExisting, nCPU=nCPU, bin=bin
-            )
-        # elif self.level == "level1shape":
-        #     originLevel = "level1track"
-        #     call = "particleshape.classifyParticles"
-        #     return self._commandTemplateL1(
-        #         originLevel, call, skipExisting=skipExisting, nCPU=nCPU, bin=bin
-        #     )
-        elif self.level == "level2detect":
-            return self._commandTemplateDaily(
-                "distributions.createLevel2detect",
-                skipExisting=skipExisting,
-                nCPU=nCPU,
-                bin=bin,
-            )
-        elif self.level == "level2match":
-            return self._commandTemplateDaily(
-                "distributions.createLevel2match",
-                skipExisting=skipExisting,
-                nCPU=nCPU,
-                bin=bin,
-            )
-        elif self.level == "level2track":
-            return self._commandTemplateDaily(
-                "distributions.createLevel2track",
-                skipExisting=skipExisting,
-                nCPU=nCPU,
-                bin=bin,
-            )
-        elif self.level == "level3combinedRiming":
-            return self._commandTemplateDaily(
-                "level3.retrieveCombinedRiming",
-                skipExisting=skipExisting,
-                nCPU=nCPU,
-                bin=bin,
-            )
-        elif self.level == "allDone":
+        elif kind == "touch":
             outFile = self.fn.fnamesDaily["allDone"]
             command = f"mkdir -p {os.path.dirname(outFile)} && touch {outFile}"
             return [(command, outFile)]
         else:
-            raise ValueError(f"Do not understand {self.level}")
+            raise ValueError(f"Do not understand command kind {kind} for {self.level}")
 
     def _commandTemplateL1(
         self,
@@ -433,6 +363,34 @@ class DataProduct(object):
             skipExistingStr = ""
         if bin is None:
             bin = os.path.join(sys.exec_prefix, "bin", "python")
+
+        if (extraOrigin is not None) and (len(self.fn.listNoData(extraOrigin)) > 0):
+            # extraOrigin (e.g. metaRotation) is marked nodata for this day:
+            # nothing will ever be produced here. Rather than spawning a
+            # doomed subprocess per origin file (matchParticles would just
+            # hit the same nodata file and write its own .nodata marker),
+            # write those markers directly -- same filenames matchParticles
+            # itself would use -- so this level gets real files with real
+            # mtimes and the normal nMissing/isComplete/freshness machinery
+            # resolves it without any special-casing.
+            log.warning(
+                f"{self.relatives} {extraOrigin} is nodata: writing {self.level} "
+                f"nodata markers directly instead of spawning doomed commands"
+            )
+            for pName in self.fn.listFilesExt(originLevel):
+                if originLevel.startswith("level0"):
+                    f1 = files.Filenames(pName, self.config)
+                else:
+                    f1 = files.FilenamesFromLevel(pName, self.config)
+                outFile = f1.fname[self.level]
+                if len(glob.glob(f"{outFile}*")) == 0:
+                    f1.writeStatus(
+                        self.level, "nodata", f"{extraOrigin} is nodata for {pName}"
+                    )
+            return []
+
+        minMtime = tools.reprocessBreakpoint(self.level)
+
         commands = []
         for pName in self.fn.listFilesExt(originLevel):
             if originLevel.startswith("level0"):
@@ -449,11 +407,17 @@ class DataProduct(object):
             else:
                 extraOlder = True
 
+            if (len(exisiting) >= 1) and (minMtime is not None):
+                pastBreakpoint = os.path.getmtime(exisiting[0]) >= minMtime
+            else:
+                pastBreakpoint = True
+
             if (
                 skipExisting
                 and (len(exisiting) >= 1)
                 and (os.path.getmtime(pName) < os.path.getmtime(exisiting[0]))
                 and extraOlder
+                and pastBreakpoint
             ):
                 log.debug(f"{self.relatives} skip exisiting {exisiting[0]}")
                 continue
@@ -489,7 +453,6 @@ class DataProduct(object):
         list
             List of commands to execute
         """
-        nCPU = 1
         if skipExisting:
             skipExistingStr = "--skip-existing"
         else:
@@ -506,12 +469,32 @@ class DataProduct(object):
         else:
             case = self.case
 
-        outFile = self.fn.fnamesDaily[self.level]
-
-        exisiting = glob.glob(f"{outFile}*")
-        if skipExisting and (len(exisiting) >= 1) and (self._youngerThanParents):
-            log.info(f"{self.relatives} skip exisiting {exisiting[0]}")
-            return []
+        if self.level in files.dailyLevels:
+            outFile = self.fn.fnamesDaily[self.level]
+            exisiting = glob.glob(f"{outFile}*")
+            if skipExisting and (len(exisiting) >= 1) and (self._upToDateWithParents):
+                log.info(f"{self.relatives} skip exisiting {exisiting[0]}")
+                return []
+        else:
+            # levels like metaFrames: one CLI call covers a whole day (via
+            # tools.loopify_with_camera) but produces one output file per
+            # level0 input file, so there is no single fnamesDaily entry to
+            # check against (only files.dailyLevels have exactly one output
+            # file per day). Use nMissing instead, and build a synthetic
+            # per-day marker path -- matching fnamesPatternExt's naming
+            # scheme so it is still picked up by the broken/nodata glob --
+            # purely for runCommandInQueue's locking/broken-file bookkeeping.
+            outFile = os.path.join(
+                self.fn.outpath[self.level],
+                f"{self.level}_V{self.fn.version}_{self.fn.camera}_{self.fn.case}.nc",
+            )
+            if (
+                skipExisting
+                and (self.fn.nMissing(self.level) == 0)
+                and (self._upToDateWithParents)
+            ):
+                log.info(f"{self.relatives} skip exisiting {outFile}")
+                return []
 
         command = (
             f"{bin} -m VISSSlib {call} {self.config.filename} {case} {skipExistingStr}"
@@ -638,96 +621,286 @@ class DataProduct(object):
         return nMissing == 0
 
     @cached_property
-    def _youngerThanParentsDict(self):
+    def _upToDateWithParentsDict(self):
         """
-        Check if this product is younger than its parents.
+        Check whether this product was (re)processed after each of its
+        parents -- i.e. whether it reflects each parent's current state,
+        or is stale and needs to be redone.
+
+        Compares each parent's newest file (`parent.newestFileCreation`, a
+        MAX over that parent's files -- its most recent update) against
+        this product's OLDEST file (`self.oldestFileCreation`, a MIN
+        over this product's own files). The oldest file has to be used
+        here, not the newest: if even a single one of this product's
+        own files predates a parent's latest update, that one file is
+        stale, so the product as a whole is not fully up to date --
+        using the newest file instead would let one recently-touched
+        file mask staleness in all the others.
+
+        A product that is complete but has zero real files (e.g. a day
+        with a confirmed data gap upstream, so nothing was ever expected
+        here) has no meaningful file time to compare against its
+        parents' mtimes. Without an exception, that would look
+        "infinitely stale" against any real parent mtime and would block
+        every descendant -- and ultimately allDone -- from ever being
+        marked up to date. Such a product is treated as vacuously
+        up to date with all of its parents instead.
+
+        This exemption (`vacuouslyFresh`, see below) must be based on
+        REAL files only (`selfVacuous`, zero results from `listFiles()`),
+        not `newestFileCreation == 0`: `newestFileCreation` is computed
+        from `listFilesExt()`, which -- unlike `listFiles()` -- also
+        counts `.nodata`/`.broken.txt` sentinels, so it is essentially
+        never 0 once a sentinel has been written for this level+camera+day
+        (its own mtime keeps it nonzero). A `newestFileCreation == 0`
+        check therefore only fires for a product with *no file of any
+        kind*, missing the far more common case of a day that already has
+        its terminal `.nodata`/`.broken.txt` sentinel -- exactly the "zero
+        real files, nothing was ever expected here" case this exemption
+        is meant to cover. Confirmed causing real, permanently-unfixable
+        `generateAllCommands()` noise: hyytiala_v1's level2track for
+        2022-04-21 (a permanent no-data day) kept getting regenerated as
+        "pending" forever, every time metaRotation (a real, non-vacuous
+        grandparent elsewhere in the chain) was legitimately touched,
+        because `newestFileCreation` for the `.nodata`-only level2track
+        was its own sentinel's nonzero mtime, not 0 -- so `vacuouslyFresh`
+        was always False and the plain parent-mtime comparison kicked in
+        against a self that can, by definition, never produce a newer
+        real file to catch up with.
+
+        The mirror image applies per parent: a parent that is complete
+        but only has a .nodata/.broken.txt sentinel (no real output) can
+        have that sentinel rewritten at any time -- e.g. a bulk backfill
+        or a retried failure -- without there being any new real
+        information for us to react to. Letting a sentinel's mtime alone
+        mark us stale would force endless, permanently unproductive
+        "redo" commands (the redo is always skip-existing and a no-op,
+        since there is nothing to redo), so such a parent is treated as
+        vacuously old for this comparison instead.
 
         Returns
         -------
         dict
             Dictionary mapping parent names to boolean values indicating
-            whether this product is younger than each parent
+            whether this product is up to date with each parent
         """
-        youngerThanParentsDict = tools.DictNoDefault()
+        # Mirrors parentVacuous below, but for self: do THIS product's own
+        # files already reflect "no real data" (only a .nodata/.broken.txt
+        # sentinel, no real output)? Needed to guard parentVacuous --
+        # without it, a parent that only just turned vacuous (e.g. a
+        # badData window added to the config after this product had
+        # already been successfully computed from what's now known-bad
+        # upstream data) would be permanently ignored: this product's own
+        # stale-but-real output would never get revisited into a matching
+        # nodata/broken marker, since parentVacuous alone would keep
+        # calling it up to date forever (confirmed against
+        # gochang_v1/level1match for 20251209-20251221: metaRotation
+        # turned broken there, but level1match kept its pre-badData real
+        # files and was never flagged stale). Once both sides are
+        # sentinel-only there truly is nothing left to react to, so the
+        # skip is safe again.
+        selfVacuous = self.isComplete and (len(self.listFiles()) == 0)
+        # see the docstring section above for why this must be
+        # `selfVacuous`, not a `newestFileCreation == 0` check
+        vacuouslyFresh = selfVacuous
+        upToDateWithParentsDict = tools.DictNoDefault()
         for name, parent in self.parents.items():
-            isYounger = parent.fileCreation < self.fileCreation
+            parentVacuous = parent.isComplete and (len(parent.listFiles()) == 0)
+            isUpToDate = (
+                vacuouslyFresh
+                or (parentVacuous and selfVacuous)
+                or (parent.newestFileCreation < self.oldestFileCreation)
+            )
             if (self.level == "level1detect") and (parent.level == "metaEvents"):
                 # special case: no need to do level1detect again due to updated metaEvents
-                youngerThanParentsDict[name] = True
+                upToDateWithParentsDict[name] = True
             else:
-                youngerThanParentsDict[name] = isYounger
-            if not youngerThanParentsDict[name]:
+                upToDateWithParentsDict[name] = isUpToDate
+            if not upToDateWithParentsDict[name]:
                 log.debug(
-                    f"{self.relatives} is older "
-                    f"({tools.timestamp2str(self.fileCreation)}) than parent "
-                    f"{name} ({tools.timestamp2str(parent.fileCreation)})",
+                    f"{self.relatives} has files older "
+                    f"({tools.timestamp2str(self.oldestFileCreation)}) than parent "
+                    f"{name}'s newest ({tools.timestamp2str(parent.newestFileCreation)})",
                 )
-        return youngerThanParentsDict
+        return upToDateWithParentsDict
 
     @cached_property
-    def _youngerThanParents(self):
+    def _upToDateWithParents(self):
         """
-        Check if this product is younger than all parents.
+        Check if this product was (re)processed after all of its parents.
 
         Returns
         -------
         bool
-            True if this product is younger than all parents, False otherwise
+            True if this product is up to date with all parents, False otherwise
         """
-        youngerThanParents = np.all(list(self._youngerThanParentsDict.values()))
-        return youngerThanParents
+        upToDateWithParents = (
+            np.all(list(self._upToDateWithParentsDict.values()))
+            and self._pastReprocessBreakpoint
+        )
+        return upToDateWithParents
 
     @cached_property
-    def _parentsYoungerThanGrandparents(self):
+    def _pastReprocessBreakpoint(self):
         """
-        Check if parents are younger than their grandparents.
+        Whether this product's own files are all at or after any
+        pending reprocessing breakpoint for this level
+        (tools.REPROCESS_AFTER) -- True (vacuously) if this level has
+        no such entry, or if it has no real files yet. Reuses
+        oldestFileCreation (already computed via the cached freshness
+        summary -- see _freshnessSummary) rather than re-stat'ing or
+        opening any file, so this costs nothing extra. Folded into
+        _upToDateWithParents so a code change that invalidates
+        previously produced files -- without any parent file changing,
+        which the normal mtime-based check can't see -- still forces
+        regeneration. See tools.REPROCESS_AFTER for why/when to use
+        this.
 
         Returns
         -------
         bool
-            True if all parents are younger than their grandparents, False otherwise
         """
-        parentsYoungerThanGrandparents = True
+        minMtime = tools.reprocessBreakpoint(self.level)
+        if minMtime is None:
+            return True
+        if self.oldestFileCreation == 0:
+            return True
+        return self.oldestFileCreation >= minMtime
+
+    @cached_property
+    def _parentsUpToDateWithGrandparents(self):
+        """
+        Check if parents were themselves (re)processed after their own
+        parents (this product's grandparents) -- i.e. whether the whole
+        ancestor chain, not just the direct parents, is current.
+
+        Returns
+        -------
+        bool
+            True if all parents are up to date with their own parents, False otherwise
+        """
+        parentsUpToDateWithGrandparents = True
         for name, parent in self.parents.items():
-            parentsYoungerThanGrandparents = (
-                parentsYoungerThanGrandparents and parent._youngerThanParents
+            parentsUpToDateWithGrandparents = (
+                parentsUpToDateWithGrandparents and parent._upToDateWithParents
             )
             log.debug(
-                f"{self.relatives} parent {name} is younger than its (grand)parents { parent._youngerThanParents}"
+                f"{self.relatives} parent {name} is up to date with its (grand)parents: { parent._upToDateWithParents}"
             )
-        return parentsYoungerThanGrandparents
+        return parentsUpToDateWithGrandparents
 
-    def _fileCreation(self, files):
+    @cached_property
+    def _freshnessSummary(self):
         """
-        Get the creation time of the most recent file.
+        (n, oldest, newest) mtime summary for this product's own files.
 
-        Parameters
-        ----------
-        files : list
-            List of file paths
+        Read from the on-disk cache maintained by
+        tools.readLevelSummary/writeLevelSummary when possible, falling
+        back to a real glob+stat scan (the previous, exact behavior of
+        newestFileCreation/oldestFileCreation) on any cache miss.
+
+        The cache is fenced against a "touch" marker that every real
+        write bumps (tools.open2/to_netcdf2's hooks): the fence is
+        captured before this scan starts, and the freshly computed
+        summary is only published (tools.writeLevelSummary) if the
+        fence still has that exact value afterwards. That's what makes
+        this safe with many concurrent SLURM workers writing files for
+        the same level+camera+day -- a scan that overlaps a concurrent
+        write never gets to cache what it saw, so a later reader can't
+        be handed stale data; it just falls back to scanning again,
+        the same as if nothing had ever been cached.
+
+        Raw/passthrough levels (level0, level0txt, ...; identified by
+        having no per-level output directory in self.fn.outpath) are
+        never written by us via open2/to_netcdf2 -- there's nothing for
+        a marker to cache -- so those always take the plain scan path.
+
+        Same reasoning applies to "touch"-kind levels (currently just
+        allDone): generateCommands builds those as a bare shell
+        `touch <file>`, which never goes through open2/to_netcdf2 and
+        so never bumps the fence marker either. Caching them anyway
+        would mean the very first summary ever computed for a given
+        level+camera+day is trusted forever after -- the fence stays
+        at 0 (no marker file == no write has ever gone through the
+        hook), so `readLevelSummary`'s fence check (`fence == 0`)
+        always passes, and no amount of re-touching the real file is
+        ever able to invalidate the cached (and increasingly stale)
+        oldest/newest. That silently broke allDone's
+        _upToDateWithParents check: it kept comparing parents against
+        a months-old cached mtime even after the sentinel had just
+        been freshly re-touched (confirmed by hand against
+        gochang_v1/20251120: repeated `touch` via the real task queue
+        updated the file on disk every time, but the cached summary --
+        and thus every DataProduct built fresh afterwards -- kept
+        reporting the original creation time regardless), so allDone
+        commands were regenerated on every single check, forever, no
+        matter how many times they were (correctly) run.
 
         Returns
         -------
-        float
-            Maximum modification time of the files
+        tuple
+            (n, oldest, newest) -- file count and min/max mtime, or
+            (0, 0, 0) if this product has no files.
         """
-        if len(files) > 0:
-            return np.max([os.path.getmtime(f) for f in files])
+        cacheable = (self.level in self.fn.outpath) and (
+            tools.LEVEL_REGISTRY[self.level]["command"][0] != "touch"
+        )
+        if cacheable:
+            cached = tools.readLevelSummary(self.fn, self.level)
+            if cached is not None:
+                return cached
+            fenceBefore = tools.getLevelTouchTime(self.fn, self.level)
+
+        fileList = self.listFilesExt()
+        if len(fileList) > 0:
+            mtimes = [os.path.getmtime(f) for f in fileList]
+            summary = (len(fileList), np.min(mtimes), np.max(mtimes))
         else:
-            return 0
+            summary = (0, 0, 0)
+
+        if cacheable:
+            tools.writeLevelSummary(
+                self.fn, self.level, *summary, fenceBefore, self.config
+            )
+        return summary
 
     @cached_property
-    def fileCreation(self):
+    def newestFileCreation(self):
         """
-        Get the creation time of this product.
+        Get the creation time of this product's most recently modified
+        file.
+
+        See `oldestFileCreation` for the complementary MIN-based
+        property used in staleness comparisons.
 
         Returns
         -------
         float
             Modification time of the newest file
         """
-        files = self.listFilesExt()
-        return self._fileCreation(files)
+        return self._freshnessSummary[2]
+
+    @cached_property
+    def oldestFileCreation(self):
+        """
+        Get the creation time of this product's least recently modified
+        file.
+
+        `newestFileCreation` (the newest file) answers "when was this product
+        last touched" -- useful for reporting. Freshness comparisons
+        against a parent need the opposite: if even one of this
+        product's own files predates a parent's newest update, that one
+        file is stale, so the product as a whole is not fully up to
+        date. Using `newestFileCreation` there would let a single
+        recently-touched file mask staleness in all the others (see
+        `_upToDateWithParentsDict`).
+
+        Returns
+        -------
+        float
+            Modification time of the oldest file
+        """
+        return self._freshnessSummary[1]
 
     @cached_property
     def parentsComplete(self):
@@ -766,9 +939,9 @@ class DataProduct(object):
             "nMissing",
             nMissing,
             "newest file",
-            tools.timestamp2str(self.fileCreation),
+            tools.timestamp2str(self.newestFileCreation),
             "younger than parents",
-            self._youngerThanParents,
+            self._upToDateWithParents,
         )
         if nMissing > 0:
             print(
@@ -779,17 +952,99 @@ class DataProduct(object):
             for name, parent in self.parents.items():
                 parent.report(withParents=False)
 
-    @cached_property
-    def dataAvailable(self):
+    def reportBroken(self, withParents=False, returnAllInformation=True):
+        """Report broken files.
+
+        Parameters
+        ----------
+        withParents : bool, default False
+            Whether to include parent reports
+        returnAllInformation : bool, default True
+            Whether to return all information
+
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame with broken file information
         """
-        Check if data is available for this product.
+        import pandas as pd
+
+        results_data = []
+        for brokenFile in self.listBroken():
+            with open(brokenFile) as f:
+                lines = f.readlines()
+            if len(lines) == 1:
+                command = "n/a"
+                outfile = "n/a"
+                gist = lines[0].rstrip()
+                fullError = "".join(lines)
+            else:
+                command = lines[1][9:].split(";")[-1].strip()
+                outfile = lines[2][9:].rstrip()
+                gist = f"{lines[-2].rstrip(), lines[-1].rstrip()}"
+                fullError = "".join(lines[4:])
+            ff = files.FilenamesFromLevel(brokenFile, self.config)
+            index = f"{ff.camera.split("_")[0]}_{ff.case}_{self.level}"
+
+            # Create a dict and append it to the list
+            row = {
+                "index": index,
+                "command": command,
+                "outfile": outfile,
+                "gist": gist,
+                "fullError": fullError,
+            }
+            results_data.append(row)
+
+        if len(results_data) == 0:
+            df = pd.DataFrame(
+                columns=["index", "command", "outfile", "gist", "fullError"]
+            )
+        else:
+            df = pd.DataFrame(
+                results_data,
+            )
+
+        df = df.set_index("index")
+
+        if withParents:
+            df1 = [df]
+            for name, parent in self.parents.items():
+                # dual-camera parents (e.g. level1detect) are stored as a
+                # list of DataProduct instances rather than a single one
+                if not isinstance(parent, list):
+                    parent = [parent]
+                for p in parent:
+                    df1.append(
+                        p.reportBroken(
+                            withParents=False,
+                            returnAllInformation=returnAllInformation,
+                        )
+                    )
+            df = pd.concat(df1)
+            # df = df.iloc[~df.index.duplicated()]
+            df = df.sort_index()
+
+        if returnAllInformation:
+            return df
+        else:
+            return df[["command", "gist"]]
+
+
+    @cached_property
+    def dataTransfered(self):
+        """
+        Check if data is available for this product, or -- if not --
+        whether its absence has been confirmed as a genuine gap rather
+        than data that simply has not synced yet.
 
         Returns
         -------
         bool
-            True if data is available, False otherwise
+            True if data is available or the gap is confirmed, False if
+            still pending (data may yet arrive).
         """
-        return len(self.fn.listFiles("level0txt")) > 0
+        return not self.fn.isDataTransferPending("level0txt")
 
     @cached_property
     def allComplete(self):
@@ -801,7 +1056,7 @@ class DataProduct(object):
         bool
             True if all is complete, False otherwise
         """
-        return self.isComplete and self._youngerThanParents and self.parentsComplete
+        return self.isComplete and self._upToDateWithParents and self.parentsComplete
 
     @cached_property
     def nFiles(self):
@@ -878,6 +1133,13 @@ class DataProduct(object):
                 log.warning(f"{fname} not found")
             else:
                 log.warning(f"{fname} removed")
+                # Raw os.remove, same as runCommandInQueue's own
+                # shutil.copy used to be before it started bumping the
+                # marker (see 6c7d3bb) -- without this, the freshness
+                # cache still counts the just-deleted file, so a repaired
+                # day can keep looking complete/up to date until
+                # something else happens to rewrite it.
+                tools._touchLevelMarker(fname, self.config)
         if withNoData:
             for fname in self.listNoData():
                 assert fname.endswith("nodata")
@@ -887,6 +1149,7 @@ class DataProduct(object):
                     log.warning(f"{fname} not found")
                 else:
                     log.warning(f"{fname} removed")
+                    tools._touchLevelMarker(fname, self.config)
         if withParents:
             for name, parent in self.parents.items():
                 if not isinstance(parent, list):
@@ -915,225 +1178,97 @@ class DataProduct(object):
         for fname in dups:
             os.remove(fname)
             log.warning(f"{fname} removed")
+            tools._touchLevelMarker(fname, self.config)
         if withParents:
             for name, parent in self.parents.items():
                 if not isinstance(parent, list):
                     parent = [parent]
                 [p.cleanUpDuplicates(withParents=False) for p in parent]
 
-
-class allDone(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
+    def repairStaleFreshnessCache(self, withParents=False):
         """
-        Initialize an allDone product.
+        Find and invalidate a stale on-disk freshness-cache summary for
+        this product.
+
+        tools.writeLevelSummary caches this level+camera+day's (file
+        count, oldest mtime, newest mtime) in a small `.done` file (see
+        files.FindFiles.markerPath) so _freshnessSummary doesn't have to
+        re-glob and re-stat every file on every DAG check. That cache is
+        only ever supposed to go stale for the length of one write --
+        every real write bumps a "touch" fence via tools.open2/to_netcdf2
+        (tools._touchLevelMarker), which invalidates it immediately.
+
+        In practice a handful of write paths have been found that write
+        a real terminal artifact (a real file, `.broken.txt`, or
+        `.nodata`) *without* going through that hook, so the cache never
+        gets invalidated and keeps reporting its original (n, oldest,
+        newest) forever, however many times the real file is later
+        rewritten: allDone's own `touch` command (c5341c5),
+        runCommandInQueue's `.broken.txt` write on task failure (6c7d3bb,
+        5c136b0), and cleanUpBroken/cleanUpDuplicates' plain os.remove
+        (fixed alongside this method). There is no guarantee that is an
+        exhaustive list -- a long-running worker process holding
+        pre-fix code in memory reproduces the exact same symptom
+        regardless of how many such bugs get fixed on disk, since it
+        never re-imports the fix until it restarts. This method doesn't
+        depend on knowing the cause: it just compares the cached summary
+        against a real, live scan and invalidates it on any disagreement,
+        so it's safe to run as a periodic sweep (e.g. before a QC pass)
+        independent of whatever bug produced the mismatch.
 
         Parameters
         ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
+        withParents : bool, default False
+            Whether to also repair parents' caches
+
+        Returns
+        -------
+        bool
+            True if this product's own cache was found stale and repaired
+            (does not reflect whether any parent's cache was repaired --
+            check the log for those).
         """
-        super().__init__("allDone", case, settings, fileQueue, camera)
-
-
-class level2track(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a level2track product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("level2track", case, settings, fileQueue, camera)
-
-
-class level2match(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a level2match product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("level2match", case, settings, fileQueue, camera)
-
-
-class level2detect(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a level2detect product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("level2detect", case, settings, fileQueue, camera)
-
-
-class level1track(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a level1track product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("level1track", case, settings, fileQueue, camera)
-
-
-class level1match(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a level1match product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("level1match", case, settings, fileQueue, camera)
-
-
-class metaRotation(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a metaRotation product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("metaRotation", case, settings, fileQueue, camera)
-
-
-class level1detect(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a level1detect product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("level1detect", case, settings, fileQueue, camera)
-
-
-# class level1shape(DataProduct):
-#     def __init__(self, case, settings, fileQueue, camera="leader"):
-#         super().__init__("level1shape", case, settings, fileQueue, camera)
-
-
-class metaFrames(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a metaFrames product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("metaFrames", case, settings, fileQueue, camera)
-
-
-class metaEvents(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a metaEvents product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("metaEvents", case, settings, fileQueue, camera)
-
-
-class level0(DataProduct):
-    def __init__(self, case, settings, fileQueue, camera="leader"):
-        """
-        Initialize a level0 product.
-
-        Parameters
-        ----------
-        case : str
-            Case identifier
-        settings : str
-            Path to settings file
-        fileQueue : str or taskqueue.TaskQueue
-            File queue for task management. If None, a temporary queue will be created.
-        camera : str, default "leader"
-            Camera identifier
-        """
-        super().__init__("level0", case, settings, fileQueue, camera)
+        repaired = False
+        # Raw/passthrough levels (level0, level0txt, ...) have no
+        # per-level output directory at all -- nothing is ever cached
+        # for them (see _freshnessSummary's own cacheable check) and
+        # markerPath has no outpath entry to build a path from.
+        if self.level not in self.fn.outpath:
+            cached = None
+        else:
+            donePath = self.fn.markerPath(self.level, "done")
+            try:
+                with open(donePath) as f:
+                    cached = json.load(f)
+            except (OSError, ValueError):
+                cached = None
+        if cached is not None:
+            cachedNewest = cached.get("newest")
+            if cachedNewest is not None:
+                realNewest = max(
+                    (os.path.getmtime(f) for f in self.listFilesExt()), default=0
+                )
+                # a few seconds of slop: filesystem mtime resolution and
+                # the gap between this scan's individual os.path.getmtime
+                # calls are not meaningfully "staleness", just noise
+                if abs(realNewest - cachedNewest) > 5:
+                    touchPath = self.fn.markerPath(self.level, "touch")
+                    tools._invalidateLevelCacheAt(touchPath, donePath, self.config)
+                    log.warning(
+                        f"{self.relatives} stale freshness cache repaired "
+                        f"(cached newest {tools.timestamp2str(cachedNewest)}, "
+                        f"real newest {tools.timestamp2str(realNewest)})"
+                    )
+                    repaired = True
+        if withParents:
+            for name, parent in self.parents.items():
+                if not isinstance(parent, list):
+                    parent = [parent]
+                for p in parent:
+                    repaired = (
+                        p.repairStaleFreshnessCache(withParents=True) or repaired
+                    )
+        return repaired
 
 
 class DataProductRange(DataProduct):
@@ -1296,6 +1431,30 @@ class DataProductRange(DataProduct):
         """
         return tools._aggregate([dp.listBroken() for dp in self._instances])
 
+    def repairStaleFreshnessCache(self, withParents=False):
+        """Repair stale freshness caches for all instances in this range.
+
+        DataProduct.repairStaleFreshnessCache relies on per-case
+        attributes (self.fn, self.parents, ...) that a DataProductRange
+        does not have, so it cannot simply be inherited -- same reasoning
+        as allComplete/report/reportBroken/listBroken above.
+
+        Parameters
+        ----------
+        withParents : bool, default False
+            Whether to also repair parents' caches
+
+        Returns
+        -------
+        bool
+            True if any instance's (or, with withParents, any parent's)
+            cache was found stale and repaired.
+        """
+        return any(
+            dp.repairStaleFreshnessCache(withParents=withParents)
+            for dp in self._instances
+        )
+
     def listFiles(self):
         """List files for all instances.
 
@@ -1325,6 +1484,129 @@ class DataProductRange(DataProduct):
             List of no-data file paths
         """
         return tools._aggregate([dp.listNoData() for dp in self._instances])
+
+    @cached_property
+    def allComplete(self):
+        """
+        Check if this product and all its dependencies are complete,
+        for every case in this range.
+
+        Overridden from DataProduct: without this, `allComplete` (a
+        cached_property) would be found via normal inheritance and
+        evaluated with `self` bound to this DataProductRange instance
+        instead of an individual case's DataProduct -- but the
+        properties it depends on (isComplete, _upToDateWithParents,
+        parentsComplete, and transitively newestFileCreation/parents/etc.)
+        assume per-case attributes like `self.fn`/`self.parents` that
+        only exist on a genuine single-case DataProduct. That failure
+        is an AttributeError, which Python's attribute-lookup protocol
+        silently swallows and retries via `__getattr__` -- repeatedly,
+        once per property in the chain -- eventually surfacing as a
+        confusing bare `AttributeError: allComplete` with the real
+        cause (whatever actually went wrong, e.g. a genuinely missing
+        parent, or a file removed mid-scan by a concurrent worker)
+        discarded.
+
+        Returns
+        -------
+        bool
+            True only if every case in this range is complete
+        """
+        return all(dp.allComplete for dp in self._instances)
+
+    def report(self, withParents=True):
+        """Print a report about this product's status for all instances.
+
+        DataProduct.report relies on per-case attributes (self.fn,
+        self.newestFileCreation, self.parents, ...) that a DataProductRange
+        does not have, so it cannot simply be inherited -- it needs to be
+        run per case instance, same as reportBroken/listBroken.
+
+        Parameters
+        ----------
+        withParents : bool, default True
+            Whether to include parent reports
+        """
+        for dp in self._instances:
+            dp.report(withParents=withParents)
+
+    def reportBroken(self, withParents=False, returnAllInformation=True):
+        """Report broken files for all instances.
+
+        DataProduct.reportBroken relies on per-case attributes (self.case,
+        self.fn, self.parents, ...) that a DataProductRange does not have,
+        so it cannot simply be inherited -- it needs to be run per case
+        instance and the results concatenated, same as listBroken/listFiles.
+
+        Parameters
+        ----------
+        withParents : bool, default False
+            Whether to include parent reports
+        returnAllInformation : bool, default True
+            Whether to return all information
+
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame with broken file information across all cases
+        """
+        import pandas as pd
+
+        dfs = [
+            dp.reportBroken(
+                withParents=withParents,
+                returnAllInformation=returnAllInformation,
+            )
+            for dp in self._instances
+        ]
+        if len(dfs) == 0:
+            columns = (
+                ["command", "outfile", "gist", "fullError"]
+                if returnAllInformation
+                else ["command", "gist"]
+            )
+            return pd.DataFrame(columns=columns)
+
+        df = pd.concat(dfs)
+        df = df.sort_index()
+        return df
+
+    def generateAllCommands(self, skipExisting=True, withParents=True):
+        """Generate all pending commands for all instances in this range.
+
+        DataProduct.generateAllCommands relies on per-case attributes
+        (self.parents, self.isComplete, ...) that a DataProductRange
+        does not have, so it cannot simply be inherited -- same reasoning
+        as allComplete/report/reportBroken/listBroken above. Without this
+        override, `generateAllCommands` is found via normal inheritance
+        (DataProductRange subclasses DataProduct) and runs with `self`
+        bound to the whole range instead of a per-case DataProduct: its
+        `self.parents.items()` then resolves through `__getattr__`'s
+        generic per-attribute aggregation, which -- for a dict whose
+        values are DataProduct objects -- returns a list of DataProduct
+        instances per parent name instead of a single one, crashing with
+        `AttributeError: 'list' object has no attribute
+        '_upToDateWithParents'` deep inside the per-case implementation.
+
+        Parameters
+        ----------
+        skipExisting : bool, default True
+            Whether to skip existing files
+        withParents : bool, default True
+            Whether to include parent commands
+
+        Returns
+        -------
+        list
+            Deduplicated list of commands pending across every case in
+            this range.
+        """
+        return tools._aggregate(
+            [
+                dp.generateAllCommands(skipExisting=skipExisting, withParents=withParents)
+                for dp in self._instances
+            ]
+        )
 
     def submitCommands(
         self,
@@ -1446,9 +1728,10 @@ def processAll(
     case,
     config,
     ignoreErrors=False,
-    nJobs=os.cpu_count,
+    nJobs=os.cpu_count(),
     fileQueue=None,
     skipExisting=True,
+    maxIdleSeconds=60,
 ):
     """
     Process VISSS data for a specific case across all processing levels.
@@ -1467,13 +1750,19 @@ def processAll(
         or a configuration object
     ignoreErrors : bool, default False
         If True, continue processing even if errors occur in individual steps
-    nJobs : int or callable, default os.cpu_count
-        Number of parallel jobs to run. If callable, it will be called to get
-        the number of jobs. This parameter is passed to the workers function.
+    nJobs : int, default os.cpu_count()
+        Number of parallel jobs to run. This parameter is passed to the
+        workers function.
     fileQueue : str, optional
         File queue for task management. If None, a temporary queue will be created.
     skipExisting : bool, default True
         Whether to skip existing files during processing
+    maxIdleSeconds : int, default 60
+        Passed through to tools.workers -- how long each stage's workers
+        wait for confirmation the queue is genuinely empty before moving
+        on to the next level. See tools.worker1's docstring; callers not
+        running against a real SLURM allocation (e.g. tests) can pass a
+        much smaller value to skip most of this wait.
 
     Notes
     -----
@@ -1531,7 +1820,9 @@ def processAll(
         if prod in followerProducts:
             dp2 = DataProduct(prod, case, config, fileQueue, "follower")
             dp2.submitCommands(withParents=False, skipExisting=skipExisting)
-        tools.workers(fileQueue, waitTime=1, nJobs=nJobs)
+        tools.workers(
+            fileQueue, waitTime=1, nJobs=nJobs, maxIdleSeconds=maxIdleSeconds
+        )
         if not ignoreErrors:
             assert len(dp1.listBroken()) == 0, "leader files broken"
             assert len(dp1.listFiles()) > 0, "no leader output"

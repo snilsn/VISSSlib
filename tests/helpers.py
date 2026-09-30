@@ -29,6 +29,40 @@ def readTestSettings(settings):
     return config
 
 
+def makeSyntheticConfig(tmp_path, **overrides):
+    """Build a minimal VISSSlib config for tests that only exercise
+    control-flow (DAG wiring, path templating, ...) and must not touch
+    the network or the downloaded sample dataset. Values mirror sample.yaml.
+    """
+    import yaml
+
+    settings = {
+        "computers": ["testcomputer", "testcomputer"],
+        "fps": 140,
+        "frame_height": 1024,
+        "frame_width": 1280,
+        "leader": "leader_test",
+        "follower": "follower_test",
+        "nThreads": 1,
+        "path": str(tmp_path / "raw" / "{level}"),
+        "pathOut": str(tmp_path / "products" / "{level}"),
+        "pathQuicklooks": str(tmp_path / "quicklooks" / "{level}"),
+        "visssGen": "visss",
+        "site": "test",
+        "start": "2026-01-01",
+        "end": "today",
+        "name": "Synthetic Test Site",
+        "model": "M1280",
+    }
+    settings.update(overrides)
+
+    settingsFile = tmp_path / "settings.yaml"
+    with open(settingsFile, "w") as f:
+        yaml.dump(settings, f)
+
+    return VISSSlib.tools.readSettings(str(settingsFile))
+
+
 def downloadData():
     test_path = get_test_path()
     test_data_path = get_test_data_path()
