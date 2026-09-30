@@ -114,6 +114,82 @@ mesh intersection at only ``nSteps`` bins and interpolating the rest, for
 performance) stays within 1% of computing every bin exactly — i.e. the
 interpolation shortcut is verified numerically, not just assumed safe.
 
+Optional shape variables
+----------------------------
+
+Newer Level 1 files contain the additional shape variables
+``areaConsideringHoles``, ``perimeterConsideringHoles``, ``solidity`` and
+``extent``. They are processed like ``area`` and ``perimeter`` (giving
+``*_dist``, ``*_mean`` and ``*_std`` in Level 2) **if they are present**
+(:func:`VISSSlib.distributions._optionalShapeVars`); older Level 1 files
+(e.g. ``V1.0``) without them are processed without these variables. If
+``areaConsideringHoles`` is available, ``Dequiv`` is derived from it,
+otherwise from ``area``.
+
+Per-class Level 2 distributions
+-------------------------------------
+
+Level 2 can also be created for Level 1 data that has been split into
+particle classes (e.g. riming classes from a classifier), so that PSDs and
+all other statistics are available separately for each class. In contrast
+to :func:`~VISSSlib.distributions.createLevel2match` and
+:func:`~VISSSlib.distributions.createLevel2track`, these functions work on
+an already loaded Level 1 dataset that is handed in by the caller: no files
+are searched, read or written, and the data quality variables (which
+require the complete Level 1 record) are not added.
+
+Workflow:
+
+1. Load the Level 1 data of the period of interest (``match`` or ``track``)
+   and add a per-particle variable ``category`` with the class name for
+   every ``pair_id``. If the classes are available per track, e.g. as a
+   ``track_id -> class`` dictionary as stored in the ``level1class`` files,
+   :func:`VISSSlib.distributions.attachTrackCategories` does this; tracks
+   without a class are put in the class ``"unclassified"``.
+2. Call :func:`VISSSlib.distributions.createLevel2_multiple_classes`. It
+   splits the data by ``category``, processes every class with
+   :func:`VISSSlib.distributions.createLevel2_single_class` and combines the
+   results along the additional dimension ``particle_class``.
+
+.. code-block:: python
+
+    import xarray as xr
+    import VISSSlib
+    from VISSSlib.distributions import (
+        attachTrackCategories,
+        createLevel2_multiple_classes,
+    )
+
+    config = VISSSlib.tools.readSettings("settings.yaml")
+    level1 = xr.open_mfdataset(
+        level1trackFiles, combine="nested", concat_dim="pair_id"
+    ).load()
+    level1 = attachTrackCategories(level1, trackClasses)
+
+    level2 = createLevel2_multiple_classes(level1, config, sublevel="track")
+    level2.PSD.sel(particle_class="stellar aggregate")
+
+Things to know:
+
+* **Common time grid**: the time steps are derived once from *all*
+  particles and used for every class. A class without particles in a
+  minute has zero ``counts`` (and ``nParticles``) there, and NaN for the
+  mean and standard deviation variables, rather than a shorter time axis.
+  Alternatively, pass ``timeIndex`` (left edges of the time steps) to
+  :func:`~VISSSlib.distributions.createLevel2_single_class` to control the
+  grid yourself.
+* **Same processing as the standard products**: both functions use the same
+  filtering, binning and calibration code as ``createLevel2match``/
+  ``createLevel2track`` (:func:`VISSSlib.distributions._level2FromLevel1`),
+  and accept the same ``freq``, ``DbinsPixel``, ``sizeDefinitions``,
+  ``camera`` and ``applyFilters`` arguments.
+* **Empty classes** (no particles left after filtering) are omitted with a
+  warning; ``None`` is returned if no class has data.
+* ``D_bins_left`` and ``D_bins_right`` are identical for all classes and do
+  not have the ``particle_class`` dimension.
+* Missing values in ``category`` are treated as one class named by the
+  argument ``unclassified``.
+
 ``VISSSlib.distributions`` API
 ----------------------------------
 
