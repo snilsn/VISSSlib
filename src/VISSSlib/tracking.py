@@ -288,8 +288,6 @@ class Track(object):
         )
         self.predictedPos = position
         self.skipped_frames = 0  # number of frames skipped undetected
-        # number of real (non-coasted) observations, the basis for track_step
-        self.nObserved = 1
         self._trace = [position]  # trace path
         self._features = [feature]  # trace path
         self._sizes = [size]  # size path
@@ -396,7 +394,6 @@ class Track(object):
             self._trace.append(position)
             self._features.append(feature)
             self._sizes.append(size)
-            self.nObserved += 1
             self.KF.update(position)
         else:
             self._trace.append([np.nan, np.nan, np.nan])
@@ -469,9 +466,7 @@ class Tracker(object):
         },
         minTrackLen4training=4,
         maxAge4training=300,
-        # with the default distance variance and dist_thresh the matching radius
-        # is ~565/sqrt(penalty) px: 200/100/50 px for tracks of length 1/2/3+
-        costExperiencePenalty=np.array([1, 8, 32, 128] + [128] * 50),
+        costExperiencePenalty=np.array([1, 1, 6, 9, 9, 9] + [9] * 50),
         velSlope=None,
         velIntercept=None,
         R_std=2,  # meas. noise for KF
@@ -479,7 +474,6 @@ class Tracker(object):
         reduced_q_var=1,
         training=True,  # go back to start after coefficients for velocity size relation have been determined
         verbosity=0,
-        max_frames_to_skip=1,
     ):
         """
         Initialize particle tracker.
@@ -522,9 +516,6 @@ class Tracker(object):
             Training mode flag, default True.
         verbosity : int, optional
             Verbosity level, default 0.
-        max_frames_to_skip : int, optional
-            Number of consecutive frames a track may go undetected (coasting
-            on its Kalman prediction) before it is closed, default 1.
 
         Notes
         -----
@@ -538,8 +529,9 @@ class Tracker(object):
         self.lv1track = lv1match.load()
         self.config = config
         self.dist_thresh = dist_thresh
-        # gaps in the data (missing frames) are handled separately in update()
-        self.max_frames_to_skip = max_frames_to_skip
+        self.max_frames_to_skip = (
+            0  # hard coded becuase gaps in data are not considered
+        )
         self.max_trace_length = max_trace_length
         self.velocityGuessXY = velocityGuessXY
         self.defaultVelocityGuessXY = velocityGuessXY
@@ -1137,14 +1129,14 @@ class Tracker(object):
 
         pp = self._pairIdToRow[int(pair_id)]
         self._trackIdArr[pp] = track.track_id
-        self._trackStepArr[pp] = track.nObserved
-        if track.nObserved == 1:
+        self._trackStepArr[pp] = len(track)
+        if len(track) == 1:
             self._trackVelocityGuessArr[pp, :3] = track.velocityGuess
         else:
             self._trackVelocityGuessArr[pp, :3] = track.predictedVel
         self._trackAngleGuessArr[pp] = track.predictedAng
         if not self.training and (self.verbosity > 5):
-            print(track.track_id, track.nObserved, track.predictedAng, track.lastAngle)
+            print(track.track_id, len(track), track.predictedAng, track.lastAngle)
 
     def updateVelocityFirstGuess(self, capture_times, ff):
         """
@@ -1347,7 +1339,7 @@ def trackParticles(
     minMatchScore=1e-3,
     minTrackLen4training=2,
     maxAge4training=100,
-    costExperiencePenalty=np.array([1, 8, 32, 128] + [128] * 50),
+    costExperiencePenalty=np.array([1, 1, 6, 9, 9, 9] + [9] * 50),
     R_std=2,
     q_var=1,
     reduced_q_var=1,
@@ -1355,7 +1347,6 @@ def trackParticles(
     writeNc=True,
     skipExisting=True,
     verbosity=0,
-    max_frames_to_skip=1,
 ):
     """
     Main particle tracking workflow.
@@ -1402,8 +1393,6 @@ def trackParticles(
         Skip processing if output exists, default True.
     verbosity : int, optional
         Verbosity level, default 0.
-    max_frames_to_skip : int, optional
-        Frames a track may go undetected before it is closed, default 1.
 
     Returns
     -------
@@ -1498,7 +1487,6 @@ def trackParticles(
         reduced_q_var=reduced_q_var,
         training=True,
         verbosity=verbosity,
-        max_frames_to_skip=max_frames_to_skip,
     )
     lv1track, velSlope, velIntercept = trackTrainer.updateAll()
     print("final slope and intercept", velSlope, velIntercept)

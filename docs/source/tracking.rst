@@ -24,10 +24,7 @@ measuring only position. :class:`VISSSlib.tracking.Track` wraps one such
 filter per tracked particle, keeping the full position trace
 (``self._trace``, with ``[nan, nan, nan]`` appended for frames where no
 detection was assigned rather than dropping the frame index) plus a
-feature-vector and size history used by the cost function below. The
-``track_step`` written to ``level1track`` counts real observations only
-(coasted frames do not increment it); the time between two consecutive steps
-is given by their ``capture_time``.
+feature-vector and size history used by the cost function below.
 
 Assignment (``Tracker.update``)
 ------------------------------------
@@ -52,24 +49,16 @@ Assignment (``Tracker.update``)
 3. ``scipy.optimize.linear_sum_assignment`` solves the assignment; pairs
    whose actual cost still exceeds ``dist_thresh`` are un-assigned again
    after the fact.
-4. Unassigned tracks accumulate ``skipped_frames`` (coasting on their
-   Kalman prediction meanwhile) and are archived once that exceeds
-   ``max_frames_to_skip`` (default 1, i.e. a single missed detection does not
-   end a track); unassigned detections start new tracks.
+4. Unassigned tracks accumulate ``skipped_frames`` and are archived once
+   that exceeds ``max_frames_to_skip``; unassigned detections start new
+   tracks.
 
 ``costExperiencePenalty`` inflates the cost for longer-established tracks
-(index into the array is track length, default
-``[1, 8, 32, 128, 128, ...]``) — a track that has proven itself over
+(index into the array is track length, e.g. default
+``[1, 1, 6, 9, 9, 9, 9, ...]``) — a track that has proven itself over
 several frames is held to a *stricter* matching tolerance, not a looser
-one, to avoid a well-established, confidently-predicted track drifting onto a
-nearby but different particle. With the default distance variance
-(``200**2``) and ``dist_thresh`` the maximum matching distance is about
-``565 / sqrt(penalty)`` px, i.e. 200 / 100 / 50 px for tracks of length
-1 / 2 / 3+. These were previously 565 / 231 / 188 px, far larger than the
-typical Kalman prediction error (median ~2 px, 90th percentile ~8 px) and, at
-high particle concentrations, sufficient to link *different* particles into one
-track (up to ~10 % of the particles in tracks of 3+ observations for
-Hyytiälä VISSS3 data of 2024-02-16 16:30 UTC, ~1.6 % after the change).
+one, presumably to avoid a well-established, confidently-predicted track
+drifting onto a nearby but different particle.
 
 Velocity first guess
 ----------------------
