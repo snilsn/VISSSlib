@@ -2621,10 +2621,18 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
 
     # this costs a lot of memeory but I do not know a better way
     level1dat_time = level1dat.unstack("track_mi")
-    # promote capture_time to coordinate for later
+    # promote capture_time to coordinate for later. The time of a track is the
+    # time of its first *valid* step: track_step=0 can be missing, e.g. because
+    # the particle was removed by the border filter, and it would result in NaT
+    # (and the track being dropped later) - depending on the other tracks
+    # present, because unstack pads all tracks to the same steps. Since min()
+    # does not skip NaT, they are replaced by a late date first.
+    captureTime = level1dat_time.capture_time.isel(camera=0)
+    noTime = np.datetime64("2262-01-01", "ns")
+    trackTime = captureTime.where(captureTime.notnull(), noTime).min("track_step")
     level1dat_time = level1dat_time.assign_coords(
         time=xr.DataArray(
-            level1dat_time.capture_time.isel(camera=0, track_step=0).values,
+            trackTime.where(trackTime != noTime).values,
             coords=[level1dat_time.track_id],
         )
     )

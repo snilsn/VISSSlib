@@ -556,3 +556,86 @@ class TestParticleClasses:
     def test_combineLevel1_empty_list_raises(self):
         with pytest.raises(ValueError, match="no level1 data"):
             VISSSlib.distributions._combineLevel1([])
+
+
+class TestGetPerTrackStatistics:
+    def _level1track(self, steps):
+        """Synthetic level1track data. steps maps track_id to the track_steps
+        that are present; missing steps are e.g. removed by the border filter."""
+        rng = np.random.default_rng(seed)
+        trackId = np.concatenate([[t] * len(s) for t, s in steps.items()])
+        trackStep = np.concatenate([list(s) for s in steps.values()])
+        n = len(trackId)
+        t0 = np.datetime64("2024-01-01T00:00:00", "ns")
+        # each track starts 10 min after the previous one, steps are 10 ms apart
+        captureTime = (
+            t0
+            + trackId.astype("timedelta64[10m]").astype("timedelta64[ns]")
+            + trackStep.astype("timedelta64[ms]") * 10
+        )
+        cameras = ["leader", "follower"]
+        fitMethods = ["a", "b"]
+
+        def perCamera(scale):
+            return (("camera", "pair_id"), rng.uniform(1, 2, (2, n)) * scale)
+
+        position = np.zeros((4, n))
+        position[2] = trackStep * 10.0  # falls straight down along z
+        return xr.Dataset(
+            {
+                "Dmax": perCamera(10),
+                "area": perCamera(50),
+                "perimeter": perCamera(30),
+                "matchScore": ("pair_id", rng.uniform(1, 2, n)),
+                "aspectRatio": (
+                    ("camera", "pair_id", "fitMethod"),
+                    rng.uniform(0.5, 1, (2, n, 2)),
+                ),
+                "angle": (
+                    ("camera", "pair_id", "fitMethod"),
+                    rng.uniform(0, 180, (2, n, 2)),
+                ),
+                "position3D_centroid": (("dim3D", "pair_id"), position),
+                "camera_phi": (("camera_rotation", "pair_id"), np.zeros((2, n))),
+                "capture_time": (
+                    ("camera", "pair_id"),
+                    np.tile(captureTime, (2, 1)),
+                ),
+                "track_id": ("pair_id", trackId),
+                "track_step": ("pair_id", trackStep.astype("int16")),
+            },
+            coords={
+                "pair_id": np.arange(n),
+                "camera": cameras,
+                "fitMethod": fitMethods,
+                "dim3D": ["x", "y", "z", "z_rotated"],
+                "camera_rotation": ["mean", "err"],
+            },
+        )
+
+    @pytest.mark.unit
+    def test_track_time_is_first_step(self):
+        level1 = self._level1track({0: range(0, 5), 1: range(0, 4)})
+        time = VISSSlib.distributions.getPerTrackStatistics(level1)[2].time
+        assert not np.isnat(time.values).any()
+        assert time.values[1] - time.values[0] == np.timedelta64(10, "m")
+
+    @pytest.mark.unit
+    def test_track_time_if_first_step_is_missing(self):
+        # step 0 of track 1 is missing (e.g. removed by the border filter): the
+        # track must not lose its time (and be dropped later) because other
+        # tracks have a step 0
+        level1 = self._level1track({0: range(0, 5), 1: range(1, 5), 2: range(2, 5)})
+        time = VISSSlib.distributions.getPerTrackStatistics(level1)[2].time
+        assert not np.isnat(time.values).any()
+        firstStep = np.timedelta64(10, "ms")
+        assert time.values[1] - time.values[0] == np.timedelta64(10, "m") + firstStep
+        assert time.values[2] - time.values[0] == np.timedelta64(20, "m") + 2 * firstStep
+
+    @pytest.mark.unit
+    def test_track_time_does_not_depend_on_other_tracks(self):
+        alone = self._level1track({1: range(1, 5)})
+        withOthers = self._level1track({0: range(0, 5), 1: range(1, 5)})
+        tAlone = VISSSlib.distributions.getPerTrackStatistics(alone)[2].time
+        tOthers = VISSSlib.distributions.getPerTrackStatistics(withOthers)[2].time
+        assert tAlone.values[0] == tOthers.sel(track_id=1).values
