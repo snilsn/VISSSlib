@@ -471,6 +471,246 @@ def _binTimeAndSize(
     return xr.merge([N, meanRes])
 
 
+def _addLevel2Attrs(lv2Dat, sublevel):
+    """
+    Add units and long names to level 2 data (in place).
+
+    Variables that only exist in the full level2 products (quality
+    variables, camera) are skipped if absent, so that the same function
+    serves the per-class level 2 data of createLevel2_single_class.
+    """
+    lv2Dat.D_bins.attrs.update(
+        dict(units="m", long_name="size bins", comment="label at center of bin")
+    )
+    lv2Dat.fitMethod.attrs.update(
+        dict(units="string", long_name="fit method to estimate aspect ratio")
+    )
+    lv2Dat.size_definition.attrs.update(
+        dict(units="string", long_name="size definition")
+    )
+    lv2Dat.time.attrs.update(
+        dict(long_name="time", comment="label at the end of time interval")
+    )
+
+    if sublevel != "detect":
+        if "camera" in lv2Dat.coords:
+            lv2Dat.camera.attrs.update(dict(units="string", long_name="camera"))
+
+    lv2Dat.D32.attrs.update(dict(units="m", long_name="mean mass-weighted diameter"))
+    lv2Dat.D43.attrs.update(
+        dict(units="m", long_name="ratio of forth to third PSD moment")
+    )
+    lv2Dat.D_bins_left.attrs.update(dict(units="m", long_name="left edge D_bins"))
+    lv2Dat.D_bins_right.attrs.update(dict(units="m", long_name="right edge D_bin"))
+    lv2Dat.Dequiv_mean.attrs.update(
+        dict(units="m", long_name="mean sphere equivalent diameter")
+    )
+    lv2Dat.Dequiv_std.attrs.update(
+        dict(units="m", long_name="standard deviation sphere equivalent diameter")
+    )
+    lv2Dat.Dmax_mean.attrs.update(dict(units="m", long_name="mean maximum diameter"))
+    lv2Dat.Dmax_std.attrs.update(
+        dict(units="m", long_name="standard deviation maximum diameter")
+    )
+    if sublevel != "detect":
+        lv2Dat.Dmax_dist.attrs.update(
+            dict(units="m", long_name="maximum diameter distribution")
+        )
+    lv2Dat.M1.attrs.update(
+        dict(units="m", long_name="1st moment of the size distribution")
+    )
+    lv2Dat.M2.attrs.update(
+        dict(units="m^2", long_name="2nd moment of the size distribution")
+    )
+    lv2Dat.M3.attrs.update(
+        dict(units="m^3", long_name="3rd moment of the size distribution")
+    )
+    lv2Dat.M4.attrs.update(
+        dict(units="m^4", long_name="4th moment of the size distribution")
+    )
+    lv2Dat.M6.attrs.update(
+        dict(units="m^6", long_name="6th moment of the size distribution")
+    )
+    lv2Dat.N0_star_32.attrs.update(
+        dict(
+            units="1/m^3/m",
+            long_name="PSD scaling parameter based on the second and third PSD moments",
+        )
+    )
+    lv2Dat.N0_star_43.attrs.update(
+        dict(
+            units="1/m^3/m",
+            long_name="PSD scaling parameter based on the third and fourth PSD moments",
+        )
+    )
+    lv2Dat.Ntot.attrs.update(
+        dict(units="1/m^3", long_name="Integral over size distribution")
+    )
+    lv2Dat.PSD.attrs.update(
+        dict(units="1/m^3/m", long_name="Particle size distribution")
+    )
+    lv2Dat.angle_dist.attrs.update(dict(units="deg", long_name="angle distribution"))
+    lv2Dat.angle_mean.attrs.update(dict(units="deg", long_name="mean angle"))
+    lv2Dat.angle_std.attrs.update(
+        dict(units="deg", long_name="standard deviation angle")
+    )
+    lv2Dat.area_dist.attrs.update(dict(units="m^2", long_name="area distribution"))
+    lv2Dat.area_mean.attrs.update(dict(units="m^2", long_name="mean area"))
+    lv2Dat.area_std.attrs.update(dict(units="m^2", long_name="standard deviation area"))
+
+    # optional variables of newer level1 files
+    for name, units, longName in [
+        ("areaConsideringHoles", "m^2", "area"),
+        ("perimeterConsideringHoles", "m", "perimeter"),
+        ("extent", "m", "extent"),
+        ("solidity", "m", "solidity"),
+    ]:
+        for suffix, prefix in [
+            ("dist", ""),
+            ("mean", "mean "),
+            ("std", "standard deviation "),
+        ]:
+            if f"{name}_{suffix}" in lv2Dat:
+                lv2Dat[f"{name}_{suffix}"].attrs.update(
+                    dict(
+                        units=units,
+                        long_name=f"{prefix}{longName}"
+                        + (" distribution" if suffix == "dist" else ""),
+                    )
+                )
+
+    lv2Dat.aspectRatio_dist.attrs.update(
+        dict(units="-", long_name="aspectRatio distribution")
+    )
+    lv2Dat.aspectRatio_mean.attrs.update(dict(units="-", long_name="mean aspect ratio"))
+    lv2Dat.aspectRatio_std.attrs.update(
+        dict(units="-", long_name="standard deviation aspect ratio")
+    )
+    if "blockedPixelRatio" in lv2Dat:
+        lv2Dat.blockedPixelRatio.attrs.update(
+            dict(
+                units="-", long_name="ratio of frames rejected due to blocked image filter"
+            )
+        )
+    if "blowingSnowRatio" in lv2Dat:
+        lv2Dat.blowingSnowRatio.attrs.update(
+            dict(units="-", long_name="ratio of frames rejected due to blowing snow filter")
+        )
+
+    lv2Dat.complexityBW_mean.attrs.update(
+        dict(units="-", long_name="complexity distribution (based on shape only)")
+    )
+    lv2Dat.complexityBW_mean.attrs.update(
+        dict(units="-", long_name="mean complexity (based on shape only)")
+    )
+    lv2Dat.complexityBW_std.attrs.update(
+        dict(units="-", long_name="standard deviation complexity (based on shape only)")
+    )
+
+    lv2Dat.normalizedRimeMass_mean.attrs.update(
+        dict(
+            units="-",
+            long_name="normalized rime mass distribution (based on shape only)",
+        )
+    )
+    lv2Dat.normalizedRimeMass_mean.attrs.update(
+        dict(units="-", long_name="mean normalized rime mass (based on shape only)")
+    )
+    lv2Dat.normalizedRimeMass_std.attrs.update(
+        dict(
+            units="-",
+            long_name="standard deviation normalized rime mass (based on shape only)",
+        )
+    )
+
+    lv2Dat.counts.attrs.update(
+        dict(
+            units="1/min",
+            long_name="number of observed particles (not calibrated to observation volume)",
+        )
+    )
+    if sublevel != "detect":
+        lv2Dat.matchScore_mean.attrs.update(
+            dict(units="-", long_name="mean camera match score")
+        )
+        lv2Dat.matchScore_std.attrs.update(
+            dict(units="-", long_name="standard deviation camera match score")
+        )
+        if "observationsRatio" in lv2Dat:
+            lv2Dat.observationsRatio.attrs.update(
+                dict(
+                    units="-",
+                    long_name="ratio of detected particles by leader and follower",
+                )
+            )
+    lv2Dat.obs_volume.attrs.update(dict(units="m^3", long_name="obs_volume"))
+    lv2Dat.perimeter_dist.attrs.update(
+        dict(units="m", long_name="perimeter distribution")
+    )
+    lv2Dat.perimeter_mean.attrs.update(dict(units="m", long_name="mean perimeter"))
+    lv2Dat.perimeter_std.attrs.update(
+        dict(units="m", long_name="standard deviation perimeter")
+    )
+
+    if "qualityFlags" in lv2Dat:
+        lv2Dat.qualityFlags.attrs.update(
+            dict(
+                units="m",
+                long_name="binary quality Flags",
+                comment="For recordingFailed, "
+                "processingFailed, cameraBlocked, blowingSnow, obervationsDiffer, "
+                "tracksTooShort, and zResidualTooWide (matched leader/follower "
+                "pairs disagree with each other more than a rotation refit "
+                "could fix, see config.quality.maxZSigma). "
+                "Use VISSSlib.tools.unpackQualityFlags to unpack",
+            )
+        )
+
+    if sublevel == "match":
+        lv2Dat.nParticles.attrs.update(
+            dict(units="-", long_name="number of particle observations")
+        )
+
+    elif sublevel == "track":
+        lv2Dat.cameratrack.attrs.update(
+            dict(
+                units="string",
+                long_name="camera and track",
+                comment="Explains how multiple observations of the same particle by the two cameras along a track are combined",
+            )
+        )
+        lv2Dat.dim3D.attrs.update(dict(units="m", long_name="3 spatial dimensions"))
+
+        lv2Dat.track_length_mean.attrs.update(
+            dict(units="# frames", long_name="mean track_length")
+        )
+        lv2Dat.track_length_std.attrs.update(
+            dict(units="# frames", long_name="standard deviation track_length")
+        )
+        lv2Dat.velocity_dist.attrs.update(
+            dict(units="m/s", long_name="velocity distribution")
+        )
+        lv2Dat.velocity_mean.attrs.update(dict(units="m/s", long_name="mean velocity"))
+        lv2Dat.velocity_std.attrs.update(
+            dict(units="m/s", long_name="standard deviation velocity")
+        )
+        lv2Dat.track_angle_dist.attrs.update(
+            dict(units="deg", long_name="track_angle distribution to 0,0,1 vector")
+        )
+        lv2Dat.track_angle_mean.attrs.update(
+            dict(units="deg", long_name="mean track_angle to 0,0,1 vector")
+        )
+        lv2Dat.track_angle_std.attrs.update(
+            dict(
+                units="deg", long_name="standard deviation track_angle to 0,0,1 vector"
+            )
+        )
+        lv2Dat.nParticles.attrs.update(
+            dict(units="-", long_name="number of observed unique particles")
+        )
+    return lv2Dat
+
+
 def _createLevel2(
     case,
     config,
@@ -698,230 +938,7 @@ def _createLevel2(
         extra=tools.collectVersionAttrs(f"level2{sublevel}", versionParentFiles),
     )
 
-    lv2Dat.D_bins.attrs.update(
-        dict(units="m", long_name="size bins", comment="label at center of bin")
-    )
-    lv2Dat.fitMethod.attrs.update(
-        dict(units="string", long_name="fit method to estimate aspect ratio")
-    )
-    lv2Dat.size_definition.attrs.update(
-        dict(units="string", long_name="size definition")
-    )
-    lv2Dat.time.attrs.update(
-        dict(long_name="time", comment="label at the end of time interval")
-    )
-
-    if sublevel != "detect":
-        lv2Dat.camera.attrs.update(dict(units="string", long_name="camera"))
-
-    lv2Dat.D32.attrs.update(dict(units="m", long_name="mean mass-weighted diameter"))
-    lv2Dat.D43.attrs.update(
-        dict(units="m", long_name="ratio of forth to third PSD moment")
-    )
-    lv2Dat.D_bins_left.attrs.update(dict(units="m", long_name="left edge D_bins"))
-    lv2Dat.D_bins_right.attrs.update(dict(units="m", long_name="right edge D_bin"))
-    lv2Dat.Dequiv_mean.attrs.update(
-        dict(units="m", long_name="mean sphere equivalent diameter")
-    )
-    lv2Dat.Dequiv_std.attrs.update(
-        dict(units="m", long_name="standard deviation sphere equivalent diameter")
-    )
-    lv2Dat.Dmax_mean.attrs.update(dict(units="m", long_name="mean maximum diameter"))
-    lv2Dat.Dmax_std.attrs.update(
-        dict(units="m", long_name="standard deviation maximum diameter")
-    )
-    if sublevel != "detect":
-        lv2Dat.Dmax_dist.attrs.update(
-            dict(units="m", long_name="maximum diameter distribution")
-        )
-    lv2Dat.M1.attrs.update(
-        dict(units="m", long_name="1st moment of the size distribution")
-    )
-    lv2Dat.M2.attrs.update(
-        dict(units="m^2", long_name="2nd moment of the size distribution")
-    )
-    lv2Dat.M3.attrs.update(
-        dict(units="m^3", long_name="3rd moment of the size distribution")
-    )
-    lv2Dat.M4.attrs.update(
-        dict(units="m^4", long_name="4th moment of the size distribution")
-    )
-    lv2Dat.M6.attrs.update(
-        dict(units="m^6", long_name="6th moment of the size distribution")
-    )
-    lv2Dat.N0_star_32.attrs.update(
-        dict(
-            units="1/m^3/m",
-            long_name="PSD scaling parameter based on the second and third PSD moments",
-        )
-    )
-    lv2Dat.N0_star_43.attrs.update(
-        dict(
-            units="1/m^3/m",
-            long_name="PSD scaling parameter based on the third and fourth PSD moments",
-        )
-    )
-    lv2Dat.Ntot.attrs.update(
-        dict(units="1/m^3", long_name="Integral over size distribution")
-    )
-    lv2Dat.PSD.attrs.update(
-        dict(units="1/m^3/m", long_name="Particle size distribution")
-    )
-    lv2Dat.angle_dist.attrs.update(dict(units="deg", long_name="angle distribution"))
-    lv2Dat.angle_mean.attrs.update(dict(units="deg", long_name="mean angle"))
-    lv2Dat.angle_std.attrs.update(
-        dict(units="deg", long_name="standard deviation angle")
-    )
-    lv2Dat.area_dist.attrs.update(dict(units="m^2", long_name="area distribution"))
-    lv2Dat.area_mean.attrs.update(dict(units="m^2", long_name="mean area"))
-    lv2Dat.area_std.attrs.update(dict(units="m^2", long_name="standard deviation area"))
-
-    # optional variables of newer level1 files
-    for name, units, longName in [
-        ("areaConsideringHoles", "m^2", "area"),
-        ("perimeterConsideringHoles", "m", "perimeter"),
-        ("extent", "m", "extent"),
-        ("solidity", "m", "solidity"),
-    ]:
-        for suffix, prefix in [
-            ("dist", ""),
-            ("mean", "mean "),
-            ("std", "standard deviation "),
-        ]:
-            if f"{name}_{suffix}" in lv2Dat:
-                lv2Dat[f"{name}_{suffix}"].attrs.update(
-                    dict(
-                        units=units,
-                        long_name=f"{prefix}{longName}"
-                        + (" distribution" if suffix == "dist" else ""),
-                    )
-                )
-
-    lv2Dat.aspectRatio_dist.attrs.update(
-        dict(units="-", long_name="aspectRatio distribution")
-    )
-    lv2Dat.aspectRatio_mean.attrs.update(dict(units="-", long_name="mean aspect ratio"))
-    lv2Dat.aspectRatio_std.attrs.update(
-        dict(units="-", long_name="standard deviation aspect ratio")
-    )
-    lv2Dat.blockedPixelRatio.attrs.update(
-        dict(
-            units="-", long_name="ratio of frames rejected due to blocked image filter"
-        )
-    )
-    lv2Dat.blowingSnowRatio.attrs.update(
-        dict(units="-", long_name="ratio of frames rejected due to blowing snow filter")
-    )
-
-    lv2Dat.complexityBW_mean.attrs.update(
-        dict(units="-", long_name="complexity distribution (based on shape only)")
-    )
-    lv2Dat.complexityBW_mean.attrs.update(
-        dict(units="-", long_name="mean complexity (based on shape only)")
-    )
-    lv2Dat.complexityBW_std.attrs.update(
-        dict(units="-", long_name="standard deviation complexity (based on shape only)")
-    )
-
-    lv2Dat.normalizedRimeMass_mean.attrs.update(
-        dict(
-            units="-",
-            long_name="normalized rime mass distribution (based on shape only)",
-        )
-    )
-    lv2Dat.normalizedRimeMass_mean.attrs.update(
-        dict(units="-", long_name="mean normalized rime mass (based on shape only)")
-    )
-    lv2Dat.normalizedRimeMass_std.attrs.update(
-        dict(
-            units="-",
-            long_name="standard deviation normalized rime mass (based on shape only)",
-        )
-    )
-
-    lv2Dat.counts.attrs.update(
-        dict(
-            units="1/min",
-            long_name="number of observed particles (not calibrated to observation volume)",
-        )
-    )
-    if sublevel != "detect":
-        lv2Dat.matchScore_mean.attrs.update(
-            dict(units="-", long_name="mean camera match score")
-        )
-        lv2Dat.matchScore_std.attrs.update(
-            dict(units="-", long_name="standard deviation camera match score")
-        )
-        lv2Dat.observationsRatio.attrs.update(
-            dict(
-                units="-",
-                long_name="ratio of detected particles by leader and follower",
-            )
-        )
-    lv2Dat.obs_volume.attrs.update(dict(units="m^3", long_name="obs_volume"))
-    lv2Dat.perimeter_dist.attrs.update(
-        dict(units="m", long_name="perimeter distribution")
-    )
-    lv2Dat.perimeter_mean.attrs.update(dict(units="m", long_name="mean perimeter"))
-    lv2Dat.perimeter_std.attrs.update(
-        dict(units="m", long_name="standard deviation perimeter")
-    )
-
-    lv2Dat.qualityFlags.attrs.update(
-        dict(
-            units="m",
-            long_name="binary quality Flags",
-            comment="For recordingFailed, "
-            "processingFailed, cameraBlocked, blowingSnow, obervationsDiffer, "
-            "tracksTooShort, and zResidualTooWide (matched leader/follower "
-            "pairs disagree with each other more than a rotation refit "
-            "could fix, see config.quality.maxZSigma). "
-            "Use VISSSlib.tools.unpackQualityFlags to unpack",
-        )
-    )
-
-    if sublevel == "match":
-        lv2Dat.nParticles.attrs.update(
-            dict(units="-", long_name="number of particle observations")
-        )
-
-    elif sublevel == "track":
-        lv2Dat.cameratrack.attrs.update(
-            dict(
-                units="string",
-                long_name="camera and track",
-                comment="Explains how multiple observations of the same particle by the two cameras along a track are combined",
-            )
-        )
-        lv2Dat.dim3D.attrs.update(dict(units="m", long_name="3 spatial dimensions"))
-
-        lv2Dat.track_length_mean.attrs.update(
-            dict(units="# frames", long_name="mean track_length")
-        )
-        lv2Dat.track_length_std.attrs.update(
-            dict(units="# frames", long_name="standard deviation track_length")
-        )
-        lv2Dat.velocity_dist.attrs.update(
-            dict(units="m/s", long_name="velocity distribution")
-        )
-        lv2Dat.velocity_mean.attrs.update(dict(units="m/s", long_name="mean velocity"))
-        lv2Dat.velocity_std.attrs.update(
-            dict(units="m/s", long_name="standard deviation velocity")
-        )
-        lv2Dat.track_angle_dist.attrs.update(
-            dict(units="deg", long_name="track_angle distribution to 0,0,1 vector")
-        )
-        lv2Dat.track_angle_mean.attrs.update(
-            dict(units="deg", long_name="mean track_angle to 0,0,1 vector")
-        )
-        lv2Dat.track_angle_std.attrs.update(
-            dict(
-                units="deg", long_name="standard deviation track_angle to 0,0,1 vector"
-            )
-        )
-        lv2Dat.nParticles.attrs.update(
-            dict(units="-", long_name="number of observed unique particles")
-        )
+    _addLevel2Attrs(lv2Dat, sublevel)
 
     if writeNc:
         tools.to_netcdf2(lv2Dat, config, lv2File)
@@ -2578,6 +2595,68 @@ def _createLevel2part(
     # make chunks more regular
     # level1dat = level1dat.chunk(pair_id=10000)
 
+    return _level2FromLevel1(
+        level1dat,
+        config,
+        timeIndex,
+        timeIndex1,
+        DbinsPixel=DbinsPixel,
+        sizeDefinitions=sizeDefinitions,
+        sublevel=sublevel,
+        applyFilters=applyFilters,
+        label=lv2File,
+    )
+
+
+def _level2FromLevel1(
+    level1dat,
+    config,
+    timeIndex,
+    timeIndex1,
+    DbinsPixel=range(301),
+    sizeDefinitions=["Dmax", "Dequiv"],
+    sublevel="match",
+    applyFilters=[],
+    label="",
+):
+    """
+    Filter an in-memory level1 dataset and turn it into calibrated level 2
+    distributions on a given time grid.
+
+    Shared by _createLevel2part (level1 read from files) and
+    createLevel2_single_class (level1 handed in by the caller).
+
+    Parameters
+    ----------
+    level1dat : xarray.Dataset
+        Loaded level1 data with dimension pair_id.
+    config : dict
+        Configuration settings.
+    timeIndex : pandas.DatetimeIndex
+        Left edges of the output time steps (needs a freq).
+    timeIndex1 : pandas.DatetimeIndex
+        Like timeIndex, but with the right edge of the last step appended.
+    DbinsPixel : range
+        Size bins in pixels.
+    sizeDefinitions : list
+        Size definitions used for the distributions.
+    sublevel : str
+        One of "match", "track", "detect".
+    applyFilters : list
+        Additional filters, see _createLevel2part.
+    label : str
+        Only used for log messages.
+
+    Returns
+    -------
+    xarray.Dataset or None
+        Calibrated level 2 data, or None if no data remains after filtering.
+    """
+    import dask
+    import pandas as pd
+
+    lv2File = label
+
     if sublevel == "detect":
         level1dat = _applyBlurThreshold(level1dat, config, lv2File)
         if level1dat is None:
@@ -2922,7 +3001,6 @@ def _createLevel2part(
     log.info(f"add additonal variables")
     level1dat_4timeAve = addPerParticleVariables(level1dat_4timeAve, config)
 
-    sizeDefinitions = ["Dmax", "Dequiv"]
     data_vars = [
         "area",
         "angle",
