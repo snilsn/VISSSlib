@@ -703,13 +703,42 @@ class DataProduct(object):
         # see the docstring section above for why this must be
         # `selfVacuous`, not a `newestFileCreation == 0` check
         vacuouslyFresh = selfVacuous
+        # levels whose CLI call covers a whole day (tools.LEVEL_REGISTRY's
+        # "daily" command kind) but that are NOT in files.dailyLevels (i.e.
+        # they produce many per-file outputs, one per level0 input file,
+        # rather than a single daily aggregate -- today this is only
+        # metaFrames) have their own files' creation times track their
+        # parent's files' creation times roughly 1:1 throughout the day, so
+        # the FIRST file of the day is always older than the parent's LAST
+        # file of that same day regardless of whether the day is fully and
+        # correctly processed -- comparing self.oldestFileCreation against
+        # parent.newestFileCreation is a structural false positive for
+        # these levels. Using self.newestFileCreation instead is safe here
+        # specifically because each such output has a 1:1 correspondence to
+        # a single input file with no OTHER shared parent able to
+        # invalidate every sibling file at once -- unlike e.g. level1match/
+        # level1track (also many-files-per-day, but "l1"-kind commands, not
+        # "daily"-kind, so unaffected by this branch), where a single
+        # updated shared parent (metaRotation/level1match) legitimately can
+        # invalidate every existing per-file sibling simultaneously, which
+        # is exactly the "one recently-touched file masks staleness in all
+        # the others" failure mode the oldest-file comparison below is
+        # designed to catch for them (see
+        # test_generateAllCommands_survives_stale_day_level_false_positive).
+        manyFilesPerDailyCall = (
+            tools.LEVEL_REGISTRY[self.level]["command"][0] == "daily"
+            and self.level not in files.dailyLevels
+        )
+        selfComparisonTime = (
+            self.newestFileCreation if manyFilesPerDailyCall else self.oldestFileCreation
+        )
         upToDateWithParentsDict = tools.DictNoDefault()
         for name, parent in self.parents.items():
             parentVacuous = parent.isComplete and (len(parent.listFiles()) == 0)
             isUpToDate = (
                 vacuouslyFresh
                 or (parentVacuous and selfVacuous)
-                or (parent.newestFileCreation < self.oldestFileCreation)
+                or (parent.newestFileCreation < selfComparisonTime)
             )
             if (self.level == "level1detect") and (parent.level == "metaEvents"):
                 # special case: no need to do level1detect again due to updated metaEvents
@@ -719,7 +748,7 @@ class DataProduct(object):
             if not upToDateWithParentsDict[name]:
                 log.debug(
                     f"{self.relatives} has files older "
-                    f"({tools.timestamp2str(self.oldestFileCreation)}) than parent "
+                    f"({tools.timestamp2str(selfComparisonTime)}) than parent "
                     f"{name}'s newest ({tools.timestamp2str(parent.newestFileCreation)})",
                 )
         return upToDateWithParentsDict

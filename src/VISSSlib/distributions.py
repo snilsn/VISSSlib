@@ -84,9 +84,9 @@ def _preprocess(dat):
             ) * int(1e9)
             dat["track_id"].values = dat["track_id"].values + offset
         dat = dat[data_vars]
-    except:
+    except Exception:
         log.error(dat.encoding["source"])
-        raise KeyError
+        raise
     return dat
 
 

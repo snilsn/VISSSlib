@@ -5,12 +5,32 @@ import pytest
 import VISSSlib
 import xarray as xr
 from VISSSlib.distributions import *
-from VISSSlib.distributions import _applyBlurThreshold, _blurThreshold
+from VISSSlib.distributions import _applyBlurThreshold, _blurThreshold, _preprocess
 
 from helpers import get_test_data_path, get_test_path, readTestSettings
 
 nSample = 100
 seed = 0
+
+
+class TestPreprocess:
+    """Regression test for a confirmed bug (found while QC-ing lim24_v1):
+    _preprocess's except block used to discard the real exception entirely
+    and raise a bare, unchained KeyError, masking the actual cause (e.g. a
+    missing/older-schema variable) behind a generic exception type. It
+    must now let the original exception propagate unchanged.
+    """
+
+    @pytest.mark.unit
+    def test_preprocess_preserves_original_exception(self):
+        # no "pair_id" coord and no "pid" variable to rename -- this hits
+        # the `dat.rename(pid="pair_id")` branch, which raises a ValueError
+        # (not a KeyError), proving the fix doesn't just coincidentally
+        # re-surface the same exception type as before.
+        dat = xr.Dataset({"foo": ("x", np.arange(3))})
+        dat.encoding["source"] = "synthetic_test_source.nc"
+        with pytest.raises(ValueError):
+            _preprocess(dat)
 
 
 class TestBlurThreshold:

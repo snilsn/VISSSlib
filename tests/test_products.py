@@ -245,6 +245,86 @@ class TestDataProductDAG:
         assert outFile.endswith(".nc")
 
     @pytest.mark.unit
+    def test_upToDateWithParents_survives_metaFrames_day_spread_false_positive(
+        self, config, queue
+    ):
+        """
+        Regression test for a confirmed bug (found on lim24_v1): metaFrames
+        produces one output file per level0 input file, spread across the
+        whole day just like its level0txt parent -- so metaFrames's own
+        FIRST file of the day is always older than level0txt's LAST file
+        of that same day, even on a fully, correctly processed day.
+        _upToDateWithParentsDict used to always compare self.oldestFileCreation
+        against parent.newestFileCreation, which made metaFrames look
+        permanently stale forever. Levels whose CLI call is "daily"-kind
+        but aren't in files.dailyLevels (today: only metaFrames) now
+        compare self.newestFileCreation instead.
+        """
+        case = "20260101"
+        camera = "leader"
+
+        def touch(path, mtime):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").close()
+            os.utime(path, (mtime, mtime))
+
+        l0 = DataProduct("level0txt", case, config, queue, camera, addRelatives=False)
+        l0dir = os.path.dirname(l0.fn.fnamesPattern.level0txt)
+        touch(
+            os.path.join(
+                l0dir, f"testcomputer_visss_{camera}_test_{case}-000000_0.txt"
+            ),
+            1,
+        )
+        touch(
+            os.path.join(
+                l0dir, f"testcomputer_visss_{camera}_test_{case}-235000_0.txt"
+            ),
+            100,  # level0txt's own newest file of the day
+        )
+
+        metaFrames = DataProduct(
+            "metaFrames", case, config, queue, camera, addRelatives=True
+        )
+        mfdir = metaFrames.fn.outpath["metaFrames"]
+        # metaFrames's own glob pattern matches on `fn.camera` (e.g.
+        # "leader_test"), not the plain "leader"/"follower" passed into
+        # DataProduct -- has to appear literally in the filename or
+        # listFiles()/nMissing() won't find these at all.
+        # metaFrames processes files roughly in order through the day: its
+        # first file (mtime 5) predates level0txt's own last file (mtime
+        # 100), but its LAST file (mtime 200) postdates it -- a fully
+        # caught-up, non-stale day.
+        touch(
+            os.path.join(
+                mfdir,
+                f"metaFrames_V{metaFrames.fn.versionShort}_{config.site}_"
+                f"{metaFrames.fn.computer}_{config.visssGen}_"
+                f"{metaFrames.fn.camera}_{case}-000000.nc",
+            ),
+            5,
+        )
+        touch(
+            os.path.join(
+                mfdir,
+                f"metaFrames_V{metaFrames.fn.versionShort}_{config.site}_"
+                f"{metaFrames.fn.computer}_{config.visssGen}_"
+                f"{metaFrames.fn.camera}_{case}-235000.nc",
+            ),
+            200,
+        )
+
+        parentKey = f"{camera}_level0txt"
+        assert metaFrames.parents[parentKey].newestFileCreation == 100
+        assert metaFrames.oldestFileCreation == 5
+        assert metaFrames.newestFileCreation == 200
+
+        # the coarse oldest-vs-newest comparison would (incorrectly) call
+        # this stale; the fix must use metaFrames's own newest file instead.
+        assert metaFrames._upToDateWithParentsDict[parentKey]
+        assert metaFrames._upToDateWithParents
+
+    @pytest.mark.unit
     def test_generateAllCommands_survives_stale_day_level_false_positive(
         self, config, queue, monkeypatch
     ):
