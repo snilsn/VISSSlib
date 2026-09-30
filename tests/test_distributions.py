@@ -480,3 +480,59 @@ class TestParticleClasses:
     def test_optionalShapeVars(self):
         dat = xr.Dataset({"solidity": ("x", [1.0]), "area": ("x", [1.0])})
         assert VISSSlib.distributions._optionalShapeVars(dat) == ["solidity"]
+
+    def _level1WithCamera(self, cameras=("leader", "follower"), category="a"):
+        level1 = self._level1()
+        n = level1.sizes["pair_id"]
+        level1["Dmax"] = (("camera", "pair_id"), np.ones((len(cameras), n)))
+        level1 = level1.assign_coords(camera=list(cameras))
+        level1["category"] = ("pair_id", [category] * n)
+        return level1
+
+    @pytest.mark.unit
+    def test_combineLevel1_single_dataset_is_unchanged(self):
+        level1 = self._level1()
+        assert VISSSlib.distributions._combineLevel1(level1) is level1
+
+    @pytest.mark.unit
+    def test_combineLevel1_makes_track_and_pair_ids_unique(self):
+        # track_id restarts at 0 in every level1 file
+        a, b = self._level1WithCamera(category="a"), self._level1WithCamera(category="b")
+        res = VISSSlib.distributions._combineLevel1([a, b])
+        assert res.sizes["pair_id"] == a.sizes["pair_id"] + b.sizes["pair_id"]
+        assert list(res.pair_id.values) == list(range(res.sizes["pair_id"]))
+        assert len(np.unique(res.track_id)) == 6  # 3 tracks per input
+        assert res.track_id.dtype == a.track_id.dtype
+        assert list(res.category.values) == ["a"] * 6 + ["b"] * 6
+        assert res.Dmax.dims == ("camera", "pair_id")
+        # inputs are not modified
+        assert list(a.track_id.values) == [0, 0, 1, 1, 2, 2]
+
+    @pytest.mark.unit
+    def test_combineLevel1_reads_files(self, tmp_path):
+        files = []
+        for ii in range(2):
+            files.append(tmp_path / f"level1_{ii}.nc")
+            self._level1WithCamera().to_netcdf(files[-1])
+        res = VISSSlib.distributions._combineLevel1([str(f) for f in files])
+        assert res.sizes["pair_id"] == 12
+        assert VISSSlib.distributions._combineLevel1(files[0]).sizes["pair_id"] == 6
+
+    @pytest.mark.unit
+    def test_combineLevel1_drops_variables_missing_in_some(self):
+        a, b = self._level1WithCamera(), self._level1WithCamera()
+        a["solidity"] = ("pair_id", np.ones(6))
+        res = VISSSlib.distributions._combineLevel1([a, b])
+        assert "solidity" not in res
+
+    @pytest.mark.unit
+    def test_combineLevel1_different_cameras_raise(self):
+        a = self._level1WithCamera(cameras=("leader", "follower"))
+        b = self._level1WithCamera(cameras=("leader2", "follower2"))
+        with pytest.raises(ValueError, match="cannot be combined"):
+            VISSSlib.distributions._combineLevel1([a, b])
+
+    @pytest.mark.unit
+    def test_combineLevel1_empty_list_raises(self):
+        with pytest.raises(ValueError, match="no level1 data"):
+            VISSSlib.distributions._combineLevel1([])

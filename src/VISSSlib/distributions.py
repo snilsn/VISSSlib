@@ -2,6 +2,7 @@
 
 import functools
 import operator
+import os
 import warnings
 from copy import deepcopy
 
@@ -945,6 +946,68 @@ def _createLevel2(
 
     return lv2Dat, lv2File
 
+def _combineLevel1(level1dat):
+    """
+    Combine several level1 datasets (or files) into one dataset along pair_id.
+
+    Parameters
+    ----------
+    level1dat : xarray.Dataset, str, path-like, or list of these
+        A single dataset is returned unchanged. Paths are loaded.
+
+    Returns
+    -------
+    xarray.Dataset
+        Combined dataset with a new, unique pair_id. If the data has tracks,
+        track_id is made unique by adding a per-dataset offset, because
+        track_id restarts at zero in every level1 file. Variables that are
+        not in all datasets are dropped. A ValueError is raised if the
+        datasets do not fit together (e.g. different cameras).
+    """
+    if isinstance(level1dat, xr.Dataset):
+        return level1dat
+    if isinstance(level1dat, (str, os.PathLike)):
+        level1dat = [level1dat]
+
+    dats = [
+        d if isinstance(d, xr.Dataset) else xr.load_dataset(d) for d in level1dat
+    ]
+    if len(dats) == 0:
+        raise ValueError("no level1 data provided")
+    if len(dats) == 1:
+        return dats[0]
+
+    common = set(dats[0].variables)
+    for d in dats[1:]:
+        common &= set(d.variables)
+    dropped = set().union(*[set(d.variables) for d in dats]) - common
+    if dropped:
+        log.warning(f"variables not available in all level1 data are dropped: {sorted(dropped)}")
+
+    combined = []
+    for ii, d in enumerate(dats):
+        d = d.drop_vars([v for v in d.variables if v not in common])
+        if "pair_id" in d.coords:
+            d = d.drop_vars("pair_id")
+        if "track_id" in d:
+            # track_id restarts at 0 in every file
+            d = d.assign(track_id=d.track_id + ii * int(1e9))
+        combined.append(d)
+
+    try:
+        level1dat = xr.concat(
+            combined,
+            dim="pair_id",
+            data_vars="minimal",
+            coords="minimal",
+            join="exact",
+            combine_attrs="drop_conflicts",
+        )
+    except ValueError as e:
+        raise ValueError(f"level1 data cannot be combined: {e}") from e
+    return level1dat.assign_coords(pair_id=np.arange(level1dat.sizes["pair_id"]))
+
+
 def attachTrackCategories(level1dat, trackClasses, unclassified="unclassified"):
     """
     Add a per-particle "category" variable to level1 data from a
@@ -1009,10 +1072,15 @@ def createLevel2_multiple_classes(
 
     Parameters
     ----------
-    level1dat : xarray.Dataset
+    level1dat : xarray.Dataset, path, or list of datasets and paths
         Level1 data (match or track) with the additional variable "category"
         (dimension pair_id), holding the class of every particle. See
         attachTrackCategories. Missing values are put in `unclassified`.
+        A list of datasets or files (e.g. consecutive 10 min files) is
+        combined into one dataset, so that a single level 2 dataset results.
+        In that case, the categories have to be assigned to the individual
+        datasets *before*, because track_id is only unique within a file.
+        See _combineLevel1.
     config : dict
         Configuration settings.
     freq, DbinsPixel, sizeDefinitions, sublevel, camera, applyFilters :
@@ -1029,6 +1097,8 @@ def createLevel2_multiple_classes(
         data after filtering are omitted. None if no class has data.
     """
     import pandas as pd
+
+    level1dat = _combineLevel1(level1dat)
 
     if "category" not in level1dat:
         raise ValueError("level1dat needs the variable 'category'")
@@ -1102,8 +1172,11 @@ def createLevel2_single_class(
 
     Parameters
     ----------
-    level1dat : xarray.Dataset
-        Level1 data (match or track) with dimension pair_id.
+    level1dat : xarray.Dataset, path, or list of datasets and paths
+        Level1 data (match or track) with dimension pair_id. A list of
+        datasets or files (e.g. consecutive 10 min files) is combined into
+        one dataset, so that a single level 2 dataset results. See
+        _combineLevel1.
     config : dict
         Configuration settings.
     freq : str, optional
@@ -1132,6 +1205,8 @@ def createLevel2_single_class(
     import pandas as pd
 
     assert sublevel in ["match", "track"]
+
+    level1dat = _combineLevel1(level1dat)
 
     if timeIndex is None:
         timeIndex, timeIndex1 = _level2TimeIndex(level1dat, freq)
