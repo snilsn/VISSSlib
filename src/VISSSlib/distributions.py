@@ -66,6 +66,10 @@ def _preprocess(dat):
 
         if "track_id" in dat.data_vars:
             data_vars += ["track_id", "track_step"]
+            # not available in level1track files from before the tracking
+            # completeness was introduced
+            if "track_expectedLength" in dat.data_vars:
+                data_vars += ["track_expectedLength"]
             # make track_ids unique, use only day-hour-minute-second, otherwise number is too large
             offset = int(
                 dat.encoding["source"].split("_")[-1].split(".")[0].replace("-", "")[6:]
@@ -872,7 +876,9 @@ def _createLevel2(
             long_name="binary quality Flags",
             comment="For recordingFailed, "
             "processingFailed, cameraBlocked, blowingSnow, obervationsDiffer, "
-            "tracksTooShort, and zResidualTooWide (matched leader/follower "
+            "trackingIncomplete (tracking completeness below "
+            "config.quality.minTrackCompleteness; in files created before "
+            "2026-10-01 this bit was tracksTooShort), and zResidualTooWide (matched leader/follower "
             "pairs disagree with each other more than a rotation refit "
             "could fix, see config.quality.maxZSigma). "
             "Use VISSSlib.tools.unpackQualityFlags to unpack",
@@ -900,6 +906,17 @@ def _createLevel2(
         lv2Dat.track_length_std.attrs.update(
             dict(units="# frames", long_name="standard deviation track_length")
         )
+        if "track_completeness" in lv2Dat:
+            lv2Dat.track_completeness.attrs.update(
+                dict(
+                    units="-",
+                    long_name="tracking completeness",
+                    comment="Number of tracked observations divided by the number "
+                    "of observations expected from the particles' velocities and "
+                    "the observation volume (level1track track_expectedLength), "
+                    "summed over all tracks starting in the time bin.",
+                )
+            )
         lv2Dat.velocity_dist.attrs.update(
             dict(units="m/s", long_name="velocity distribution")
         )
@@ -1690,7 +1707,14 @@ def _createLevel2part(
             level1dat_time,
             individualDataPoints,
             _,
-        ) = getPerTrackStatistics(level1dat)
+        ) = getPerTrackStatistics(
+            level1dat,
+            extraVars=(
+                ["track_expectedLength"]
+                if "track_expectedLength" in level1dat.data_vars
+                else []
+            ),
+        )
 
         # because there are no weighted groupby operations
         # https://github.com/pydata/xarray/issues/3937, we have to improvise
@@ -2050,13 +2074,13 @@ def addVariables(
     ) = getDataQuality(case, config, timeIndex, timeIndex1, sublevel, camera=camera)
     assert np.all(blockedPixels.time == calibDat.time)
 
-    # zResidualTooWide: like tracksTooShort below, this is a *flag*, not a
+    # zResidualTooWide: like trackingIncomplete below, this is a *flag*, not a
     # filter -- it never NaNs or drops data, it just sets a bit in
     # qualityFlags so a consumer can decide whether to trust a bin. See
     # getZResidualQuality's docstring and config.quality.maxZSigma's
     # comment for why this needs a scan independent of the aggregate
     # matchScore. Valid for both "match" and "track" (unlike
-    # tracksTooShort, which is inherently track-only) since both trace
+    # trackingIncomplete, which is inherently track-only) since both trace
     # back to matched leader/follower pairs; getZResidualQuality itself
     # returns all-False for "detect".
     zResidualTooWide = getZResidualQuality(
@@ -2068,7 +2092,7 @@ def addVariables(
         cameraBlocked = blockedPixels > config.quality.blockedPixThresh
         blowingSnow = blowingSnowRatio > config.quality.blowingSnowFrameThresh
         obervationsDiffer = np.array([False] * len(blockedPixels))
-        tracksTooShort = np.array([False] * len(blockedPixels))
+        trackingIncomplete = np.array([False] * len(blockedPixels))
 
     else:
         recordingFailed = recordingFailed.any("camera")
@@ -2079,11 +2103,25 @@ def addVariables(
         obervationsDiffer = (observationsRatio < config.quality.obsRatioThreshold) | (
             observationsRatio > (1 / config.quality.obsRatioThreshold)
         )
-        if sublevel == "match":
-            tracksTooShort = np.array([False] * len(cameraBlocked))
+        if sublevel == "track" and "track_expectedPerObserved_mean" in calibDat:
+            calibDat["track_completeness"] = (
+                1 / calibDat["track_expectedPerObserved_mean"]
+            )
+            calibDat = calibDat.drop_vars(
+                ["track_expectedPerObserved_mean", "track_expectedPerObserved_std"],
+                errors="ignore",
+            )
+        if sublevel == "match" or "track_completeness" not in calibDat:
+            # level1track files from before the completeness was introduced
+            # carry no track_expectedLength: nothing to flag
+            trackingIncomplete = xr.zeros_like(cameraBlocked, dtype=bool)
         else:
-            tracksTooShort = (
-                calibDat.track_length_mean <= config.quality.trackLengthThreshold
+            # fraction of the expected observations (given velocity and
+            # observation volume) that were actually tracked; low for strong
+            # turbulence, many small particles or poor matching. NaN (no
+            # tracks) is not flagged.
+            trackingIncomplete = (
+                calibDat.track_completeness < config.quality.minTrackCompleteness
             )
 
     # apply quality
@@ -2127,8 +2165,8 @@ def addVariables(
     if sublevel == "track":
         log.info(
             tools.concat(
-                "tracksTooShort filter removed",
-                tracksTooShort.values.sum() / len(cameraBlocked) * 100,
+                "trackingIncomplete flagged",
+                trackingIncomplete.values.sum() / len(cameraBlocked) * 100,
                 "% of data",
             )
         )
@@ -2146,7 +2184,7 @@ def addVariables(
         | cameraBlocked
         | blowingSnow
         | obervationsDiffer
-        | tracksTooShort
+        | trackingIncomplete
         | zResidualTooWide
     )
     log.info(
@@ -2164,7 +2202,7 @@ def addVariables(
             cameraBlocked,
             blowingSnow,
             obervationsDiffer,
-            tracksTooShort,
+            trackingIncomplete,
             zResidualTooWide,
         ],
         axis=-1,
@@ -2325,6 +2363,13 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
     # level1dat_track2D["velocity"][dict(track_step=0)] = level1dat_track2D["velocity"].mean("track_step")
     del level1dat_track2D["position3D_centroid"]
 
+    # expected track length (level1track) for the tracking completeness;
+    # taken after removeTrackEdges so cut pieces count with their own length
+    expectedLength = None
+    if "track_expectedLength" in level1dat_track2D.data_vars:
+        expectedLength = level1dat_track2D["track_expectedLength"].max("track_step")
+        del level1dat_track2D["track_expectedLength"]
+
     # estimate max, mean and min for tracks by reducing track_step
     level1dat_track2D_4ave = (
         level1dat_track2D.copy()
@@ -2357,6 +2402,15 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
         .notnull()
         .sum("track_step")
     )
+    # expected / observed track length. Its particle-weighted mean over a time
+    # bin (as done for all variables in _createLevel2part) is
+    # sum(expected) / sum(observed), the inverse of the tracking completeness
+    # (fraction of the expected observations that were tracked), see
+    # addVariables
+    if expectedLength is not None:
+        level1dat_trackAve["track_expectedPerObserved"] = np.maximum(
+            expectedLength / level1dat_trackAve["track_length"], 1
+        )
 
     del level1dat_track2D_4ave
 
@@ -2371,17 +2425,22 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
 
 def removeTrackEdges(level1dat_track2D, maxAngleDiff):
     """
-    Remove track edges identified by large angular differences.
+    Remove track edges identified by sudden turns.
 
-    Identifies potentially erroneous track terminations by detecting large
-    angular deviations and removes those sections from the data.
+    Identifies a track that makes one sharp turn (much larger than its second
+    largest turn) between consecutive displacement vectors, which is more
+    likely two different particles linked together than a real trajectory.
+    The track is cut at the turning point. The turn angle is the 3D angle
+    between consecutive displacement vectors, independent of the fall
+    direction.
 
     Parameters
     ----------
     level1dat_track2D : xarray.Dataset
         Track dataset with particle trajectory data.
     maxAngleDiff : float
-        Maximum allowable angular difference for track continuity.
+        Minimum difference (degrees) between the largest and second largest
+        turn angle of a track for it to be cut. 0 disables the cutting.
 
     Returns
     -------
@@ -2405,7 +2464,19 @@ def removeTrackEdges(level1dat_track2D, maxAngleDiff):
     # try to find and remove edges in the tracks,
     tts = []
     if maxAngleDiff != 0:
-        ang = np.abs(level1dat_track2D.track_angle.diff("track_step"))
+        # turn angle between consecutive displacement vectors, labeled like
+        # track_angle.diff(): the turn at a point sits at that point's upper
+        # neighbour. Not the change of the angle to vertical, which is blind
+        # to a change of horizontal direction (e.g. with strong wind).
+        a, b = di[:, :-1], di[:, 1:]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            cosTurn = (a * b).sum(-1) / (
+                np.linalg.norm(a, axis=-1) * np.linalg.norm(b, axis=-1)
+            )
+        ang = xr.DataArray(
+            np.degrees(np.arccos(np.clip(cosTurn, -1, 1))),
+            coords=[distSpace.track_id, distSpace.track_step[1:]],
+        )
         # angles can be large, but for natural tracks the 2nd is also large
         # sort cannot handle nans
         twoLargest = xarray_extras.sort.topk(ang.fillna(-999), 2, "track_step")
@@ -2823,7 +2894,7 @@ def getZResidualQuality(case, config, timeIndex, timeIndex1, sublevel, camera="l
     than a hand-written list) rather than being a self-contained
     per-level computation like the other quality flags.
 
-    Like tracksTooShort in addVariables, this is a *flag*, not a filter:
+    Like trackingIncomplete in addVariables, this is a *flag*, not a filter:
     the caller folds it into the per-timestep qualityFlags bitmask without
     dropping or NaN-ing any data -- it is up to whoever consumes the
     level2 output to decide whether to exclude data flagged this way.
@@ -2895,7 +2966,9 @@ def getZResidualQuality(case, config, timeIndex, timeIndex1, sublevel, camera="l
     ).values
 
     binCode = pd.cut(
-        pd.DatetimeIndex(time), bins=pd.DatetimeIndex(timeIndex1), right=False,
+        pd.DatetimeIndex(time),
+        bins=pd.DatetimeIndex(timeIndex1),
+        right=False,
         labels=False,
     )
     diffZBinned = pd.Series(diffZ, index=binCode).dropna()

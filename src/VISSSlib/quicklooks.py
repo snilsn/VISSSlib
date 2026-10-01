@@ -3094,7 +3094,7 @@ def createLevel2trackQuicklook(
         processingFailed = quality.sel(flag="processingFailed", drop=True)
         blowingSnow = quality.sel(flag="blowingSnow", drop=True)
         cameraBlocked = quality.sel(flag="cameraBlocked", drop=True)
-        tracksTooShort = quality.sel(flag="tracksTooShort", drop=True)
+        trackingIncomplete = quality.sel(flag="trackingIncomplete", drop=True)
         zResidualTooWide = quality.sel(flag="zResidualTooWide", drop=True)
 
         for ax in axs[:, 0]:
@@ -3152,7 +3152,7 @@ def createLevel2trackQuicklook(
                     alpha=0.25,
                     label=f"blowing snow > {config.quality.blowingSnowFrameThresh*100}%",
                 )  # , hatch='///')
-            cond = quality.time.where(tracksTooShort)
+            cond = quality.time.where(trackingIncomplete)
             if cond.notnull().any():
                 ax.fill_between(
                     cond,
@@ -3160,7 +3160,7 @@ def createLevel2trackQuicklook(
                     [ylim[1]] * len(quality.time),
                     color="blue",
                     alpha=0.2,
-                    label=f"mean track length < {config.quality.trackLengthThreshold}",
+                    label=f"tracking completeness < {config.quality.minTrackCompleteness}",
                     # hatch="X",
                 )
             cond = quality.time.where(zResidualTooWide)
@@ -3910,7 +3910,7 @@ def createLevel3RimingQuicklook(
         processingFailed = quality.sel(flag="processingFailed", drop=True)
         blowingSnow = quality.sel(flag="blowingSnow", drop=True)
         cameraBlocked = quality.sel(flag="cameraBlocked", drop=True)
-        tracksTooShort = quality.sel(flag="tracksTooShort", drop=True)
+        trackingIncomplete = quality.sel(flag="trackingIncomplete", drop=True)
 
         for ax in axs:
             ax.set_title(None)
@@ -3967,15 +3967,15 @@ def createLevel3RimingQuicklook(
                     alpha=0.25,
                     label=f"blowing snow > {config.quality.blowingSnowFrameThresh*100}%",
                 )  # , hatch='///')
-            if tracksTooShort.sum() > 0:
+            if trackingIncomplete.sum() > 0:
                 ax.fill_between(
                     quality.time.values,
                     ylim[0],
                     ylim[1],
-                    where=tracksTooShort.values,
+                    where=trackingIncomplete.values,
                     color="blue",
                     alpha=0.2,
-                    label=f"mean track length < {config.quality.trackLengthThreshold}",
+                    label=f"tracking completeness < {config.quality.minTrackCompleteness}",
                 )
 
             ax.set_ylim(ylim)

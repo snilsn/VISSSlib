@@ -378,7 +378,12 @@ DEFAULT_SETTINGS = {
         "minMatchScore": 1e-3,
         "minSize4insituM": 10,
         "obsRatioThreshold": 0.7,
-        "trackLengthThreshold": 2,
+        # level2track flag trackingIncomplete: fraction of the expected
+        # observations (given velocity and observation volume) that were
+        # actually tracked. Derived from 41 VISSS1/2/3 test cases: <= 0.17 for
+        # dense data with poor matching or many tiny particles, >= 0.56 for
+        # windy, fast, rainy and low-concentration cases.
+        "minTrackCompleteness": 0.25,
     },
     "rotate": {},
 }
@@ -3484,7 +3489,7 @@ def unpackQualityFlags(quality, doubleTimestamps=False):
             "cameraBlocked",
             "blowingSnow",
             "obervationsDiffer",
-            "tracksTooShort",
+            "trackingIncomplete",
             "zResidualTooWide",
         ],
         dims=["flag"],

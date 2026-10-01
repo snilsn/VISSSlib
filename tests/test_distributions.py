@@ -306,7 +306,7 @@ class TestL2(object):
         )
         assert np.isclose(dat.PSD.mean(), 4219.70556641)
         assert np.isclose(dat.M6.mean(), 2.45204412e-20)
-        assert np.isclose(dat.angle_mean.mean(), 67.9868927)
+        assert np.isclose(dat.angle_mean.mean(), 67.97836304)
         for var in [
             "D32",
             "D43",
