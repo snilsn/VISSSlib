@@ -2218,10 +2218,10 @@ def collectVersionAttrs(level, parentFiles):
 # reuses what's already being stat'd). Remove an entry once the fleet has
 # caught up.
 REPROCESS_AFTER = {
-    "level1track": datetime.datetime(2026, 10, 1, 12, 41, 0),  # learned-scale tracker + track_expectedLength (8eaf532)
+    "level1track": datetime.datetime(2026, 10, 1, 15, 50, 0),  # learned-scale tracker + track_expectedLength + coasting fix
     "level2detect": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
     "level2match": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
-    "level2track": datetime.datetime(2026, 10, 1, 12, 41, 0),  # turn-angle track edges + trackingIncomplete flag (35b9297)
+    "level2track": datetime.datetime(2026, 10, 1, 15, 50, 0),  # turn-angle track edges + trackingIncomplete flag
 }
 
 
