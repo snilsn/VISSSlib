@@ -186,7 +186,11 @@ def myKF(
 
 def _angleToVertical(velocity):
     """Angle (deg) between `velocity` and the z axis, like vg.angle([0, 0, 1], v)."""
-    vx, vy, vz = (float(v) for v in np.ravel(velocity)[:3])
+    # tolist() is much cheaper than converting numpy scalars one by one (and
+    # than a numba function, whose call overhead dominates for 3 numbers)
+    vx, vy, vz = (
+        velocity.ravel().tolist() if isinstance(velocity, np.ndarray) else velocity
+    )
     norm = math.sqrt(vx * vx + vy * vy + vz * vz)
     if not norm > 0:
         return np.nan
