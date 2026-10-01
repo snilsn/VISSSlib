@@ -20,6 +20,7 @@
 # __version__ = '1.1.0' # additional lv1 variables areaConsideringHoles, perimeterConsideringHoles
 # __version__ = '1.2.0' # additional lv1 variables solidity, extent, solidityConsideringHoles, extentConsideringHoles
 # __version__ = '1.2.1' # detection.py: raised erosion-test Dmax guard from 5 to 8 (matches sibling minBlur guard) so real small particles (Dmax 5-8px) are no longer rejected by add()
+# __version__ = '1.2.2' # tracking.py: gates learned from the data, look-ahead first links, KF fixes, track_expectedLength; level2track: track_completeness/trackingIncomplete flag (replaces tracksTooShort), turn-angle track edges
 
 
 # Version is pulled from git tag!!
