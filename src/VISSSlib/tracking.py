@@ -543,6 +543,13 @@ class Tracker(object):
     falseCandidateProbability = 0.01
     densityWindowFrames = 2000
     maxFirstLinkGateFraction = 0.5
+    # a track that misses a detection only coasts while its prediction is
+    # still inside the observation volume (otherwise the particle has left
+    # and any particle found near the prediction would be a wrong one), and
+    # coasted tracks get an extra cost so they lose against tracks that were
+    # observed in the last frame
+    coastOnlyIfVisible = True
+    coastedExtraCost = 1.0
 
     def __init__(
         self,
@@ -1059,6 +1066,7 @@ class Tracker(object):
                 self.activeTracks[i].predict()
                 self.activeTracks[i].updateTrack(None, None, None)
                 self.activeTracks[i].skipped_frames += 1
+                self._endTrackIfLeft(self.activeTracks[i])
 
         self._frameid = thisFrameid
 
@@ -1227,6 +1235,12 @@ class Tracker(object):
         #    [ 26.85835339,  80.47296492,  50.26078078]])
         # results in 26.85835339, 46.60156128,  0.20302552
 
+        if self.coastedExtraCost:
+            coasted = [
+                i for i, t in enumerate(self.activeTracks) if t.skipped_frames > 0
+            ]
+            self.cost[coasted] += self.coastedExtraCost
+
         self.cost[self.cost > self.dist_thresh] = 1e30
 
         # Using Hungarian Algorithm assign the correct detected measurements
@@ -1258,8 +1272,10 @@ class Tracker(object):
                 if self.cost[i][self.assignment[i]] > self.dist_thresh:
                     self.assignment[i] = -1
                     self.activeTracks[i].skipped_frames += 1
+                    self._endTrackIfLeft(self.activeTracks[i])
             else:
                 self.activeTracks[i].skipped_frames += 1
+                self._endTrackIfLeft(self.activeTracks[i])
 
         # If tracks are not detected for long time, remove them
         # del_ii = []
@@ -1395,6 +1411,16 @@ class Tracker(object):
             return upper
         radius = (self.falseCandidateProbability / (density * 4 / 3 * np.pi)) ** (1 / 3)
         return float(np.clip(radius, self.firstLinkGate, upper))
+
+    def _endTrackIfLeft(self, track):
+        """Close an undetected track whose prediction left the observation volume."""
+        if not self.coastOnlyIfVisible:
+            return
+        halfSize = 0.0
+        if self._dmaxFeatureIdx is not None and track._features[-1] is not None:
+            halfSize = 0.5 * float(track._features[-1][self._dmaxFeatureIdx])
+        if not self.visible(np.atleast_2d(track.predictedPos), halfSize)[0]:
+            track.skipped_frames = self.max_frames_to_skip + 1
 
     def _framePositions(self, ff, k):
         """Positions of frame index ff+k if it directly follows frame ff, else None."""

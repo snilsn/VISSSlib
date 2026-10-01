@@ -61,7 +61,12 @@ Assignment (``Tracker.update``)
    detection does not end a track); unassigned detections start new tracks.
    A frame that is missing from the data altogether (no particle in the
    whole volume) is bridged the same way; the Kalman filters are propagated
-   over it before coasting.
+   over it before coasting. Links across a missed detection are the most
+   error-prone ones (a track whose particle left the volume would grab any
+   particle near its prediction), so a track only coasts while its
+   prediction is inside the observation volume (``coastOnlyIfVisible``) and
+   a coasted track gets an extra cost (``coastedExtraCost``, 1), so it loses
+   against tracks observed in the last frame.
 
 Gates learned from the data
 ----------------------------
