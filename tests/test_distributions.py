@@ -297,6 +297,15 @@ class TestL2(object):
 
     def testL2Track(self):
         case = "20260110"
+        # regenerate the level1track input with the current tracker so the
+        # test does not depend on the version that produced the downloaded
+        # test data (level2track needs e.g. track_expectedLength)
+        from VISSSlib import files
+        from VISSSlib.tracking import trackParticles
+
+        fl = files.FindFiles(case, self.config.leader, self.config)
+        for fname in fl.listFiles("level1detect"):
+            trackParticles(fname, self.config, skipExisting=False)
         dat, _ = createLevel2track(
             case,
             self.config,
@@ -306,7 +315,8 @@ class TestL2(object):
         )
         assert np.isclose(dat.PSD.mean(), 4219.70556641)
         assert np.isclose(dat.M6.mean(), 2.45204412e-20)
-        assert np.isclose(dat.angle_mean.mean(), 67.97836304)
+        assert np.isclose(dat.angle_mean.mean(), 66.32055664)
+        assert np.isclose(dat.track_completeness.mean(), 0.48645067)
         for var in [
             "D32",
             "D43",
@@ -367,6 +377,7 @@ class TestL2(object):
             "track_angle_dist",
             "track_angle_mean",
             "track_angle_std",
+            "track_completeness",
             "track_length_mean",
             "track_length_std",
             "velocity_dist",

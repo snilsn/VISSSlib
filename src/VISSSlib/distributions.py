@@ -65,11 +65,7 @@ def _preprocess(dat):
             data_vars += ["blur", "Droi", "position_upperLeft"]
 
         if "track_id" in dat.data_vars:
-            data_vars += ["track_id", "track_step"]
-            # not available in level1track files from before the tracking
-            # completeness was introduced
-            if "track_expectedLength" in dat.data_vars:
-                data_vars += ["track_expectedLength"]
+            data_vars += ["track_id", "track_step", "track_expectedLength"]
             # make track_ids unique, use only day-hour-minute-second, otherwise number is too large
             offset = int(
                 dat.encoding["source"].split("_")[-1].split(".")[0].replace("-", "")[6:]
@@ -906,17 +902,16 @@ def _createLevel2(
         lv2Dat.track_length_std.attrs.update(
             dict(units="# frames", long_name="standard deviation track_length")
         )
-        if "track_completeness" in lv2Dat:
-            lv2Dat.track_completeness.attrs.update(
-                dict(
-                    units="-",
-                    long_name="tracking completeness",
-                    comment="Number of tracked observations divided by the number "
-                    "of observations expected from the particles' velocities and "
-                    "the observation volume (level1track track_expectedLength), "
-                    "summed over all tracks starting in the time bin.",
-                )
+        lv2Dat.track_completeness.attrs.update(
+            dict(
+                units="-",
+                long_name="tracking completeness",
+                comment="Number of tracked observations divided by the number "
+                "of observations expected from the particles' velocities and "
+                "the observation volume (level1track track_expectedLength), "
+                "summed over all tracks starting in the time bin.",
             )
+        )
         lv2Dat.velocity_dist.attrs.update(
             dict(units="m/s", long_name="velocity distribution")
         )
@@ -1707,14 +1702,7 @@ def _createLevel2part(
             level1dat_time,
             individualDataPoints,
             _,
-        ) = getPerTrackStatistics(
-            level1dat,
-            extraVars=(
-                ["track_expectedLength"]
-                if "track_expectedLength" in level1dat.data_vars
-                else []
-            ),
-        )
+        ) = getPerTrackStatistics(level1dat, extraVars=["track_expectedLength"])
 
         # because there are no weighted groupby operations
         # https://github.com/pydata/xarray/issues/3937, we have to improvise
@@ -2103,19 +2091,15 @@ def addVariables(
         obervationsDiffer = (observationsRatio < config.quality.obsRatioThreshold) | (
             observationsRatio > (1 / config.quality.obsRatioThreshold)
         )
-        if sublevel == "track" and "track_expectedPerObserved_mean" in calibDat:
+        if sublevel == "match":
+            trackingIncomplete = xr.zeros_like(cameraBlocked, dtype=bool)
+        else:
             calibDat["track_completeness"] = (
                 1 / calibDat["track_expectedPerObserved_mean"]
             )
             calibDat = calibDat.drop_vars(
-                ["track_expectedPerObserved_mean", "track_expectedPerObserved_std"],
-                errors="ignore",
+                ["track_expectedPerObserved_mean", "track_expectedPerObserved_std"]
             )
-        if sublevel == "match" or "track_completeness" not in calibDat:
-            # level1track files from before the completeness was introduced
-            # carry no track_expectedLength: nothing to flag
-            trackingIncomplete = xr.zeros_like(cameraBlocked, dtype=bool)
-        else:
             # fraction of the expected observations (given velocity and
             # observation volume) that were actually tracked; low for strong
             # turbulence, many small particles or poor matching. NaN (no
@@ -2365,10 +2349,8 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
 
     # expected track length (level1track) for the tracking completeness;
     # taken after removeTrackEdges so cut pieces count with their own length
-    expectedLength = None
-    if "track_expectedLength" in level1dat_track2D.data_vars:
-        expectedLength = level1dat_track2D["track_expectedLength"].max("track_step")
-        del level1dat_track2D["track_expectedLength"]
+    expectedLength = level1dat_track2D["track_expectedLength"].max("track_step")
+    del level1dat_track2D["track_expectedLength"]
 
     # estimate max, mean and min for tracks by reducing track_step
     level1dat_track2D_4ave = (
@@ -2407,10 +2389,9 @@ def getPerTrackStatistics(level1dat, maxAngleDiff=20, extraVars=[]):
     # sum(expected) / sum(observed), the inverse of the tracking completeness
     # (fraction of the expected observations that were tracked), see
     # addVariables
-    if expectedLength is not None:
-        level1dat_trackAve["track_expectedPerObserved"] = np.maximum(
-            expectedLength / level1dat_trackAve["track_length"], 1
-        )
+    level1dat_trackAve["track_expectedPerObserved"] = np.maximum(
+        expectedLength / level1dat_trackAve["track_length"], 1
+    )
 
     del level1dat_track2D_4ave
 
