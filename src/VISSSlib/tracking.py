@@ -2,6 +2,7 @@
 
 import glob
 import logging
+import math
 import os
 import sys
 import warnings
@@ -183,6 +184,15 @@ def myKF(
     return kf
 
 
+def _angleToVertical(velocity):
+    """Angle (deg) between `velocity` and the z axis, like vg.angle([0, 0, 1], v)."""
+    vx, vy, vz = (float(v) for v in np.ravel(velocity)[:3])
+    norm = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if not norm > 0:
+        return np.nan
+    return math.degrees(math.acos(max(-1.0, min(1.0, vz / norm))))
+
+
 class _RollingArray:
     """
     Append-only history buffer, backed by a numpy array, that only ever
@@ -289,9 +299,6 @@ class Track(object):
         -----
         Maintains particle position, velocity, and feature history.
         """
-        import vg
-
-        self._vg = vg
         assert len(velocityGuess) == 3
         self.velocityGuess = velocityGuess
         self.track_id = trackIdCount  # identification of each track object
@@ -317,11 +324,14 @@ class Track(object):
         self._trace = [position]  # trace path
         self._features = [feature]  # trace path
         self._sizes = [size]  # size path
+        # running sum/count for meanSize (nanmean over _sizes was a hotspot)
+        self._sizeSum = float(size) if np.isfinite(size) else 0.0
+        self._sizeN = 1 if np.isfinite(size) else 0
         self.startTime = startTime
         # print("track created at ", position)
         self.predictedVel = np.array([np.nan] * 3)
         self.predictedPos = np.array([np.nan] * 3)
-        self.predictedAng = self._vg.angle(np.array([0, 0, 1]), np.array(velocityGuess))
+        self.predictedAng = _angleToVertical(velocityGuess)
 
         if self.reduced_q_var is not None:
             if kfConstants is not None and kfConstants.get("reducedQ") is not None:
@@ -355,7 +365,9 @@ class Track(object):
         except IndexError:
             return np.nan
         else:
-            return self._vg.angle(np.array([0, 0, 1]), dist)
+            import vg
+
+            return vg.angle(np.array([0, 0, 1]), dist)
 
     @property
     def meanVelocity(self):
@@ -396,7 +408,7 @@ class Track(object):
         float
             Mean particle size.
         """
-        return np.nanmean(self._sizes)
+        return self._sizeSum / self._sizeN if self._sizeN else np.nan
 
     def updateTrack(self, position, feature, size):
         """
@@ -423,6 +435,9 @@ class Track(object):
             self._trace.append(position)
             self._features.append(feature)
             self._sizes.append(size)
+            if np.isfinite(size):
+                self._sizeSum += float(size)
+                self._sizeN += 1
             self.nObserved += 1
             self.KF.update(position)
         else:
@@ -472,7 +487,7 @@ class Track(object):
         self.KF.predict()
         self.predictedPos = self.KF.x[::2].squeeze()
         self.predictedVel = self.KF.x[1::2].squeeze()
-        self.predictedAng = self._vg.angle(np.array([0, 0, 1]), self.predictedVel)
+        self.predictedAng = _angleToVertical(self.predictedVel)
         return self.predictedPos, self.predictedVel, self.predictedAng
 
 
@@ -838,6 +853,8 @@ class Tracker(object):
             ([0], np.cumsum(np.diff(self._frameBoundaries)))
         )
 
+        self._buildVolumeConstraints()
+
         self._localFlowKey = None
         self._setScales(self.dvScaleDefault, np.array(self.velocitySigmaDefault))
 
@@ -896,6 +913,45 @@ class Tracker(object):
             + [self._gateToPenalty / gate3**2] * 60
         )
 
+    def _buildVolumeConstraints(self):
+        """
+        Observation volume as linear constraints lo <= A @ position <= hi.
+
+        Rows: leader image x and z, follower image y and z (common
+        coordinates rotated with the retrieved follower rotation, i.e.
+        matching.shiftRotate_L2F with psi = Olx = Ofy = 0), and the learned
+        depth limits along x and y. The image rows shrink by half the
+        particle size (_volumeHalfMask).
+        """
+        W, H = self.config.frame_width, self.config.frame_height
+        if self._cameraRotation is not None:
+            phi = np.deg2rad(self._cameraRotation["camera_phi"])
+            theta = np.deg2rad(self._cameraRotation["camera_theta"])
+            Ofz = self._cameraRotation["camera_Ofz"]
+            rowFy = [
+                np.sin(phi) * np.sin(theta),
+                np.cos(phi),
+                np.sin(phi) * np.cos(theta),
+            ]
+            rowFz = [
+                np.cos(phi) * np.sin(theta),
+                -np.sin(phi),
+                np.cos(phi) * np.cos(theta),
+            ]
+        else:
+            Ofz = 0.0
+            rowFy, rowFz = [0, 1, 0], [0, 0, 1]
+        self._volumeA = np.array(
+            [[1, 0, 0], [0, 0, 1], rowFy, rowFz, [1, 0, 0], [0, 1, 0]], dtype=float
+        )
+        self._volumeLo = np.array(
+            [0, 0, 0, Ofz, self._depthLo[0], self._depthLo[1]], dtype=float
+        )
+        self._volumeHi = np.array(
+            [W, H, W, H + Ofz, self._depthHi[0], self._depthHi[1]], dtype=float
+        )
+        self._volumeHalfMask = np.array([1, 1, 1, 1, 0, 0], dtype=float)
+
     def visible(self, positions, halfSize=0.0):
         """
         Whether particles at `positions` would be observed by both cameras.
@@ -913,36 +969,14 @@ class Tracker(object):
         numpy.ndarray
             Boolean array of length n.
         """
-        W, H = self.config.frame_width, self.config.frame_height
-        x, y, z = positions[:, 0], positions[:, 1], positions[:, 2]
-        # leader image
-        ok = (
-            (x >= halfSize)
-            & (x <= W - halfSize)
-            & (z >= halfSize)
-            & (z <= H - halfSize)
+        # leader image (x, z), follower image (rotated y, z) and the depth
+        # limits along the viewing directions (x: follower, y: leader)
+        values = positions @ self._volumeA.T
+        margin = halfSize * self._volumeHalfMask
+        ok = np.all(
+            (values >= self._volumeLo + margin) & (values <= self._volumeHi - margin),
+            axis=1,
         )
-        # follower image
-        if self._cameraRotation is not None:
-            rot = self._cameraRotation
-            _, Fy, Fz = matching.shiftRotate_L2F(
-                x,
-                y,
-                z,
-                rot["camera_phi"],
-                rot["camera_theta"],
-                0.0,
-                0.0,
-                0.0,
-                rot["camera_Ofz"],
-            )
-        else:
-            Fy, Fz = y, z
-        ok &= (Fy >= halfSize) & (Fy <= W - halfSize)
-        ok &= (Fz >= halfSize) & (Fz <= H - halfSize)
-        # depth limits along the viewing directions (x: follower, y: leader)
-        ok &= (x >= self._depthLo[0]) & (x <= self._depthHi[0])
-        ok &= (y >= self._depthLo[1]) & (y <= self._depthHi[1])
         return ok
 
     def updateAll(self):
@@ -1013,7 +1047,7 @@ class Tracker(object):
         array_like
             Array containing the length of each active track.
         """
-        return np.array([t.length for t in self.activeTracks])
+        return np.array([t.nObserved for t in self.activeTracks])
 
     def update(self, ff):
         """
@@ -1730,20 +1764,28 @@ class Tracker(object):
         Number of consecutive frames a particle moving from `position` with
         `velocity` (px/frame) stays inside the observation volume.
         """
-        speed = np.linalg.norm(velocity)
+        position = np.asarray(position, dtype=float)
+        velocity = np.asarray(velocity, dtype=float)
         if not np.all(np.isfinite(velocity)) or not np.all(np.isfinite(position)):
             return 0
-        if speed < 1e-6:
-            return maxFrames
-        diag = np.linalg.norm(
-            [self.config.frame_width, self.config.frame_width, self.config.frame_height]
-        )
-        nSteps = int(min(maxFrames, np.ceil(diag / speed) + 1))
-        k = np.arange(1, nSteps + 1)[:, np.newaxis]
-        inside = self.visible(position + k * velocity, halfSize)
-        if inside.all():
-            return nSteps
-        return int(np.argmin(inside))
+        # the volume is an intersection of slabs (convex), so the frames after
+        # the first one inside form one interval; its end is the first slab
+        # the straight line leaves
+        margin = halfSize * self._volumeHalfMask
+        lo = self._volumeLo + margin
+        hi = self._volumeHi - margin
+        start = self._volumeA @ position
+        step = self._volumeA @ velocity
+        first = start + step
+        if not np.all((first >= lo) & (first <= hi)):
+            return 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            kMax = np.where(
+                step > 0,
+                np.floor((hi - start) / step),
+                np.where(step < 0, np.floor((lo - start) / step), np.inf),
+            )
+        return int(min(np.min(kMax), maxFrames))
 
     def _finishTracks(self, tracks):
         """
@@ -1891,7 +1933,7 @@ class Tracker(object):
         self._finishTracks(self.activeTracks)
         self._archiveScales(self.activeTracks)
         self._archiveTrackTimes.extend([t.startTime for t in self.activeTracks])
-        self._archiveTrackNSamples.extend([t.length for t in self.activeTracks])
+        self._archiveTrackNSamples.extend([t.nObserved for t in self.activeTracks])
         self._archiveTrackSize.extend([t.meanSize for t in self.activeTracks])
         self._archiveTrackVelocities.extend([t.meanVelocity for t in self.activeTracks])
 
@@ -1912,7 +1954,7 @@ class Tracker(object):
         Archives track data before removing from active list.
         Maintains only recent archive data (last backSteps*10 items).
         """
-        del_ii = np.where(del_ii)[0]
+        del_ii = set(np.where(del_ii)[0].tolist())
         finished = [i for j, i in enumerate(self.activeTracks) if j in del_ii]
         self._finishTracks(finished)
         self._archiveScales(finished)
@@ -1920,7 +1962,7 @@ class Tracker(object):
             [i.startTime for j, i in enumerate(self.activeTracks) if j in del_ii]
         )
         self._archiveTrackNSamples.extend(
-            [i.length for j, i in enumerate(self.activeTracks) if j in del_ii]
+            [i.nObserved for j, i in enumerate(self.activeTracks) if j in del_ii]
         )
         self._archiveTrackSize.extend(
             [i.meanSize for j, i in enumerate(self.activeTracks) if j in del_ii]
