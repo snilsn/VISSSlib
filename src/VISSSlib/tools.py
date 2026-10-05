@@ -378,7 +378,12 @@ DEFAULT_SETTINGS = {
         "minMatchScore": 1e-3,
         "minSize4insituM": 10,
         "obsRatioThreshold": 0.7,
-        "trackLengthThreshold": 2,
+        # level2track flag trackingIncomplete: fraction of the expected
+        # observations (given velocity and observation volume) that were
+        # actually tracked. Derived from 41 VISSS1/2/3 test cases: <= 0.17 for
+        # dense data with poor matching or many tiny particles, >= 0.56 for
+        # windy, fast, rainy and low-concentration cases.
+        "minTrackCompleteness": 0.25,
     },
     "rotate": {},
 }
@@ -2214,10 +2219,10 @@ def collectVersionAttrs(level, parentFiles):
 # reuses what's already being stat'd). Remove an entry once the fleet has
 # caught up.
 REPROCESS_AFTER = {
-    "level1track": datetime.datetime(2026, 9, 2, 17, 0, 0),  # Dmax cost-variance + dropped-frame fixes (a5aeb2c, 92bb6ce)
+    "level1track": datetime.datetime(2026, 10, 1, 15, 50, 0),  # learned-scale tracker + track_expectedLength + coasting fix
     "level2detect": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
     "level2match": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
-    "level2track": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
+    "level2track": datetime.datetime(2026, 10, 1, 15, 50, 0),  # turn-angle track edges + trackingIncomplete flag
 }
 
 
@@ -3485,7 +3490,7 @@ def unpackQualityFlags(quality, doubleTimestamps=False):
             "cameraBlocked",
             "blowingSnow",
             "obervationsDiffer",
-            "tracksTooShort",
+            "trackingIncomplete",
             "zResidualTooWide",
         ],
         dims=["flag"],

@@ -297,6 +297,15 @@ class TestL2(object):
 
     def testL2Track(self):
         case = "20260110"
+        # regenerate the level1track input with the current tracker so the
+        # test does not depend on the version that produced the downloaded
+        # test data (level2track needs e.g. track_expectedLength)
+        from VISSSlib import files
+        from VISSSlib.tracking import trackParticles
+
+        fl = files.FindFiles(case, self.config.leader, self.config)
+        for fname in fl.listFiles("level1detect"):
+            trackParticles(fname, self.config, skipExisting=False)
         dat, _ = createLevel2track(
             case,
             self.config,
@@ -306,7 +315,8 @@ class TestL2(object):
         )
         assert np.isclose(dat.PSD.mean(), 4219.70556641)
         assert np.isclose(dat.M6.mean(), 2.45204412e-20)
-        assert np.isclose(dat.angle_mean.mean(), 67.9868927)
+        assert np.isclose(dat.angle_mean.mean(), 66.32055664)
+        assert np.isclose(dat.track_completeness.mean(), 0.48645067)
         for var in [
             "D32",
             "D43",
@@ -367,6 +377,7 @@ class TestL2(object):
             "track_angle_dist",
             "track_angle_mean",
             "track_angle_std",
+            "track_completeness",
             "track_length_mean",
             "track_length_std",
             "velocity_dist",
@@ -639,3 +650,25 @@ class TestGetPerTrackStatistics:
         tAlone = VISSSlib.distributions.getPerTrackStatistics(alone)[2].time
         tOthers = VISSSlib.distributions.getPerTrackStatistics(withOthers)[2].time
         assert tAlone.values[0] == tOthers.sel(track_id=1).values
+
+    @pytest.mark.unit
+    def test_expectedLength_is_optional(self):
+        # older level1track files do not have track_expectedLength
+        level1 = self._level1track({0: range(0, 5), 1: range(0, 4)})
+        trackAve = VISSSlib.distributions.getPerTrackStatistics(level1)[0]
+        assert "track_expectedPerObserved" not in trackAve
+
+    @pytest.mark.unit
+    def test_expectedLength_gives_expectedPerObserved(self):
+        level1 = self._level1track({0: range(0, 5), 1: range(0, 4)})
+        n = level1.sizes["pair_id"]
+        # expected length 10 for track 0 (5 observed), 2 for track 1 (4 observed)
+        level1["track_expectedLength"] = (
+            "pair_id",
+            np.where(level1.track_id.values == 0, 10.0, 2.0),
+        )
+        trackAve = VISSSlib.distributions.getPerTrackStatistics(
+            level1, extraVars=["track_expectedLength"]
+        )[0]
+        # expected/observed, but not below 1
+        assert list(trackAve.track_expectedPerObserved.values) == [2.0, 1.0]

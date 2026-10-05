@@ -24,10 +24,14 @@ measuring only position. :class:`VISSSlib.tracking.Track` wraps one such
 filter per tracked particle, keeping the full position trace
 (``self._trace``, with ``[nan, nan, nan]`` appended for frames where no
 detection was assigned rather than dropping the frame index) plus a
-feature-vector and size history used by the cost function below. The
-``track_step`` written to ``level1track`` counts real observations only
-(coasted frames do not increment it); the time between two consecutive steps
-is given by their ``capture_time``.
+feature-vector and size history used by the cost function below.
+The initial covariance uses the measurement variance for the (measured)
+position and the learned first-guess uncertainty (``velocitySigma``, see below)
+for the velocity, so the first update moves the whole first-step innovation
+into the velocity. The process noise has one ``(position, velocity)`` block per
+axis. A track that goes undetected coasts on its prediction without a KF
+update, so its uncertainty keeps growing. ``track_step`` counts real
+observations only.
 
 Assignment (``Tracker.update``)
 ------------------------------------
@@ -52,24 +56,70 @@ Assignment (``Tracker.update``)
 3. ``scipy.optimize.linear_sum_assignment`` solves the assignment; pairs
    whose actual cost still exceeds ``dist_thresh`` are un-assigned again
    after the fact.
-4. Unassigned tracks accumulate ``skipped_frames`` (coasting on their
-   Kalman prediction meanwhile) and are archived once that exceeds
-   ``max_frames_to_skip`` (default 1, i.e. a single missed detection does not
-   end a track); unassigned detections start new tracks.
+4. Unassigned tracks accumulate ``skipped_frames`` and are archived once
+   that exceeds ``max_frames_to_skip`` (default 1, i.e. a single missed
+   detection does not end a track); unassigned detections start new tracks.
+   A frame that is missing from the data altogether (no particle in the
+   whole volume) is bridged the same way; the Kalman filters are propagated
+   over it before coasting. Links across a missed detection are the most
+   error-prone ones (a track whose particle left the volume would grab any
+   particle near its prediction), so a track only coasts while its
+   prediction is inside the observation volume (``coastOnlyIfVisible``) and
+   a coasted track gets an extra cost (``coastedExtraCost``, 1), so it loses
+   against tracks observed in the last frame.
 
-``costExperiencePenalty`` inflates the cost for longer-established tracks
-(index into the array is track length, default
-``[1, 8, 32, 128, 128, ...]``) — a track that has proven itself over
-several frames is held to a *stricter* matching tolerance, not a looser
-one, to avoid a well-established, confidently-predicted track drifting onto a
-nearby but different particle. With the default distance variance
-(``200**2``) and ``dist_thresh`` the maximum matching distance is about
-``565 / sqrt(penalty)`` px, i.e. 200 / 100 / 50 px for tracks of length
-1 / 2 / 3+. These were previously 565 / 231 / 188 px, far larger than the
-typical Kalman prediction error (median ~2 px, 90th percentile ~8 px) and, at
-high particle concentrations, sufficient to link *different* particles into one
-track (up to ~10 % of the particles in tracks of 3+ observations for
-Hyytiälä VISSS3 data of 2024-02-16 16:30 UTC, ~1.6 % after the change).
+Gates learned from the data
+----------------------------
+
+All distances the tracker compares against are learned from recently
+finished tracks (within ``maxAge4training``, 120 s in
+:func:`~VISSSlib.tracking.trackParticles`) instead of being fixed pixel
+values, so the same code works for VISSS1/2/3 with their different frame
+rates and resolutions, and follows changes in turbulence:
+
+* ``dvScale``: median frame-to-frame velocity change of tracks with at least
+  4 observations. The gate for tracks with 2 (>= 3) observations is
+  ``gate2Factor`` (``gate3Factor``) times ``dvScale``; it replaces the former
+  fixed ``costExperiencePenalty``.
+* ``velocitySigma``: robust spread (per axis) of the difference between the
+  velocity of kinematically clean tracks and the first-guess velocity they
+  started with. Only clean tracks are used because wrong links would inflate
+  it, widen the gates and cause even more wrong links.
+
+Until enough tracks were seen the class defaults are used; the training pass
+(see below) only ends when both scales were learned.
+
+First links (look-ahead)
+--------------------------
+
+The first link of a new track is the ambiguous one: from a single detection
+the velocity is only known from the first guess, whose error is dominated by
+turbulence. Instead of trusting it, a candidate ``b`` for a track that started
+at ``a`` is *confirmed* if the next frame contains a detection within
+``lookaheadRadiusFactor * dvScale`` of ``2b - a`` (or the frame after, for a
+missed detection). A confirmed candidate may be far from the first guess (up
+to ``wideFirstLinkFactor * |velocitySigma|``) because a wrong partner is very
+unlikely to be confirmed too. If the extrapolated position would not be
+observed (leaves the observation volume, or the next frame is not in the
+data) the first-guess gate ``firstLinkFactor * |velocitySigma|`` applies,
+widened at low particle concentration to the radius within which only
+``falseCandidateProbability`` (1 %) random particles are expected (capped at
+``maxFirstLinkGateFraction`` of the frame width), because without competitors
+a wide gate costs nothing; this keeps fast, gust-driven particles that are
+seen only twice. A
+checkable but unconfirmed candidate is still allowed with a tighter gate and
+an extra cost, so any confirmed alternative wins.
+
+The observation volume (:meth:`VISSSlib.tracking.Tracker.visible`) is the
+intersection of both camera images with the retrieved follower rotation, as
+in :func:`~VISSSlib.distributions.estimateObservationVolume`, shrunk by half
+the particle size, plus depth limits along both viewing directions learned
+from where particles are actually observed (focus, illumination and partial
+blocking of a window are not part of the camera boxes).
+
+New tracks start with the *local flow* as first guess when at least two
+established tracks are active: their median horizontal velocity, and their
+median deviation from the size-velocity relation added to it.
 
 Velocity first guess
 ----------------------
@@ -88,6 +138,22 @@ variable used — ``area`` or ``pixSum``) provide the fallback when there
 isn't yet enough archived data to fit; ``costGuessFactor`` correspondingly
 loosens the assignment cost while running on defaults and tightens once a
 live fit is available.
+
+Tracking completeness
+----------------------
+
+When a track ends, :meth:`VISSSlib.tracking.Tracker._finishTracks` writes
+``track_expectedLength`` to all its particles: the observed span plus the
+number of frames the particle would still have been visible before its first
+and after its last observation, extrapolated with its mean velocity (the first
+guess for single observations) through the observation volume
+(:meth:`~VISSSlib.tracking.Tracker.visible`). level2track sums observed and
+expected observations of all tracks starting in a time bin;
+``track_completeness`` is their ratio and the ``trackingIncomplete`` quality
+flag is set below ``config.quality.minTrackCompleteness`` (default 0.25). It
+replaces ``tracksTooShort`` (same bit), which compared the mean track length
+with a fixed threshold and could not tell fast particles that cross the volume
+in a few frames from poorly tracked ones, nor detect wrongly merged tracks.
 
 Entry point
 ------------

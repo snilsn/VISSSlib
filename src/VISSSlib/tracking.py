@@ -2,6 +2,7 @@
 
 import glob
 import logging
+import math
 import os
 import sys
 import warnings
@@ -52,8 +53,8 @@ def _buildKFConstants(R_std=2, q_var=1, reduced_q_var=0.5):
 
     F, H, R, Q and P only depend on R_std/q_var, which are fixed for an entire
     Tracker run, not on the individual particle. Building them once and copying
-    them into each new KalmanFilter avoids calling into scipy
-    (Q_discrete_white_noise/block_diag) for every single track.
+    them into each new KalmanFilter avoids calling into filterpy's
+    Q_discrete_white_noise for every single track.
 
     Parameters
     ----------
@@ -71,7 +72,6 @@ def _buildKFConstants(R_std=2, q_var=1, reduced_q_var=0.5):
         Keys "F", "H", "R", "Q", "P", "reducedQ" (None if reduced_q_var is None).
     """
     from filterpy.common import Q_discrete_white_noise
-    from scipy.linalg import block_diag
 
     dt = 1  # time step, we are in frame units!
 
@@ -93,19 +93,26 @@ def _buildKFConstants(R_std=2, q_var=1, reduced_q_var=0.5):
         ]
     )
     R = np.eye(3) * R_std**2
-    q = Q_discrete_white_noise(dim=3, dt=dt, var=q_var)
-    Q = block_diag(q, q)
+    # one (position, velocity) block per axis, matching the state order
+    # [x, vx, y, vy, z, vz]
+    Q = Q_discrete_white_noise(dim=2, dt=dt, var=q_var, block_size=3)
     P = np.eye(6) * 100**2.0
 
     reducedQ = None
     if reduced_q_var is not None:
-        qr = Q_discrete_white_noise(dim=3, dt=dt, var=reduced_q_var)
-        reducedQ = block_diag(qr, qr)
+        reducedQ = Q_discrete_white_noise(dim=2, dt=dt, var=reduced_q_var, block_size=3)
 
     return {"F": F, "H": H, "R": R, "Q": Q, "P": P, "reducedQ": reducedQ}
 
 
-def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1, constants=None):
+def myKF(
+    FirstPos3D,
+    velocityGuess=[0, 0, 50],
+    R_std=2,
+    q_var=1,
+    constants=None,
+    velocitySigma=None,
+):
     """
     Initialize a Kalman Filter for 3D particle tracking.
 
@@ -123,6 +130,12 @@ def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1, constants=None)
     constants : dict, optional
         Precomputed F/H/R/Q/P matrices from `_buildKFConstants`, reused instead
         of rebuilding them via scipy. Default None (build them here).
+    velocitySigma : array_like, optional
+        Uncertainty [sx, sy, sz] of `velocityGuess` (px/frame). If given, the
+        initial covariance uses the measurement variance for the (measured)
+        position and velocitySigma**2 for the velocity, so the first update
+        moves the whole first-step innovation into the velocity. Default None
+        (P from `constants`, i.e. 100**2 for all states).
 
     Returns
     -------
@@ -148,7 +161,12 @@ def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1, constants=None)
     kf.H = constants["H"].copy()
     kf.R = constants["R"].copy()
     kf.Q = constants["Q"].copy()
-    kf.P = constants["P"].copy()
+    if velocitySigma is None:
+        kf.P = constants["P"].copy()
+    else:
+        r2 = constants["R"][0, 0]
+        sx, sy, sz = velocitySigma
+        kf.P = np.diag([r2, sx**2, r2, sy**2, r2, sz**2]).astype(float)
 
     # prior
     kf.x = np.array(
@@ -164,6 +182,19 @@ def myKF(FirstPos3D, velocityGuess=[0, 0, 50], R_std=2, q_var=1, constants=None)
         ]
     ).T
     return kf
+
+
+def _angleToVertical(velocity):
+    """Angle (deg) between `velocity` and the z axis, like vg.angle([0, 0, 1], v)."""
+    # tolist() is much cheaper than converting numpy scalars one by one (and
+    # than a numba function, whose call overhead dominates for 3 numbers)
+    vx, vy, vz = (
+        velocity.ravel().tolist() if isinstance(velocity, np.ndarray) else velocity
+    )
+    norm = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if not norm > 0:
+        return np.nan
+    return math.degrees(math.acos(max(-1.0, min(1.0, vz / norm))))
 
 
 class _RollingArray:
@@ -236,6 +267,7 @@ class Track(object):
         q_var=1,
         reduced_q_var=0.5,
         kfConstants=None,
+        velocitySigma=None,
     ):
         """
         Initialize a particle track.
@@ -263,14 +295,14 @@ class Track(object):
         kfConstants : dict, optional
             Precomputed matrices from `_buildKFConstants`, reused instead of
             rebuilding them via scipy for every track. Default None.
+        velocitySigma : array_like, optional
+            Uncertainty of velocityGuess per axis (px/frame), sets the initial
+            KF covariance, see `myKF`. Default None.
 
         Notes
         -----
         Maintains particle position, velocity, and feature history.
         """
-        import vg
-
-        self._vg = vg
         assert len(velocityGuess) == 3
         self.velocityGuess = velocityGuess
         self.track_id = trackIdCount  # identification of each track object
@@ -285,29 +317,35 @@ class Track(object):
             R_std=R_std,
             q_var=q_var,
             constants=kfConstants,
+            velocitySigma=velocitySigma,
         )
         self.predictedPos = position
         self.skipped_frames = 0  # number of frames skipped undetected
         # number of real (non-coasted) observations, the basis for track_step
         self.nObserved = 1
+        # rows in the output written for this track, see Tracker.save
+        self.rows = []
         self._trace = [position]  # trace path
         self._features = [feature]  # trace path
         self._sizes = [size]  # size path
+        # running sum/count for meanSize (nanmean over _sizes was a hotspot)
+        self._sizeSum = float(size) if np.isfinite(size) else 0.0
+        self._sizeN = 1 if np.isfinite(size) else 0
         self.startTime = startTime
         # print("track created at ", position)
         self.predictedVel = np.array([np.nan] * 3)
         self.predictedPos = np.array([np.nan] * 3)
-        self.predictedAng = self._vg.angle(np.array([0, 0, 1]), np.array(velocityGuess))
+        self.predictedAng = _angleToVertical(velocityGuess)
 
         if self.reduced_q_var is not None:
             if kfConstants is not None and kfConstants.get("reducedQ") is not None:
                 self.reducedQ = kfConstants["reducedQ"].copy()
             else:
                 from filterpy.common import Q_discrete_white_noise
-                from scipy.linalg import block_diag
 
-                q = Q_discrete_white_noise(dim=3, dt=self.KF.dt, var=self.reduced_q_var)
-                self.reducedQ = block_diag(q, q)
+                self.reducedQ = Q_discrete_white_noise(
+                    dim=2, dt=self.KF.dt, var=self.reduced_q_var, block_size=3
+                )
 
     def __repr__(self):
         return "Track %i %s" % (self.track_id, self.trace)
@@ -331,7 +369,9 @@ class Track(object):
         except IndexError:
             return np.nan
         else:
-            return self._vg.angle(np.array([0, 0, 1]), dist)
+            import vg
+
+            return vg.angle(np.array([0, 0, 1]), dist)
 
     @property
     def meanVelocity(self):
@@ -372,7 +412,7 @@ class Track(object):
         float
             Mean particle size.
         """
-        return np.nanmean(self._sizes)
+        return self._sizeSum / self._sizeN if self._sizeN else np.nan
 
     def updateTrack(self, position, feature, size):
         """
@@ -381,7 +421,8 @@ class Track(object):
         Parameters
         ----------
         position : array_like or None
-            New 3D position [x, y, z]. If None, uses prediction.
+            New 3D position [x, y, z]. If None, the track coasts on its
+            prediction.
         feature : array_like
             New feature vector.
         size : float
@@ -390,12 +431,17 @@ class Track(object):
         Notes
         -----
         When position is None, the track is updated with NaN positions
-        and the last known feature is reused.
+        and the last known feature is reused. The KF is not updated then, so
+        its covariance keeps growing while coasting (feeding the prediction
+        back as a measurement would pretend the position is known).
         """
         if position is not None:
             self._trace.append(position)
             self._features.append(feature)
             self._sizes.append(size)
+            if np.isfinite(size):
+                self._sizeSum += float(size)
+                self._sizeN += 1
             self.nObserved += 1
             self.KF.update(position)
         else:
@@ -403,7 +449,7 @@ class Track(object):
             # recycle last features
             self._features.append(self._features[-1])
             self._sizes.append(np.nan)
-            self.KF.update(self.predictedPos)
+            self.KF.update(None)
         if self.reduced_q_var is not None:
             self.KF.Q = self.reducedQ
 
@@ -445,12 +491,84 @@ class Track(object):
         self.KF.predict()
         self.predictedPos = self.KF.x[::2].squeeze()
         self.predictedVel = self.KF.x[1::2].squeeze()
-        self.predictedAng = self._vg.angle(np.array([0, 0, 1]), self.predictedVel)
+        self.predictedAng = _angleToVertical(self.predictedVel)
         return self.predictedPos, self.predictedVel, self.predictedAng
 
 
 class Tracker(object):
-    """Tracker class that updates track vectors of object tracked"""
+    """
+    Tracker class that updates track vectors of object tracked
+
+    All distances the tracker compares against are learned from recently
+    finished tracks instead of being fixed pixel values, so the same code
+    works for any camera resolution, frame rate and turbulence:
+
+    * ``dvScale``: typical frame-to-frame velocity change (px/frame^2) of
+      tracks with at least 4 observations. It is 1.5 times the 25th
+      percentile of all their velocity changes (for clean tracks that equals
+      the median) so wrongly linked vertices, even if they are the majority
+      in very dense or badly matched data, cannot inflate it: larger gates
+      would let even more wrong links in. It sets the look-ahead
+      confirmation radius and the gates of established tracks.
+    * ``velocitySigma``: robust spread (per axis, px/frame) of the difference
+      between the velocity of kinematically clean tracks and the first-guess
+      velocity they started with. It sets the first-link gates and the
+      initial KF velocity uncertainty.
+
+    The class attributes below are dimensionless multipliers of these scales
+    (or, for the defaults, the values used until enough tracks were seen).
+    """
+
+    # look-ahead radius for confirming a first link = factor * dvScale
+    lookaheadRadiusFactor = 10.0
+    # gate radius for tracks with 2 / >=3 observations = factor * dvScale
+    gate2Factor = 20.0
+    gate3Factor = 12.0
+    # first-link gate radius = factor * |velocitySigma|; "wide" is used when
+    # the link is confirmed by the next frame, the other one when it cannot be
+    # checked (particle leaves the observation volume)
+    firstLinkFactor = 2.5
+    wideFirstLinkFactor = 5.0
+    # a checkable but unconfirmed first link is still allowed with a gate of
+    # unconfirmedGateFactor * first-link gate and an extra cost, so a
+    # confirmed alternative always wins (missed detections do happen)
+    unconfirmedGateFactor = 0.5
+    unconfirmedExtraCost = 1.0
+    # a track is "clean" (used for velocitySigma) if its largest velocity
+    # change is below cleanTrackFactor * dvScale + cleanTrackOffset
+    cleanTrackFactor = 6.0
+    cleanTrackOffset = 10.0
+    # number of tracks needed before a learned scale replaces its default
+    minTracks4scales = 20
+    # dvScale = dvQuantileFactor * 25th percentile of the velocity changes,
+    # capped at maxDvScaleFraction * frame width as a last guard
+    dvQuantileFactor = 1.5
+    maxDvScaleFraction = 0.005
+    # defaults before anything is learned (px/frame^2, px/frame)
+    dvScaleDefault = 3.0
+    velocitySigmaDefault = (150.0, 150.0, 100.0)
+    minVelocitySigma = 3.0
+    minGatePx = 10.0
+    # observation volume: depth limits from the 1st/99th position percentiles,
+    # shrunk by this fraction of their range
+    depthMargin = 0.03
+    # first links that cannot be confirmed: the gate is widened at low
+    # particle concentration, where a wrong partner is unlikely anyway. The
+    # radius is chosen so that on average falseCandidateProbability random
+    # particles fall inside it (concentration from a window of
+    # densityWindowFrames frames). It never goes below the velocitySigma based
+    # gate (so dense data are unaffected) and never above
+    # maxFirstLinkGateFraction * frame width or the wide first-link gate.
+    falseCandidateProbability = 0.01
+    densityWindowFrames = 2000
+    maxFirstLinkGateFraction = 0.5
+    # a track that misses a detection only coasts while its prediction is
+    # still inside the observation volume (otherwise the particle has left
+    # and any particle found near the prediction would be a wrong one), and
+    # coasted tracks get an extra cost so they lose against tracks that were
+    # observed in the last frame
+    coastOnlyIfVisible = True
+    coastedExtraCost = 1.0
 
     def __init__(
         self,
@@ -469,9 +587,6 @@ class Tracker(object):
         },
         minTrackLen4training=4,
         maxAge4training=300,
-        # with the default distance variance and dist_thresh the matching radius
-        # is ~565/sqrt(penalty) px: 200/100/50 px for tracks of length 1/2/3+
-        costExperiencePenalty=np.array([1, 8, 32, 128] + [128] * 50),
         velSlope=None,
         velIntercept=None,
         R_std=2,  # meas. noise for KF
@@ -505,9 +620,8 @@ class Tracker(object):
         minTrackLen4training : int, optional
             Minimum track length for training, default 4.
         maxAge4training : float, optional
-            Maximum age (seconds) for training data, default 300.
-        costExperiencePenalty : array_like, optional
-            Penalty factors based on track length.
+            Maximum age (seconds) of finished tracks used for the size-velocity
+            fit and the learned scales, default 300.
         velSlope : float, optional
             Precomputed slope for size-velocity relation, default None.
         velIntercept : float, optional
@@ -528,7 +642,9 @@ class Tracker(object):
 
         Notes
         -----
-        Uses Kalman Filters and Hungarian algorithm for particle tracking.
+        Uses Kalman Filters and Hungarian algorithm for particle tracking. A
+        new track's first link is confirmed with the following frame(s): the
+        particle must reappear near the straight-line extrapolation.
         """
         self.sizeVariable = "pixSum"
         # self.sizeVariable = "area"
@@ -538,15 +654,14 @@ class Tracker(object):
         self.lv1track = lv1match.load()
         self.config = config
         self.dist_thresh = dist_thresh
-        # gaps in the data (missing frames) are handled separately in update()
+        # a frame missing from the data (no particles at all) is bridged in
+        # update(); longer gaps reset all tracks
         self.max_frames_to_skip = max_frames_to_skip
         self.max_trace_length = max_trace_length
         self.velocityGuessXY = velocityGuessXY
         self.defaultVelocityGuessXY = velocityGuessXY
         # double variance at beginnign of dtat file when KF did not learn yet
         self.costGuessFactor = 4
-        # track length is alwys at least 1, so first item is ignored
-        self.costExperiencePenalty = costExperiencePenalty
         self.R_std = R_std
         self.q_var = q_var
         self.maxIter = maxIter
@@ -666,6 +781,18 @@ class Tracker(object):
         self.lv1track["track_angleGuess"] = xr.DataArray(
             np.zeros((nParts)) * np.nan, coords=[self.lv1track.pair_id]
         )
+        self.lv1track["track_expectedLength"] = xr.DataArray(
+            np.zeros((nParts)) * np.nan,
+            coords=[self.lv1track.pair_id],
+            attrs=dict(
+                units="# frames",
+                long_name="expected track length",
+                comment="Number of frames the particle would have been observed "
+                "by both cameras, extrapolated along its velocity (first guess "
+                "for single observations) through the observation volume. "
+                "track_step / track_expectedLength is the tracking completeness.",
+            ),
+        )
         # cache references to the underlying numpy arrays (no copy - same memory
         # backs self.lv1track) so save() writes directly into them instead of
         # doing a `self.lv1track["..."]` xarray lookup for every particle
@@ -673,6 +800,7 @@ class Tracker(object):
         self._trackStepArr = self.lv1track["track_step"].values
         self._trackVelocityGuessArr = self.lv1track["track_velocityGuess"].values
         self._trackAngleGuessArr = self.lv1track["track_angleGuess"].values
+        self._trackExpectedLengthArr = self.lv1track["track_expectedLength"].values
 
         # init velocity first guess
 
@@ -691,6 +819,48 @@ class Tracker(object):
         self._archiveTrackVelocities = _RollingArray(
             archiveMaxlen, dtype=np.float64, shape=(3,)
         )
+        # rolling history for the learned scales (see class docstring)
+        self._archiveDvTimes = _RollingArray(
+            archiveMaxlen * 10, dtype=self._captureTimesSorted.dtype
+        )
+        self._archiveDv = _RollingArray(archiveMaxlen * 10, dtype=np.float64)
+        self._archiveResTimes = _RollingArray(
+            archiveMaxlen, dtype=self._captureTimesSorted.dtype
+        )
+        self._archiveRes = _RollingArray(archiveMaxlen, dtype=np.float64, shape=(3,))
+
+        # observation volume for the look-ahead: both camera images (with the
+        # retrieved follower rotation, as in
+        # distributions.estimateObservationVolume) plus depth limits learned
+        # from where particles are actually observed (focus, illumination and
+        # partial blocking are not part of the camera boxes)
+        self._cameraRotation = None
+        rotVars = ["camera_phi", "camera_theta", "camera_Ofz"]
+        if all(v in self.lv1track for v in rotVars):
+            rot = {}
+            for v in rotVars:
+                val = self.lv1track[v]
+                if "camera_rotation" in val.dims:
+                    val = val.sel(camera_rotation="mean")
+                rot[v] = float(np.nanmedian(val.values))
+            if np.all(np.isfinite(list(rot.values()))):
+                self._cameraRotation = rot
+        posLo = np.nanpercentile(self._positionsSorted, 1, axis=0)
+        posHi = np.nanpercentile(self._positionsSorted, 99, axis=0)
+        margin = self.depthMargin * (posHi - posLo)
+        self._depthLo = posLo + margin
+        self._depthHi = posHi - margin
+        # observation volume (px^3) and cumulative particle counts per frame for
+        # the local particle concentration used by the first-link gate
+        self._observationVolume = float(np.prod(np.maximum(posHi - posLo, 1.0)))
+        self._cumCounts = np.concatenate(
+            ([0], np.cumsum(np.diff(self._frameBoundaries)))
+        )
+
+        self._buildVolumeConstraints()
+
+        self._localFlowKey = None
+        self._setScales(self.dvScaleDefault, np.array(self.velocitySigmaDefault))
 
         if velSlope is None:
             self.velGuess_slope = _reference_slopes[self.sizeVariable][config.visssGen]
@@ -720,6 +890,98 @@ class Tracker(object):
         self.trainingComplete = False
 
         log.info(f"processing {self.nFrames} frames of {lv1match.encoding['source']}")
+
+    def _setScales(self, dvScale, velocitySigma):
+        """Convert the learned scales into gate radii and cost penalties."""
+        self.dvScale = float(dvScale)
+        self.velocitySigma = np.asarray(velocitySigma, dtype=float)
+        sigma = float(np.linalg.norm(self.velocitySigma))
+        self.lookaheadRadius = max(self.lookaheadRadiusFactor * dvScale, self.minGatePx)
+        self.firstLinkGate = float(
+            np.clip(self.firstLinkFactor * sigma, 3 * self.minGatePx, 1500)
+        )
+        self.wideFirstLinkGate = float(
+            np.clip(self.wideFirstLinkFactor * sigma, self.firstLinkGate, 2000)
+        )
+        gate2 = max(self.gate2Factor * dvScale, 2 * self.minGatePx)
+        gate3 = max(self.gate3Factor * dvScale, 1.5 * self.minGatePx)
+        # the cost is the mean of distance^2 * penalty / variance and the
+        # feature terms, accepted up to dist_thresh, so a pure distance gate g
+        # corresponds to penalty = nTerms * dist_thresh * variance / g^2
+        self._gateToPenalty = (
+            len(self.featureVariance) * self.dist_thresh * self.featureVariance[0]
+        )
+        # index = number of observations; first links are handled separately
+        self.costExperiencePenalty = np.array(
+            [1.0, 1.0, self._gateToPenalty / gate2**2]
+            + [self._gateToPenalty / gate3**2] * 60
+        )
+
+    def _buildVolumeConstraints(self):
+        """
+        Observation volume as linear constraints lo <= A @ position <= hi.
+
+        Rows: leader image x and z, follower image y and z (common
+        coordinates rotated with the retrieved follower rotation, i.e.
+        matching.shiftRotate_L2F with psi = Olx = Ofy = 0), and the learned
+        depth limits along x and y. The image rows shrink by half the
+        particle size (_volumeHalfMask).
+        """
+        W, H = self.config.frame_width, self.config.frame_height
+        if self._cameraRotation is not None:
+            phi = np.deg2rad(self._cameraRotation["camera_phi"])
+            theta = np.deg2rad(self._cameraRotation["camera_theta"])
+            Ofz = self._cameraRotation["camera_Ofz"]
+            rowFy = [
+                np.sin(phi) * np.sin(theta),
+                np.cos(phi),
+                np.sin(phi) * np.cos(theta),
+            ]
+            rowFz = [
+                np.cos(phi) * np.sin(theta),
+                -np.sin(phi),
+                np.cos(phi) * np.cos(theta),
+            ]
+        else:
+            Ofz = 0.0
+            rowFy, rowFz = [0, 1, 0], [0, 0, 1]
+        self._volumeA = np.array(
+            [[1, 0, 0], [0, 0, 1], rowFy, rowFz, [1, 0, 0], [0, 1, 0]], dtype=float
+        )
+        self._volumeLo = np.array(
+            [0, 0, 0, Ofz, self._depthLo[0], self._depthLo[1]], dtype=float
+        )
+        self._volumeHi = np.array(
+            [W, H, W, H + Ofz, self._depthHi[0], self._depthHi[1]], dtype=float
+        )
+        self._volumeHalfMask = np.array([1, 1, 1, 1, 0, 0], dtype=float)
+
+    def visible(self, positions, halfSize=0.0):
+        """
+        Whether particles at `positions` would be observed by both cameras.
+
+        Parameters
+        ----------
+        positions : array_like
+            (n, 3) array of [x, y, z] in the common coordinate system.
+        halfSize : float, optional
+            Particles must stay this far from all image edges (half the
+            particle size, as in the observation volume), default 0.
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean array of length n.
+        """
+        # leader image (x, z), follower image (rotated y, z) and the depth
+        # limits along the viewing directions (x: follower, y: leader)
+        values = positions @ self._volumeA.T
+        margin = halfSize * self._volumeHalfMask
+        ok = np.all(
+            (values >= self._volumeLo + margin) & (values <= self._volumeHi - margin),
+            axis=1,
+        )
+        return ok
 
     def updateAll(self):
         """
@@ -771,6 +1033,9 @@ class Tracker(object):
             for ff in tqdm(range(stopAfter), file=sys.stdout):
                 self.update(ff)
 
+        # tracks still active at the end of the file
+        self._finishTracks(self.activeTracks)
+
         if self.maxIter is not None:
             self.lv1track = self.lv1track.isel(pair_id=(self.lv1track.track_id != -99))
 
@@ -786,7 +1051,7 @@ class Tracker(object):
         array_like
             Array containing the length of each active track.
         """
-        return np.array([t.length for t in self.activeTracks])
+        return np.array([t.nObserved for t in self.activeTracks])
 
     def update(self, ff):
         """
@@ -834,8 +1099,12 @@ class Tracker(object):
                     "#" * 10,
                 )
             for i in range(len(self.activeTracks)):
+                # propagate the KF over the missing frame before coasting,
+                # otherwise the next prediction lags one frame behind
+                self.activeTracks[i].predict()
                 self.activeTracks[i].updateTrack(None, None, None)
                 self.activeTracks[i].skipped_frames += 1
+                self._endTrackIfLeft(self.activeTracks[i])
 
         self._frameid = thisFrameid
 
@@ -898,6 +1167,7 @@ class Tracker(object):
                     R_std=self.R_std,
                     q_var=self.q_var,
                     kfConstants=self._kfConstants,
+                    velocitySigma=self.velocitySigma,
                 )
                 self.trackIdCount += 1
                 self.activeTracks.append(track)
@@ -923,8 +1193,9 @@ class Tracker(object):
         diffs[np.isnan(diffs)] = 1e30
 
         distancesSq = np.sum(diffs**2, axis=-1)
-        # make detection easier in case velocity field is not available yet (costGuessFactor)
-        # make detection stricter the longer the observed track is (costExperiencePenalty)
+        rawDistancesSq = distancesSq
+        # make detection stricter the longer the observed track is
+        # (costExperiencePenalty, derived from the learned dvScale)
 
         try:
             costExperiencePenalty = self.costExperiencePenalty[
@@ -955,10 +1226,36 @@ class Tracker(object):
             # size instead of a fixed 1 px^2
             variance = np.tile(self.featureVariance, (len(self.activeTracks), 1))
             trackDmax = trackFeatures[:, self._dmaxFeatureIdx]
-            variance[:, 1 + self._dmaxFeatureIdx] = np.maximum(1, (0.1 * trackDmax) ** 2)
+            variance[:, 1 + self._dmaxFeatureIdx] = np.maximum(
+                1, (0.1 * trackDmax) ** 2
+            )
             self.cost = (joinedDiffs / variance[:, np.newaxis, :]).mean(axis=-1)
         else:
+            variance = np.tile(self.featureVariance, (len(self.activeTracks), 1))
             self.cost = (joinedDiffs / self.featureVariance).mean(axis=-1)
+
+        # first links of new tracks are judged differently: confirmed with the
+        # following frame(s) instead of by the (uncertain) first-guess velocity
+        firstRows = [i for i, t in enumerate(self.activeTracks) if t.nObserved == 1]
+        if firstRows:
+            if self._hasFeatures:
+                featureTerms = (
+                    joinedDiffs[firstRows, :, 1:] / variance[firstRows, np.newaxis, 1:]
+                ).sum(axis=-1)
+            else:
+                featureTerms = np.zeros((len(firstRows), len(detections)))
+            if self._hasFeatures and self._dmaxFeatureIdx is not None:
+                halfSizes = 0.5 * trackFeatures[firstRows, self._dmaxFeatureIdx]
+            else:
+                halfSizes = np.zeros(len(firstRows))
+            self.cost[firstRows] = self._firstLinkCost(
+                ff,
+                firstRows,
+                detections,
+                rawDistancesSq[firstRows],
+                featureTerms,
+                halfSizes,
+            )
         if not self.training and (self.verbosity > 5):
             print(self._frameid, joinedDiffs / self.featureVariance)
         if not self.training and (self.verbosity > 5):
@@ -976,6 +1273,12 @@ class Tracker(object):
         #    [ 26.85835339,  80.47296492,  50.26078078]])
         # results in 26.85835339, 46.60156128,  0.20302552
 
+        if self.coastedExtraCost:
+            coasted = [
+                i for i, t in enumerate(self.activeTracks) if t.skipped_frames > 0
+            ]
+            self.cost[coasted] += self.coastedExtraCost
+
         self.cost[self.cost > self.dist_thresh] = 1e30
 
         # Using Hungarian Algorithm assign the correct detected measurements
@@ -989,9 +1292,7 @@ class Tracker(object):
         if not self.training and (self.verbosity > 5):
             print("ddists", (joinedDiffs)[row_ind, col_ind])
         if not self.training and (self.verbosity > 5):
-            print(
-                "costs", (joinedDiffs / self.featureVariance)[row_ind, col_ind]
-            )
+            print("costs", (joinedDiffs / self.featureVariance)[row_ind, col_ind])
 
         # if 52 in [a.track_id for a in  self.activeTracks]:
         #     import pdb;pdb.set_trace()
@@ -1009,8 +1310,10 @@ class Tracker(object):
                 if self.cost[i][self.assignment[i]] > self.dist_thresh:
                     self.assignment[i] = -1
                     self.activeTracks[i].skipped_frames += 1
+                    self._endTrackIfLeft(self.activeTracks[i])
             else:
                 self.activeTracks[i].skipped_frames += 1
+                self._endTrackIfLeft(self.activeTracks[i])
 
         # If tracks are not detected for long time, remove them
         # del_ii = []
@@ -1067,6 +1370,7 @@ class Tracker(object):
                 R_std=self.R_std,
                 q_var=self.q_var,
                 kfConstants=self._kfConstants,
+                velocitySigma=self.velocitySigma,
             )
             self.trackIdCount += 1
             self.activeTracks.append(track)
@@ -1108,6 +1412,156 @@ class Tracker(object):
                 print(i, "done")
         return
 
+    def _densityFirstLinkGate(self, ff):
+        """
+        Gate radius for first links that cannot be confirmed.
+
+        The radius within which falseCandidateProbability random particles are
+        expected, given the particle concentration in a window of
+        densityWindowFrames frames around frame index ff (frames missing from
+        the data count as empty). Bounded below by the velocitySigma based
+        firstLinkGate and above by maxFirstLinkGateFraction * frame width and
+        the wide first-link gate.
+
+        Parameters
+        ----------
+        ff : int
+            Current frame index.
+
+        Returns
+        -------
+        float
+            Gate radius in px.
+        """
+        upper = min(
+            self.wideFirstLinkGate,
+            self.maxFirstLinkGateFraction * self.config.frame_width,
+        )
+        upper = max(upper, self.firstLinkGate)
+        fid = self._uniqFrameid
+        half = self.densityWindowFrames // 2
+        lo = np.searchsorted(fid, fid[ff] - half, side="left")
+        hi = np.searchsorted(fid, fid[ff] + half, side="right")
+        nFrames = fid[hi - 1] - fid[lo] + 1
+        perFrame = (self._cumCounts[hi] - self._cumCounts[lo]) / max(nFrames, 1)
+        density = perFrame / self._observationVolume  # particles per px^3
+        if density <= 0:
+            return upper
+        radius = (self.falseCandidateProbability / (density * 4 / 3 * np.pi)) ** (1 / 3)
+        return float(np.clip(radius, self.firstLinkGate, upper))
+
+    def _endTrackIfLeft(self, track):
+        """Close an undetected track whose prediction left the observation volume."""
+        if not self.coastOnlyIfVisible:
+            return
+        halfSize = 0.0
+        if self._dmaxFeatureIdx is not None and track._features[-1] is not None:
+            halfSize = 0.5 * float(track._features[-1][self._dmaxFeatureIdx])
+        if not self.visible(np.atleast_2d(track.predictedPos), halfSize)[0]:
+            track.skipped_frames = self.max_frames_to_skip + 1
+
+    def _framePositions(self, ff, k):
+        """Positions of frame index ff+k if it directly follows frame ff, else None."""
+        if ff + k < self.nFrames and (
+            self._uniqFrameid[ff + k] == self._uniqFrameid[ff] + k
+        ):
+            return self._positionsSorted[
+                self._frameBoundaries[ff + k] : self._frameBoundaries[ff + k + 1]
+            ]
+        return None
+
+    def _firstLinkCost(
+        self, ff, rows, detections, distancesSq, featureTerms, halfSizes
+    ):
+        """
+        Assignment cost of the first link of new tracks.
+
+        A candidate detection b for a track that started at a is confirmed if
+        the next frame contains a detection close to the straight-line
+        extrapolation 2b - a (or the frame after, for one missed detection).
+        A confirmed candidate may be far from the first-guess prediction,
+        because a wrong partner is very unlikely to be confirmed as well. If
+        the extrapolation leaves the observation volume, or the next frame is
+        not in the data, the link cannot be checked and the first-guess gate
+        applies. A checkable but unconfirmed candidate gets a tighter gate and
+        an extra cost, so a confirmed alternative always wins.
+
+        Parameters
+        ----------
+        ff : int
+            Current frame index.
+        rows : list of int
+            Indices of the active tracks with a single observation.
+        detections : numpy.ndarray
+            (M, 3) positions of the current frame.
+        distancesSq : numpy.ndarray
+            (len(rows), M) squared distances to the KF predictions.
+        featureTerms : numpy.ndarray
+            (len(rows), M) sum of the normalized feature cost terms.
+        halfSizes : numpy.ndarray
+            Half particle size of each track; the extrapolated position must
+            stay that far from the image edges to count as checkable.
+
+        Returns
+        -------
+        numpy.ndarray
+            (len(rows), M) cost, 1e30 where the link is not allowed.
+        """
+        nTerms = len(self.featureVariance)
+        var0 = self.featureVariance[0]
+        penUnconfirmable = self._gateToPenalty / self._densityFirstLinkGate(ff) ** 2
+        penUnconfirmed = penUnconfirmable / self.unconfirmedGateFactor**2
+        nxt = self._framePositions(ff, 1)
+        nxt2 = self._framePositions(ff, 2)
+
+        cost = np.full((len(rows), len(detections)), 1e30)
+        for k, i in enumerate(rows):
+            trace = self.activeTracks[i].trace
+            observed = np.where(np.all(np.isfinite(trace), axis=1))[0]
+            a = trace[observed[-1]]
+            gap = len(trace) - observed[-1]  # frames between a and now
+            v = (detections - a) / gap
+            confirm = np.full(len(detections), np.inf)
+            if nxt is not None and len(nxt):
+                confirm = np.min(
+                    np.linalg.norm((detections + v)[:, np.newaxis] - nxt, axis=-1),
+                    axis=1,
+                )
+            if nxt2 is not None and len(nxt2):
+                confirm2 = np.min(
+                    np.linalg.norm((detections + 2 * v)[:, np.newaxis] - nxt2, axis=-1),
+                    axis=1,
+                )
+                confirm = np.minimum(confirm, confirm2)
+            if nxt is not None:
+                checkable = self.visible(detections + v, halfSizes[k])
+            else:
+                checkable = np.zeros(len(detections), dtype=bool)
+            d2 = distancesSq[k]
+            feat = featureTerms[k]
+
+            confirmed = (
+                checkable
+                & (confirm <= self.lookaheadRadius)
+                & (d2 <= self.wideFirstLinkGate**2)
+            )
+            unconfirmable = ~checkable
+            unconfirmed = checkable & ~confirmed
+
+            row = np.full(len(detections), 1e30)
+            row[confirmed] = (confirm[confirmed] / self.lookaheadRadius) ** 2 + (
+                feat[confirmed] / nTerms
+            )
+            row[unconfirmable] = (
+                d2[unconfirmable] * penUnconfirmable / var0 + feat[unconfirmable]
+            ) / nTerms
+            row[unconfirmed] = (
+                d2[unconfirmed] * penUnconfirmed / var0 + feat[unconfirmed]
+            ) / nTerms + self.unconfirmedExtraCost
+            row[~np.isfinite(row) | (row > self.dist_thresh)] = 1e30
+            cost[k] = row
+        return cost
+
     def getFeatures(self, features, pair_id):
         """
         Get features for a specific particle.
@@ -1137,12 +1591,14 @@ class Tracker(object):
 
         pp = self._pairIdToRow[int(pair_id)]
         self._trackIdArr[pp] = track.track_id
+        # count real observations only, coasted frames leave no gap in the steps
         self._trackStepArr[pp] = track.nObserved
         if track.nObserved == 1:
             self._trackVelocityGuessArr[pp, :3] = track.velocityGuess
         else:
             self._trackVelocityGuessArr[pp, :3] = track.predictedVel
         self._trackAngleGuessArr[pp] = track.predictedAng
+        track.rows.append(pp)
         if not self.training and (self.verbosity > 5):
             print(track.track_id, track.nObserved, track.predictedAng, track.lastAngle)
 
@@ -1159,8 +1615,9 @@ class Tracker(object):
 
         Notes
         -----
-        Fits a new size-velocity model when sufficient recent data exists.
-        Resets to defaults when data is stale or insufficient.
+        Fits a new size-velocity model when sufficient recent data exists and
+        updates the learned scales (see class docstring). Resets to defaults
+        when data is stale or insufficient.
         """
         self.velocityGuessXY = self.defaultVelocityGuessXY
         self.costGuessFactor = 4
@@ -1192,8 +1649,7 @@ class Tracker(object):
             )
 
             # in case we are training the size velocity relation, do we have enough data?
-            if np.sum(cond) >= self.backSteps * 2:
-                self.trainingComplete = True
+            velocityTrainingComplete = np.sum(cond) >= self.backSteps * 2
 
             if np.any(cond):
                 zVels = zVels[cond][-self.backSteps :]
@@ -1238,10 +1694,163 @@ class Tracker(object):
                 log.debug(self.velocityGuessXY)
                 self.costGuessFactor = 1
 
+            scalesLearned = self._updateScales(capture_times)
+            # training also has to provide the learned scales
+            if velocityTrainingComplete and scalesLearned:
+                self.trainingComplete = True
+        else:
+            self._setScales(self.dvScaleDefault, np.array(self.velocitySigmaDefault))
+
         self.lastTime = capture_times[0]
         self.lastFrame = ff
 
         return
+
+    def _updateScales(self, capture_times):
+        """
+        Learn dvScale and velocitySigma from recently finished tracks.
+
+        Parameters
+        ----------
+        capture_times : array_like
+            Current frame capture times.
+
+        Returns
+        -------
+        bool
+            True if both scales were learned (not defaults).
+        """
+        maxAge = np.timedelta64(self.maxAge4training, "s")
+        dvScale = self.dvScaleDefault
+        dvLearned = False
+        if len(self._archiveDv) > 0:
+            recent = (capture_times[0] - self._archiveDvTimes.values) < maxAge
+            # the archive holds all velocity changes (vertices) of the tracks
+            if recent.sum() >= 5 * self.minTracks4scales:
+                dv = self._archiveDv.values[recent][-10 * self.backSteps :]
+                dvScale = self.dvQuantileFactor * float(np.percentile(dv, 25))
+                dvScale = min(
+                    dvScale, self.maxDvScaleFraction * self.config.frame_width
+                )
+                dvLearned = True
+
+        # horizontal first guess: median of recent tracks (robust against the
+        # occasional wrong link, unlike the mean over the whole archive)
+        velocities = self._archiveTrackVelocities.values
+        recentTracks = (
+            (self._archiveTrackNSamples.values >= self.minTrackLen4training)
+            & ((capture_times[0] - self._archiveTrackTimes.values) < maxAge)
+            & np.all(np.isfinite(velocities), axis=1)
+        )
+        if recentTracks.sum() >= self.minTracks4scales:
+            xy = np.median(velocities[recentTracks][-self.backSteps :, :2], axis=0)
+            self.velocityGuessXY = [float(xy[0]), float(xy[1])]
+
+        # uncertainty of the first guess: spread of (track velocity - the guess
+        # the track started with) of kinematically clean tracks only. Tracks
+        # with wrong links would inflate it, widen the gates and cause even
+        # more wrong links.
+        velocitySigma = np.array(self.velocitySigmaDefault)
+        sigmaLearned = False
+        if len(self._archiveRes) > 0:
+            recent = (capture_times[0] - self._archiveResTimes.values) < maxAge
+            if recent.sum() >= self.minTracks4scales:
+                res = self._archiveRes.values[recent][-self.backSteps :]
+                mad = np.median(np.abs(res - np.median(res, axis=0)), axis=0)
+                velocitySigma = np.maximum(1.4826 * mad, self.minVelocitySigma)
+                sigmaLearned = True
+
+        self._setScales(dvScale, velocitySigma)
+        return dvLearned and sigmaLearned
+
+    def _framesVisible(self, position, velocity, halfSize, maxFrames=1000):
+        """
+        Number of consecutive frames a particle moving from `position` with
+        `velocity` (px/frame) stays inside the observation volume.
+        """
+        position = np.asarray(position, dtype=float)
+        velocity = np.asarray(velocity, dtype=float)
+        if not np.all(np.isfinite(velocity)) or not np.all(np.isfinite(position)):
+            return 0
+        # the volume is an intersection of slabs (convex), so the frames after
+        # the first one inside form one interval; its end is the first slab
+        # the straight line leaves
+        margin = halfSize * self._volumeHalfMask
+        lo = self._volumeLo + margin
+        hi = self._volumeHi - margin
+        start = self._volumeA @ position
+        step = self._volumeA @ velocity
+        first = start + step
+        if not np.all((first >= lo) & (first <= hi)):
+            return 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            kMax = np.where(
+                step > 0,
+                np.floor((hi - start) / step),
+                np.where(step < 0, np.floor((lo - start) / step), np.inf),
+            )
+        return int(min(np.min(kMax), maxFrames))
+
+    def _finishTracks(self, tracks):
+        """
+        Write the expected track length of finished tracks to their particles.
+
+        The expected length is the observed span plus the frames the particle
+        would have been visible before its first and after its last
+        observation, extrapolated with its mean velocity (first guess for
+        single observations). Only done in the real (not training) pass.
+        """
+        if self.training:
+            return
+        for t in tracks:
+            if not t.rows:
+                continue
+            trace = np.asarray(t._trace, dtype=float)
+            observed = np.where(np.all(np.isfinite(trace), axis=1))[0]
+            first, last = trace[observed[0]], trace[observed[-1]]
+            velocity = t.meanVelocity if t.nObserved >= 2 else np.nan
+            if not np.all(np.isfinite(velocity)):
+                velocity = np.asarray(t.velocityGuess, dtype=float)
+            halfSize = 0.0
+            if self._dmaxFeatureIdx is not None and t._features[0] is not None:
+                halfSize = 0.5 * float(
+                    np.nanmean([f[self._dmaxFeatureIdx] for f in t._features])
+                )
+            expected = (
+                observed[-1]
+                - observed[0]
+                + 1
+                + self._framesVisible(first, -velocity, halfSize)
+                + self._framesVisible(last, velocity, halfSize)
+            )
+            self._trackExpectedLengthArr[t.rows] = expected
+
+    def _archiveScales(self, tracks):
+        """Store what the learned scales need from finished tracks."""
+        dvTimes, dvs, resTimes, res = [], [], [], []
+        for t in tracks:
+            if t.nObserved < 4:
+                continue
+            trace = np.asarray(t._trace, dtype=float)
+            dv = np.linalg.norm(np.diff(trace, n=2, axis=0), axis=1)
+            dv = dv[np.isfinite(dv)]
+            if len(dv) < 2:
+                continue
+            dvTimes.extend([t.startTime] * len(dv))
+            dvs.extend(dv)
+            if dv.max() <= self.cleanTrackFactor * self.dvScale + self.cleanTrackOffset:
+                r = t.meanVelocity - np.asarray(t.velocityGuess, dtype=float)
+                if np.all(np.isfinite(r)):
+                    resTimes.append(t.startTime)
+                    res.append(r)
+        self._archiveDvTimes.extend(
+            np.array(dvTimes, dtype=self._captureTimesSorted.dtype)
+        )
+        self._archiveDv.extend(dvs)
+        self._archiveResTimes.extend(
+            np.array(resTimes, dtype=self._captureTimesSorted.dtype)
+        )
+        self._archiveRes.extend(np.array(res).reshape(-1, 3))
 
     def getVelocityFirstGuess(self, size):
         """
@@ -1259,14 +1868,51 @@ class Tracker(object):
 
         Notes
         -----
-        Uses logarithmic relationship: log10(v) = slope*log10(size) + intercept
+        Uses logarithmic relationship: log10(v) = slope*log10(size) + intercept.
+        If at least two established tracks (>= 3 observations) are active, the
+        local flow is used instead: their median horizontal velocity, and their
+        median vertical deviation from the size-velocity relation added to it.
+        Turbulence is coherent over a few frames, so this is a much better
+        guess than the average over the last minutes.
         """
         velocityGuessZ = self.velGuess_slope * np.log10(size) + self.velGuess_intercept
         velocityGuessZ = 10**velocityGuessZ
-        velocityGuess = self.velocityGuessXY + [velocityGuessZ]
+        velocityGuess = list(self.velocityGuessXY) + [velocityGuessZ]
+
+        localFlow = self._localFlow()
+        if localFlow is not None:
+            velocityGuess = [
+                localFlow[0],
+                localFlow[1],
+                velocityGuessZ + localFlow[2],
+            ]
         assert len(velocityGuess) == 3
         assert not np.any(np.isnan(velocityGuess))
         return velocityGuess
+
+    def _localFlow(self):
+        """Median velocity of the established active tracks (cached per frame)."""
+        key = (self._frameid, self.training)
+        if self._localFlowKey != key:
+            vel, dz = [], []
+            for t in self.activeTracks:
+                if t.nObserved >= 3 and np.all(np.isfinite(t.predictedVel)):
+                    vel.append(t.predictedVel)
+                    vzSize = 10 ** (
+                        self.velGuess_slope * np.log10(t.meanSize)
+                        + self.velGuess_intercept
+                    )
+                    dz.append(t.predictedVel[2] - vzSize)
+            self._localFlowValue = None
+            if len(vel) >= 2 and np.all(np.isfinite(dz)):
+                vel = np.array(vel)
+                self._localFlowValue = (
+                    float(np.median(vel[:, 0])),
+                    float(np.median(vel[:, 1])),
+                    float(np.median(dz)),
+                )
+            self._localFlowKey = key
+        return self._localFlowValue
 
     def reset(self):
         """
@@ -1288,12 +1934,12 @@ class Tracker(object):
                 )
 
         # self.archiveTracks += self.activeTracks
+        self._finishTracks(self.activeTracks)
+        self._archiveScales(self.activeTracks)
         self._archiveTrackTimes.extend([t.startTime for t in self.activeTracks])
-        self._archiveTrackNSamples.extend([t.length for t in self.activeTracks])
+        self._archiveTrackNSamples.extend([t.nObserved for t in self.activeTracks])
         self._archiveTrackSize.extend([t.meanSize for t in self.activeTracks])
-        self._archiveTrackVelocities.extend(
-            [t.meanVelocity for t in self.activeTracks]
-        )
+        self._archiveTrackVelocities.extend([t.meanVelocity for t in self.activeTracks])
 
         self.activeTracks = []
         self.assignment = []
@@ -1312,12 +1958,15 @@ class Tracker(object):
         Archives track data before removing from active list.
         Maintains only recent archive data (last backSteps*10 items).
         """
-        del_ii = np.where(del_ii)[0]
+        del_ii = set(np.where(del_ii)[0].tolist())
+        finished = [i for j, i in enumerate(self.activeTracks) if j in del_ii]
+        self._finishTracks(finished)
+        self._archiveScales(finished)
         self._archiveTrackTimes.extend(
             [i.startTime for j, i in enumerate(self.activeTracks) if j in del_ii]
         )
         self._archiveTrackNSamples.extend(
-            [i.length for j, i in enumerate(self.activeTracks) if j in del_ii]
+            [i.nObserved for j, i in enumerate(self.activeTracks) if j in del_ii]
         )
         self._archiveTrackSize.extend(
             [i.meanSize for j, i in enumerate(self.activeTracks) if j in del_ii]
@@ -1346,8 +1995,7 @@ def trackParticles(
     featureVariance={"distance": 200**2, "Dmax": 1},
     minMatchScore=1e-3,
     minTrackLen4training=2,
-    maxAge4training=100,
-    costExperiencePenalty=np.array([1, 8, 32, 128] + [128] * 50),
+    maxAge4training=120,
     R_std=2,
     q_var=1,
     reduced_q_var=1,
@@ -1385,9 +2033,8 @@ def trackParticles(
     minTrackLen4training : int, optional
         Minimum track length for training, default 2.
     maxAge4training : float, optional
-        Maximum training data age (seconds), default 100.
-    costExperiencePenalty : array_like, optional
-        Assignment penalty factors by track length.
+        Maximum age (seconds) of finished tracks used for the size-velocity
+        fit and the learned scales, default 120.
     R_std : float, optional
         Measurement noise standard deviation, default 2.
     q_var : float, optional
@@ -1492,7 +2139,6 @@ def trackParticles(
         featureVariance=featureVariance,
         minTrackLen4training=minTrackLen4training,
         maxAge4training=maxAge4training,
-        costExperiencePenalty=costExperiencePenalty,
         R_std=R_std,
         q_var=q_var,
         reduced_q_var=reduced_q_var,
