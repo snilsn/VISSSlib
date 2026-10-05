@@ -231,6 +231,12 @@ Things to know:
   ``camera`` and ``applyFilters`` arguments.
 * **Empty classes** (no particles left after filtering) are omitted with a
   warning; ``None`` is returned if no class has data.
+* **Tracking completeness**: if the ``level1track`` files contain
+  ``track_expectedLength`` (newer tracker), the result also has
+  ``track_completeness``, as in ``level2track``. Older files without it can
+  still be used; the result then simply has no ``track_completeness``. The
+  quality flags themselves (``qualityFlags``) are not part of the per-class
+  products.
 * ``D_bins_left`` and ``D_bins_right`` are identical for all classes and do
   not have the ``particle_class`` dimension.
 * Missing values in ``category`` are treated as one class named by the

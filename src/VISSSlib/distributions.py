@@ -1245,6 +1245,13 @@ def createLevel2_single_class(
     # steps without particles have no particles, not unknown ones
     calibDat["nParticles"] = calibDat["nParticles"].fillna(0)
 
+    if "track_expectedPerObserved_mean" in calibDat:
+        # only if level1track has track_expectedLength; as in addVariables
+        calibDat["track_completeness"] = 1 / calibDat["track_expectedPerObserved_mean"]
+        calibDat = calibDat.drop_vars(
+            ["track_expectedPerObserved_mean", "track_expectedPerObserved_std"]
+        )
+
     calibDat = addVariables(
         calibDat,
         case,
