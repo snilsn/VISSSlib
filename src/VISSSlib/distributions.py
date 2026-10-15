@@ -1265,7 +1265,7 @@ def createLevel2_single_class(
         single_class=True,
     )
 
-    calibDat = tools.finishNc(calibDat, config.site, config.visssGen)
+    calibDat = tools.finishNc(calibDat, config.site, config.visssGen, config=config)
     _addLevel2Attrs(calibDat, sublevel)
 
     return calibDat
