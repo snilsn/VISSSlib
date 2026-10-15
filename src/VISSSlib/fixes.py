@@ -890,3 +890,756 @@ def isDroppableTrailingFrameShortfall(
     bool
     """
     return rowsRemainingForThread <= maxFrames
+
+
+# ---------------------------------------------------------------------------
+# MOSAiC (first VISSS, M1280 cameras, two computers, no PTP): leader/follower
+# frame mapping via capture_id
+#
+# What the data show (Oct/Nov 2019, see project notes):
+#
+# * Both cameras are effectively hardware triggered: within one follower run
+#   the follower-leader capture_id lag is constant for many hours while the
+#   two camera clocks (capture_time) drift 25-30 ppm apart. Pairing frames by
+#   capture_id is therefore exact, capture_time is not needed at all.
+# * capture_id counts 1..65535 and wraps 65535 -> 1 (period 65535).
+# * Every frame is recorded (also frames without moving particles), so
+#   capture_id is gap free, even when the follower drops ~274 frame blocks.
+# * Ghost frames (follower only): 6 consecutive frame intervals of only
+#   ~0.81-0.93 frame periods (summing up to 5 periods) while capture_id
+#   advances by 6, i.e. one extra capture_id is inserted. From then on, the
+#   lag is permanently off by one. 0-31 events per day.
+# * The follower is restarted every few hours, resetting capture_id.
+# * record_time (computer clock, set in the processing queue) gives the lag
+#   only to +-1 frame for a 5 min file, the median over a whole restart
+#   segment is usually exact. The exact frame is determined from the
+#   vertical position of single particles seen by both cameras, which is
+#   only consistent for the correct lag (a one frame error corresponds to
+#   ~120 px for a 1 m/s particle).
+# ---------------------------------------------------------------------------
+
+MOSAIC_CAPTURE_ID_PERIOD = 65535
+
+
+def _mosaicLoadMetaFrames(case, camera, config):
+    """Load capture_time/record_time (us), raw capture_id and moving pixel
+    counts of all metaFrames files of a day, in recording order."""
+    from . import files
+
+    fnames = files.FindFiles(case, camera, config).listFiles("metaFrames")
+    parts = []
+    for fname in fnames:
+        with xr.open_dataset(fname) as ds:
+            if len(ds.capture_time) == 0:
+                continue
+            parts.append(
+                {
+                    "ct": ds.capture_time.values.astype("datetime64[us]").astype(
+                        np.int64
+                    ),
+                    "rt": ds.record_time.values.astype("datetime64[us]").astype(
+                        np.int64
+                    ),
+                    "cid": ds.capture_id.values.astype(np.int64),
+                    "nmp": np.nan_to_num(
+                        ds.nMovingPixel.isel(nMovingPixelThresh=0).values
+                    ),
+                }
+            )
+    if len(parts) == 0:
+        return None
+    return {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+
+
+def _mosaicFramePeriod(dat, config):
+    """Frame period in us as measured by the camera's own clock."""
+    dct = np.diff(dat["ct"])
+    dc = np.diff(dat["cid"]) % MOSAIC_CAPTURE_ID_PERIOD
+    good = (dc == 1) & (dct > 0)
+    if good.sum() < 100:
+        return 1e6 / config.fps
+    return float(np.median(dct[good]))
+
+
+def _mosaicSegmentsAndGhosts(dat, period, correctGhosts=True):
+    """
+    Split frames into camera runs (restart = capture_id step not consistent
+    with capture_time step), unwrap capture_id per run, and detect/correct
+    ghost frames.
+
+    Returns
+    -------
+    seg : array of int
+        run index per frame
+    u : array of int
+        unwrapped, ghost corrected capture_id per frame (congruent to the
+        raw capture_id minus the number of preceding ghost frames of the run)
+    drop : array of bool
+        frames inside a ghost frame sequence (timing ambiguous)
+    ghosts : list of tuples
+        (index of first frame, index of first corrected frame, extra ids)
+    """
+    P = MOSAIC_CAPTURE_ID_PERIOD
+    cid = dat["cid"]
+    dc = np.diff(cid) % P
+    dt = np.diff(dat["ct"]) / period
+    reset = (dt <= 0) | (np.abs(dc - (np.round(dt) % P)) > 3)
+    seg = np.concatenate(([0], np.cumsum(reset)))
+
+    starts = np.concatenate(([0], np.flatnonzero(reset) + 1))
+    ends = np.concatenate((starts[1:], [len(cid)]))
+    u = np.empty(len(cid), dtype=np.int64)
+    for a, b in zip(starts, ends):
+        u[a:b] = cid[a] + np.concatenate(([0], np.cumsum(dc[a : b - 1])))
+
+    # ghost frames: compressed frame intervals with regular capture_id steps
+    short = (dt > 0.5) & (dt < 0.97) & (dc == 1)
+    idx = np.flatnonzero(short)
+    drop = np.zeros(len(cid), dtype=bool)
+    ghosts = []
+    if len(idx) > 0:
+        for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
+            extra = int(round(len(run) - dt[run].sum()))
+            if extra < 1:
+                continue
+            i0, i1 = run[0], run[-1] + 1
+            if (seg[i0] != seg[i1]) or not correctGhosts:
+                continue
+            segEnd = ends[seg[i1]]
+            u[i1:segEnd] -= extra
+            drop[i0 + 1 : i1] = True
+            ghosts.append((i0, i1, extra))
+
+    # ghost frames hidden in a block of dropped frames: capture_id advances
+    # by 1-3 more than the elapsed frame periods (e.g. 275 ids for 274.007
+    # periods, 20200106 07:54). Observed rarely, but each one shifts the lag
+    # by one for the rest of the run.
+    if correctGhosts:
+        excess = dc - np.round(dt)
+        hidden = np.flatnonzero((dt > 1.5) & (excess >= 1) & (excess <= 3))
+        for i0 in hidden:
+            i1 = i0 + 1
+            if seg[i0] != seg[i1]:
+                continue
+            extra = int(excess[i0])
+            u[i1 : ends[seg[i1]]] -= extra
+            ghosts.append((i0, i1, extra))
+        ghosts.sort()
+    return seg, u, drop, ghosts
+
+
+def _mosaicActivityLag(lu, lact, fu, fact, guess, searchRange=60):
+    """
+    Lag (follower u - leader u) maximizing the cross correlation of the
+    per-frame "anything moving" signal of both cameras. Independent of any
+    clock, but the peak is a few frames broad, so only good to +-1-2 frames.
+
+    Returns (lag, z-score of peak) or (None, nan)
+    """
+    from scipy.signal import fftconvolve
+
+    if (len(lu) < 1000) or (len(fu) < 1000):
+        return None, np.nan
+    if (lu.max() - lu.min() > 2e7) or (fu.max() - fu.min() > 2e7):
+        return None, np.nan
+
+    def series(u, act):
+        s = np.full(u.max() - u.min() + 1, np.nan)
+        s[u - u.min()] = act > 0
+        valid = np.isfinite(s)
+        s = np.where(valid, s - np.nanmean(s), 0.0)
+        return s, valid.astype(float)
+
+    a, va = series(lu, lact)
+    b, vb = series(fu, fact)
+    if (np.sum(a * a) == 0) or (np.sum(b * b) == 0):
+        return None, np.nan
+    cc = fftconvolve(b, a[::-1], "full")
+    nn = fftconvolve(vb, va[::-1], "full")
+    lags = np.arange(-(len(a) - 1), len(b)) + fu.min() - lu.min()
+    sel = (np.abs(lags - guess) <= searchRange) & (nn > 1000)
+    if sel.sum() < 10:
+        return None, np.nan
+    cc = cc[sel] / nn[sel]
+    lags = lags[sel]
+    k = np.argmax(cc)
+    bg = np.median(cc)
+    sd = 1.4826 * np.median(np.abs(cc - bg))
+    if sd == 0:
+        return None, np.nan
+    return int(lags[k]), float((cc[k] - bg) / sd)
+
+
+def _mosaicLoadParticles(case, camera, config):
+    """capture_time (us), Dmax and vertical center position of all
+    level1detect particles of a day"""
+    from . import files
+
+    fnames = files.FindFiles(case, camera, config).listFiles("level1detect")
+    parts = []
+    for fname in fnames:
+        with xr.open_dataset(fname) as ds:
+            if len(ds.pid) == 0:
+                continue
+            z = ds.position_upperLeft.sel(dim2D="y") + ds.Droi.sel(dim2D="y") / 2.0
+            parts.append(
+                {
+                    "ct": ds.capture_time.values.astype("datetime64[us]").astype(
+                        np.int64
+                    ),
+                    "D": ds.Dmax.values.astype(float),
+                    "z": z.values.astype(float),
+                }
+            )
+    if len(parts) == 0:
+        return None
+    return {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+
+
+def _mosaicParticleFrames(part, dat, seg, u, drop, period):
+    """assign each particle the (seg, u) of its frame; -1 if unknown/dropped"""
+    pSeg = np.full(len(part["ct"]), -1, dtype=np.int64)
+    pU = np.full(len(part["ct"]), -1, dtype=np.int64)
+    order = np.argsort(dat["ct"], kind="stable")
+    ctSorted = dat["ct"][order]
+    ii = np.searchsorted(ctSorted, part["ct"])
+    ii = np.clip(ii, 1, len(ctSorted) - 1)
+    left = np.abs(part["ct"] - ctSorted[ii - 1]) < np.abs(part["ct"] - ctSorted[ii])
+    ii = np.where(left, ii - 1, ii)
+    ok = np.abs(ctSorted[ii] - part["ct"]) < period / 4
+    frame = order[ii]
+    ok &= ~drop[frame]
+    pSeg[ok] = seg[frame[ok]]
+    pU[ok] = u[frame[ok]]
+    return pSeg, pU
+
+
+def _mosaicSingleParticles(part, pSeg, pU, segId, Dmin):
+    """particles which are the only particle in their frame"""
+    m = pSeg == segId
+    uu, inv, cnt = np.unique(pU[m], return_inverse=True, return_counts=True)
+    single = (cnt[inv] == 1) & (part["D"][m] >= Dmin)
+    idx = np.flatnonzero(m)[single]
+    order = np.argsort(pU[idx])
+    return idx[order]
+
+
+def _mosaicParticleLagTest(
+    lPart, lSeg, lU, ls, fPart, fSeg, fU, fs, candidates, Dmin, minPairs=20
+):
+    """
+    For each candidate lag, pair single-particle frames of both cameras and
+    measure the spread (IQR) of the vertical position difference. Only the
+    correct lag gives a narrow distribution.
+
+    Returns dict(lag, iqr, iqr2nd, n, dz) of the best candidate or None.
+    """
+    li = _mosaicSingleParticles(lPart, lSeg, lU, ls, Dmin)
+    fi = _mosaicSingleParticles(fPart, fSeg, fU, fs, Dmin)
+    if (len(li) < minPairs) or (len(fi) < minPairs):
+        return None
+    fUs = fU[fi]
+    res = []
+    for lag in candidates:
+        target = lU[li] + lag
+        jj = np.clip(np.searchsorted(fUs, target), 0, len(fUs) - 1)
+        hit = fUs[jj] == target
+        if hit.sum() < minPairs:
+            continue
+        dz = lPart["z"][li[hit]] - fPart["z"][fi[jj[hit]]]
+        q75, q25 = np.percentile(dz, [75, 25])
+        # fraction of pairs in a narrow peak around the median: robust
+        # during heavy snowfall, when many "single particle" frames pair
+        # different particles and broaden the IQR even for the correct lag
+        peakFrac = np.mean(np.abs(dz - np.median(dz)) < 10)
+        res.append((q75 - q25, lag, hit.sum(), np.median(dz), peakFrac))
+    if len(res) < 2:
+        return None
+    res.sort()
+    return {
+        "lag": int(res[0][1]),
+        "iqr": float(res[0][0]),
+        "iqr2nd": float(res[1][0]),
+        "n": int(res[0][2]),
+        "dz": float(res[0][3]),
+        "peakFrac": float(res[0][4]),
+        "peakFrac2nd": float(max(r[4] for r in res[1:])),
+    }
+
+
+def mosaicFrameMappingFname(case, config):
+    """daily cache file next to metaRotation"""
+    from . import files
+
+    fl = files.FindFiles(case, config.leader, config)
+    return fl.fnamesDaily["metaRotation"].replace("metaRotation", "metaFrameMapping")
+
+
+def createMosaicFrameMapping(
+    case,
+    config,
+    skipExisting=True,
+    writeNc=True,
+    minOverlapS=60,
+    maxIqr=60.0,
+    minIqrRatio=1.5,
+    activitySearchRange=20000,
+    minPeakFrac=0.15,
+    minPeakFracRatio=3.0,
+    minConsensusIqrRatio=1.1,
+):
+    """
+    Determine, for one day, the exact follower -> leader capture_id mapping
+    for every combination of leader and follower camera run.
+
+    For every overlap of a leader run and a follower run:
+    1. first guess of the lag from record_time (median over the overlap),
+    2. clock-independent check by cross correlating the per-frame "anything
+       moving" signal of both cameras,
+    3. exact lag from the vertical position of single particles seen by
+       both cameras (tested for small and for large particles, which are
+       rarer and thus less ambiguous during heavy snowfall).
+
+    Ghost frames are removed from the follower before (see module notes).
+    The mapping is cached as metaFrameMapping netCDF next to metaRotation.
+
+    Parameters
+    ----------
+    case : str
+        Day YYYYMMDD
+    config : dict or str
+        Settings
+    skipExisting : bool
+        Read cached file if present
+    writeNc : bool
+        Write cache file
+    minOverlapS : float
+        Minimum overlap of leader and follower run in seconds
+    maxIqr : float
+        Maximum IQR (px) of the vertical position difference for the best lag
+    minIqrRatio : float
+        Minimum ratio IQR(2nd best lag)/IQR(best lag)
+    minConsensusIqrRatio : float
+        Alternative acceptance if the best lag agrees within 1 frame with
+        both the activity (z >= 8) and the record_time estimate: minimum
+        IQR ratio of 2nd best/best lag
+    minPeakFrac, minPeakFracRatio : float
+        Alternative acceptance when the IQR is broad (heavy snowfall): the
+        fraction of pairs within +-10 px of the median must be at least
+        minPeakFrac and minPeakFracRatio times that of every other lag
+    activitySearchRange : int
+        Frames around the record_time guess searched by the activity cross
+        correlation. Must be wide because the clocks of the two computers
+        were not always synchronized (e.g. ~5 s off end of Nov 2019).
+
+    Returns
+    -------
+    xarray.Dataset or None
+        Dataset with dimension "segment" (one per leader/follower run
+        overlap; lag, quality flags, follower capture_time range) and
+        "ghost" (follower ghost frame sequences)
+    """
+    import datetime
+    import os
+    import uuid
+
+    from . import __version__, tools
+
+    config = tools.readSettings(config)
+    case = case.split("-")[0]
+    fname = mosaicFrameMappingFname(case, config)
+    if skipExisting and os.path.isfile(fname):
+        with xr.open_dataset(fname) as ds:
+            return ds.load()
+
+    log.info(f"createMosaicFrameMapping {case}")
+    P = MOSAIC_CAPTURE_ID_PERIOD
+    L = _mosaicLoadMetaFrames(case, config.leader, config)
+    F = _mosaicLoadMetaFrames(case, config.follower, config)
+
+    rows = []
+    ghostRows = []
+    if (L is not None) and (F is not None):
+        lPeriod = _mosaicFramePeriod(L, config)
+        fPeriod = _mosaicFramePeriod(F, config)
+        lSegF, lu, lDrop, lGhosts = _mosaicSegmentsAndGhosts(L, lPeriod)
+        fSegF, fu, fDrop, fGhosts = _mosaicSegmentsAndGhosts(F, fPeriod)
+        if len(lGhosts) > 0:
+            # never observed so far; leader capture_id is used as is
+            log.warning(f"{len(lGhosts)} ghost frame sequences in LEADER data")
+            lSegF, lu, lDrop, _ = _mosaicSegmentsAndGhosts(
+                L, lPeriod, correctGhosts=False
+            )
+        log.info(f"{len(fGhosts)} follower ghost frame sequences")
+        for i0, i1, extra in fGhosts:
+            ghostRows.append(
+                {
+                    "ghost_fsegment": fSegF[i0],
+                    "ghost_ct_start": F["ct"][i0],
+                    "ghost_ct_end": F["ct"][i1],
+                    "ghost_extra": extra,
+                }
+            )
+
+        lPart = _mosaicLoadParticles(case, config.leader, config)
+        fPart = _mosaicLoadParticles(case, config.follower, config)
+        if (lPart is not None) and (fPart is not None):
+            lPSeg, lPU = _mosaicParticleFrames(lPart, L, lSegF, lu, lDrop, lPeriod)
+            fPSeg, fPU = _mosaicParticleFrames(fPart, F, fSegF, fu, fDrop, fPeriod)
+
+        fKeep = ~fDrop
+        for ls in np.unique(lSegF):
+            lm = lSegF == ls
+            for fs in np.unique(fSegF):
+                fm = (fSegF == fs) & fKeep
+                if fm.sum() == 0:
+                    continue
+                t0 = max(L["rt"][lm].min(), F["rt"][fm].min())
+                t1 = min(L["rt"][lm].max(), F["rt"][fm].max())
+                if (t1 - t0) < minOverlapS * 1e6:
+                    continue
+                lmm = lm & (L["rt"] >= t0) & (L["rt"] <= t1)
+                fmm = fm & (F["rt"] >= t0) & (F["rt"] <= t1)
+                if (lmm.sum() < 1000) or (fmm.sum() < 1000):
+                    continue
+                row = {
+                    "lsegment": ls,
+                    "fsegment": fs,
+                    "rt_start": t0,
+                    "rt_end": t1,
+                    "fct_start": F["ct"][fmm].min(),
+                    "fct_end": F["ct"][fmm].max(),
+                    "lag_recordTime": -1,
+                    "lag_activity": -1,
+                    "activity_z": np.nan,
+                    "lag": -1,
+                    "lag_mod": -1,
+                    "dz_iqr": np.nan,
+                    "dz_iqr_2nd": np.nan,
+                    "dz_median": np.nan,
+                    "n_pairs": 0,
+                    "dmin": 0,
+                    "peak_frac": np.nan,
+                    "peak_frac_2nd": np.nan,
+                    "resolved": False,
+                }
+
+                # 1. record_time first guess
+                lIdx = np.flatnonzero(lmm)
+                lIdx = lIdx[
+                    np.linspace(0, len(lIdx) - 1, min(20000, len(lIdx))).astype(int)
+                ]
+                fIdx = np.flatnonzero(fmm)
+                fOrder = np.argsort(F["rt"][fIdx], kind="stable")
+                fRt = F["rt"][fIdx][fOrder]
+                jj = np.clip(np.searchsorted(fRt, L["rt"][lIdx]), 1, len(fRt) - 1)
+                jj = np.where(
+                    np.abs(fRt[jj - 1] - L["rt"][lIdx])
+                    < np.abs(fRt[jj] - L["rt"][lIdx]),
+                    jj - 1,
+                    jj,
+                )
+                close = np.abs(fRt[jj] - L["rt"][lIdx]) < 20e3
+                if close.sum() < 100:
+                    rows.append(row)
+                    continue
+                guess = int(np.median(fu[fIdx][fOrder][jj[close]] - lu[lIdx[close]]))
+                row["lag_recordTime"] = guess
+
+                # 2. activity cross correlation
+                lagAct, zAct = _mosaicActivityLag(
+                    lu[lmm],
+                    L["nmp"][lmm],
+                    fu[fmm],
+                    F["nmp"][fmm],
+                    guess,
+                    searchRange=activitySearchRange,
+                )
+                candidates = set(range(guess - 3, guess + 4))
+                if lagAct is not None:
+                    row["lag_activity"] = lagAct
+                    row["activity_z"] = zAct
+                    if zAct > 8:
+                        candidates |= set(range(lagAct - 3, lagAct + 4))
+
+                # 3. exact lag from particles
+                if (lPart is None) or (fPart is None):
+                    rows.append(row)
+                    continue
+                best = None
+                for Dmin in [8, 20]:
+                    res = _mosaicParticleLagTest(
+                        lPart,
+                        lPSeg,
+                        lPU,
+                        ls,
+                        fPart,
+                        fPSeg,
+                        fPU,
+                        fs,
+                        sorted(candidates),
+                        Dmin,
+                    )
+                    if res is None:
+                        continue
+                    res["dmin"] = Dmin
+                    res["ratio"] = res["iqr2nd"] / max(res["iqr"], 1e-3)
+                    if (best is None) or (res["ratio"] > best["ratio"]):
+                        if (best is not None) and (best["lag"] != res["lag"]):
+                            # both particle sizes are decisive but disagree
+                            if min(best["ratio"], res["ratio"]) >= minIqrRatio:
+                                best = None
+                                break
+                        best = res
+                if best is not None:
+                    row.update(
+                        {
+                            "lag": best["lag"],
+                            "lag_mod": best["lag"] % P,
+                            "dz_iqr": best["iqr"],
+                            "dz_iqr_2nd": best["iqr2nd"],
+                            "dz_median": best["dz"],
+                            "n_pairs": best["n"],
+                            "dmin": best["dmin"],
+                            "resolved": (best["iqr"] <= maxIqr)
+                            and (best["ratio"] >= minIqrRatio),
+                            "resolved_peak": (
+                                (best["peakFrac"] >= minPeakFrac)
+                                and (
+                                    best["peakFrac"]
+                                    >= minPeakFracRatio * best["peakFrac2nd"]
+                                )
+                            )
+                            # consensus: three independent estimates agree
+                            # (only possible if the computer clocks are in
+                            # sync); the particle test is then just not
+                            # decisive, typically because particles move
+                            # little within one frame
+                            or (
+                                (best["ratio"] >= minConsensusIqrRatio)
+                                and (row["activity_z"] >= 8)
+                                and (abs(best["lag"] - row["lag_activity"]) <= 1)
+                                and (abs(best["lag"] - row["lag_recordTime"]) <= 1)
+                            ),
+                            "peak_frac": best["peakFrac"],
+                            "peak_frac_2nd": best["peakFrac2nd"],
+                        }
+                    )
+                rows.append(row)
+
+    # alternative acceptance (peak fraction or consensus), but only if the vertical
+    # offset agrees with the segments of the same day resolved by the IQR
+    # criterion (camera geometry does not change within a day)
+    # (if none, the peak-qualified segments themselves are the reference)
+    dzRef = [r["dz_median"] for r in rows if r["resolved"]]
+    if len(dzRef) == 0:
+        dzRef = [r["dz_median"] for r in rows if r.get("resolved_peak", False)]
+    for r in rows:
+        peakOk = r.pop("resolved_peak", False)
+        if (not r["resolved"]) and peakOk and (len(dzRef) > 0):
+            r["resolved"] = bool(abs(r["dz_median"] - np.median(dzRef)) < 10)
+
+    def asArray(key, rr, dim, dtype=None):
+        return xr.DataArray(np.array([r[key] for r in rr], dtype=dtype), dims=[dim])
+
+    ds = xr.Dataset()
+    if len(rows) > 0:
+        for key in rows[0].keys():
+            if key in ["rt_start", "rt_end", "fct_start", "fct_end"]:
+                ds[key] = (
+                    asArray(key, rows, "segment", np.int64)
+                    .astype("datetime64[us]")
+                    .astype("datetime64[ns]")
+                )
+            elif key == "resolved":
+                ds[key] = asArray(key, rows, "segment", np.int8)
+            else:
+                ds[key] = asArray(key, rows, "segment")
+    if len(ghostRows) > 0:
+        for key in ghostRows[0].keys():
+            if key in ["ghost_ct_start", "ghost_ct_end"]:
+                ds[key] = (
+                    asArray(key, ghostRows, "ghost", np.int64)
+                    .astype("datetime64[us]")
+                    .astype("datetime64[ns]")
+                )
+            else:
+                ds[key] = asArray(key, ghostRows, "ghost", np.int64)
+    ds.attrs["description"] = (
+        "MOSAiC leader/follower frame mapping: leader capture_id = "
+        "((follower capture_id - ghost_extra of preceding ghosts in the same "
+        "fsegment - lag_mod - 1) mod 65535) + 1 for follower frames with "
+        "fct_start <= capture_time <= fct_end of a resolved segment"
+    )
+    ds.attrs[
+        "history"
+    ] = f"{datetime.datetime.utcnow()}: created with VISSSlib {__version__}"
+    nRes = int(ds.resolved.sum()) if "resolved" in ds else 0
+    log.info(
+        f"createMosaicFrameMapping {case}: {nRes} of {len(rows)} segments resolved"
+    )
+
+    if writeNc:
+        tools.createParentDir(fname, mode=config.dirMode)
+        tmpFile = f"{fname}.{os.getpid()}.{uuid.uuid4().hex}.tmp.cdf"
+        ds.to_netcdf(tmpFile)
+        os.chmod(tmpFile, config.fileMode)
+        os.replace(tmpFile, fname)
+        log.info(f"saved {fname}")
+    return ds
+
+
+def mosaicFollowerCaptureIdToLeader(follower1D, config, dim="fpid"):
+    """
+    Replace the (raw, not yet overflow corrected) follower capture_id by the
+    capture_id the leader assigned to the same trigger, using the daily
+    metaFrameMapping. If missing (e.g. the next day around midnight), it is
+    computed on the fly but not cached, because level1detect of that day
+    might not be complete yet; the cache is written by createMetaRotation.
+    Particles in ghost frame sequences or in periods without reliable
+    mapping are removed.
+
+    Parameters
+    ----------
+    follower1D : xarray.Dataset
+        follower level1detect data with raw capture_id
+    config : dict
+        Settings
+    dim : str
+        particle dimension
+
+    Returns
+    -------
+    xarray.Dataset or None
+    """
+    import pandas as pd
+
+    P = MOSAIC_CAPTURE_ID_PERIOD
+    ct = follower1D.capture_time.values.astype("datetime64[ns]")
+    raw = follower1D.capture_id.values.astype(np.int64)
+    days = np.unique(
+        np.concatenate(
+            [
+                pd.to_datetime(ct - np.timedelta64(10, "s")).strftime("%Y%m%d"),
+                pd.to_datetime(ct + np.timedelta64(10, "s")).strftime("%Y%m%d"),
+            ]
+        )
+    )
+    newId = np.full(len(raw), -1, dtype=np.int64)
+    ghostDrop = np.zeros(len(raw), dtype=bool)
+    for day in days:
+        mapping = createMosaicFrameMapping(
+            day,
+            config,
+            skipExisting=True,
+            writeNc=False,
+        )
+        if (mapping is None) or ("segment" not in mapping.dims):
+            continue
+        for ss in range(len(mapping.segment)):
+            seg = mapping.isel(segment=ss)
+            if not bool(seg.resolved):
+                continue
+            m = (ct >= seg.fct_start.values) & (ct <= seg.fct_end.values) & (newId < 0)
+            if m.sum() == 0:
+                continue
+            nBefore = np.zeros(m.sum(), dtype=np.int64)
+            if "ghost" in mapping.dims:
+                g = mapping.isel(ghost=(mapping.ghost_fsegment == seg.fsegment).values)
+                for gg in range(len(g.ghost)):
+                    gStart = g.ghost_ct_start.values[gg]
+                    gEnd = g.ghost_ct_end.values[gg]
+                    ghostDrop[m] |= (ct[m] > gStart) & (ct[m] < gEnd)
+                    nBefore += (ct[m] >= gEnd) * int(g.ghost_extra.values[gg])
+            newId[m] = ((raw[m] - nBefore - int(seg.lag_mod) - 1) % P) + 1
+
+    keep = (newId > 0) & ~ghostDrop
+    log.info(
+        f"mosaicFollowerCaptureIdToLeader: kept {keep.sum()} of {len(keep)} "
+        f"follower particles ({ghostDrop.sum()} in ghost frames, "
+        f"{(newId < 0).sum()} without reliable mapping)"
+    )
+    if keep.sum() == 0:
+        return None
+    follower1D = follower1D.isel({dim: keep})
+    follower1D["capture_id"] = xr.DataArray(
+        newId[keep].astype(follower1D.capture_id.dtype), dims=[dim]
+    )
+    return follower1D
+
+
+def mosaicCaptureIdOffset(leader1D, follower1D, dim="fpid"):
+    """
+    Offset between follower and leader capture_id after
+    mosaicFollowerCaptureIdToLeader and captureIdOverflows. Both cameras then
+    use the same ids, but captureIdOverflows unwraps each data set relative
+    to its own start, so the offset is a multiple of 65535, resolved with
+    record_time (good to a few seconds, i.e. << 65535 frames).
+    """
+    P = MOSAIC_CAPTURE_ID_PERIOD
+    lRt = leader1D.record_time.values.astype("datetime64[ns]").astype(np.int64)
+    fRt = follower1D.record_time.values.astype("datetime64[ns]").astype(np.int64)
+    order = np.argsort(fRt)
+    fRt = fRt[order]
+    fId = follower1D.capture_id.values.astype(np.int64)[order]
+    jj = np.clip(np.searchsorted(fRt, lRt), 0, len(fRt) - 1)
+    diff = fId[jj] - leader1D.capture_id.values.astype(np.int64)
+    return int(np.round(np.median(diff) / P)) * P
+
+
+def mosaicUnmappedTimes(case, config, timeIndex, maxUnmappedS=10):
+    """
+    Flag time bins in which follower frames could not be mapped to leader
+    frames (no resolved metaFrameMapping segment, e.g. around follower
+    restarts or for unresolved segments). Follower particles of such periods
+    are dropped by mosaicFollowerCaptureIdToLeader, so level2match/track
+    would otherwise silently report too few particles.
+
+    Parameters
+    ----------
+    case : str
+        Day YYYYMMDD
+    config : dict
+        Settings
+    timeIndex : pandas.DatetimeIndex
+        Start times of the level2 time bins (with freq)
+    maxUnmappedS : float
+        Bins with more than this many seconds not covered by a resolved
+        segment are flagged
+
+    Returns
+    -------
+    xarray.DataArray of bool with dimension time
+    """
+    import os
+
+    import pandas as pd
+
+    freqS = timeIndex.freq.nanos * 1e-9
+    starts = []
+    ends = []
+    day = pd.Timestamp(case[:8])
+    for dd in [day - pd.Timedelta("1D"), day, day + pd.Timedelta("1D")]:
+        fname = mosaicFrameMappingFname(dd.strftime("%Y%m%d"), config)
+        if not os.path.isfile(fname):
+            continue
+        with xr.open_dataset(fname) as ds:
+            if "segment" not in ds.dims:
+                continue
+            ok = ds.resolved.values.astype(bool)
+            starts.append(ds.fct_start.values[ok])
+            ends.append(ds.fct_end.values[ok])
+    if len(starts) > 0:
+        starts = np.concatenate(starts)
+        ends = np.concatenate(ends)
+    binStart = timeIndex.values.astype("datetime64[ns]")
+    binEnd = binStart + np.timedelta64(int(freqS * 1e9), "ns")
+    covered = np.zeros(len(binStart))
+    for s, e in zip(starts, ends):
+        overlap = (np.minimum(binEnd, e) - np.maximum(binStart, s)) / np.timedelta64(
+            1, "s"
+        )
+        covered += np.clip(overlap, 0, None)
+    unmapped = (freqS - covered) > maxUnmappedS
+    log.info(f"mosaicUnmappedTimes: {unmapped.sum()} of {len(unmapped)} bins flagged")
+    return xr.DataArray(unmapped, dims=["time"], coords=[timeIndex])

@@ -782,7 +782,7 @@ def retrieveCombinedRiming(
     lv3Dat = tools.finishNc(
         lv3Dat,
         config.site,
-        config.visssGen,
+        config.visssGen, config=config,
         extra={"settings": str(config.level3.combinedRiming)},
     )
     h1, h2 = config.aux.radar.heightRange

@@ -20,7 +20,7 @@
 # __version__ = '1.1.0' # additional lv1 variables areaConsideringHoles, perimeterConsideringHoles
 # __version__ = '1.2.0' # additional lv1 variables solidity, extent, solidityConsideringHoles, extentConsideringHoles
 # __version__ = '1.2.1' # detection.py: raised erosion-test Dmax guard from 5 to 8 (matches sibling minBlur guard) so real small particles (Dmax 5-8px) are no longer rejected by add()
-# __version__ = '1.2.2' # tracking.py: gates learned from the data, look-ahead first links, KF fixes, track_expectedLength; level2track: track_completeness/trackingIncomplete flag (replaces tracksTooShort), turn-angle track edges
+# __version__ = '1.2.2' # tracking.py: gates learned from the data, look-ahead first links, KF fixes, track_expectedLength; level2track: track_completeness/trackingIncomplete flag (replaces tracksTooShort), turn-angle track edges; new value maxArea in cameratrack dimension
 
 
 # Version is pulled from git tag!!
@@ -66,6 +66,19 @@ logger.add(
 #     compression="zip",  # Compress rotated logs
 # )
 
+
+# dask's threaded scheduler (used by xarray open_mfdataset/.load()/.compute()) defaults
+# to os.cpu_count() threads and ignores OMP_NUM_THREADS, so many concurrent workers
+# oversubscribe a node. Follow OMP_NUM_THREADS (exported per job by products.py); if
+# unset (interactive use), leave dask's default untouched.
+try:
+    _nThreads = int(os.environ["OMP_NUM_THREADS"])
+    if _nThreads >= 1:
+        import dask
+
+        dask.config.set(num_workers=_nThreads)
+except (KeyError, ValueError):
+    pass
 
 from . import (
     analysis,

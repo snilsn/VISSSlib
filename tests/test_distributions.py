@@ -5,7 +5,12 @@ import pytest
 import VISSSlib
 import xarray as xr
 from VISSSlib.distributions import *
-from VISSSlib.distributions import _applyBlurThreshold, _blurThreshold, _preprocess
+from VISSSlib.distributions import (
+    _applyBlurThreshold,
+    _blurThreshold,
+    _preprocess,
+    _selectAtMaxArea,
+)
 
 from helpers import get_test_data_path, get_test_path, readTestSettings
 
@@ -31,6 +36,38 @@ class TestPreprocess:
         dat.encoding["source"] = "synthetic_test_source.nc"
         with pytest.raises(ValueError):
             _preprocess(dat)
+
+
+class TestSelectAtMaxArea:
+    """cameratrack="maxArea" takes every variable from the single
+    (camera, track_step) observation with the largest area of a track."""
+
+    @pytest.mark.unit
+    def test_selectAtMaxArea(self):
+        area = np.array(
+            [
+                [[1.0, 2.0, 3.0], [4.0, 9.0, 5.0]],  # max 9 -> camera 1, step 1
+                [[7.0, 2.0, np.nan], [4.0, 1.0, 5.0]],  # max 7 -> camera 0, step 0
+                [[np.nan] * 3, [np.nan] * 3],  # no valid area
+            ]
+        )
+        dims = ("track_id", "camera", "track_step")
+        dat = xr.Dataset(
+            {
+                "area": (dims, area),
+                "Dmax": (dims, area * 10),
+                "velocity": (("track_id", "track_step"), [[0, 1, 2], [3, 4, 5], [6, 7, 8]]),
+            },
+            coords={"track_id": [10, 11, 12], "camera": ["l", "f"], "track_step": [0, 1, 2]},
+        )
+        res = _selectAtMaxArea(dat)
+        np.testing.assert_array_equal(res.area.values[:2], [9, 7])
+        np.testing.assert_array_equal(res.Dmax.values[:2], [90, 70])
+        np.testing.assert_array_equal(res.velocity.values[:2], [1, 3])
+        assert np.isnan(res.area.values[2])
+        assert np.isnan(res.Dmax.values[2])
+        assert np.isnan(res.velocity.values[2])
+        assert set(res.dims) == {"track_id"}
 
 
 class TestBlurThreshold:
@@ -313,10 +350,33 @@ class TestL2(object):
             writeNc=False,
             doPlot=False,
         )
-        assert np.isclose(dat.PSD.mean(), 4219.70556641)
-        assert np.isclose(dat.M6.mean(), 2.45204412e-20)
-        assert np.isclose(dat.angle_mean.mean(), 66.32055664)
+        # regression values are for the original four cameratrack entries
+        # (mean over all entries would change with every new entry)
+        old4 = dat.sel(cameratrack=["max", "mean", "min", "std"])
+        assert np.isclose(old4.PSD.mean(), 4219.70556641)
+        assert np.isclose(old4.M6.mean(), 2.45204412e-20)
+        assert np.isclose(old4.angle_mean.mean(), 66.32055664)
         assert np.isclose(dat.track_completeness.mean(), 0.48645067)
+
+        # maxArea: all variables from the observation with the largest area
+        assert list(dat.cameratrack.values) == [
+            "max",
+            "mean",
+            "min",
+            "std",
+            "maxArea",
+        ]
+        # the area itself is by construction the same as for "max"
+        np.testing.assert_allclose(
+            dat.area_mean.sel(cameratrack="maxArea"),
+            dat.area_mean.sel(cameratrack="max"),
+        )
+        # other variables come from a single view, so cannot exceed the max
+        assert (
+            dat.Dmax_mean.sel(cameratrack="maxArea")
+            <= dat.Dmax_mean.sel(cameratrack="max") * (1 + 1e-6)
+        ).where(dat.Dmax_mean.sel(cameratrack="max").notnull(), True).all()
+        assert dat.aspectRatio_mean.sel(cameratrack="maxArea").notnull().any()
         for var in [
             "D32",
             "D43",

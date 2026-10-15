@@ -2152,7 +2152,7 @@ def trackParticles(
     lv1track = tools.finishNc(
         lv1track,
         config.site,
-        config.visssGen,
+        config.visssGen, config=config,
         extra=tools.collectVersionAttrs(
             "level1track", {"level1match": [fnameLv1Match]}
         ),

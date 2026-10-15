@@ -453,7 +453,7 @@ class FindFiles(object):
                 ] = f"{self.quicklookPath[qL]}/{qL}_V{version.split('.')[0]}_{config['site']}_{self.year}{self.month}{self.day}T{self.hour}.png"
             self.quicklookCurrent[
                 qL
-            ] = f"{config['pathQuicklooks'].format(version=version,site=config['site'], level=qL)}/{qL}_{config['site']}_current.png"
+            ] = f"{config['pathQuicklooks'].format(version=self.versionShort,site=config['site'], level=qL)}/{qL}_{config['site']}_current.png"
         self.quicklook.level3combinedRiming = (
             self.quicklook.level3combinedRiming.replace(
                 "level3combinedRiming",

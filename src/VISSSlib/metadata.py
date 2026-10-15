@@ -13,7 +13,7 @@ import numpy as np
 import xarray as xr
 from loguru import logger as log
 
-from . import __version__, detection, files, fixes, quicklooks, tools
+from . import __version__, av, detection, files, fixes, quicklooks, tools
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -664,7 +664,7 @@ def _getMetaData1(
 
     if asciiVersion in [0.1, 0.2]:
         fn = files.Filenames(metaFname, config, version=version)
-        helperFname = f'{config["pathOut"].format(level="metaFrames_nMovingPixel", version=version)}/{config.site}_{camera}_{fn.year}{fn.month}{fn.day}.nc'
+        helperFname = f'{config["pathOut"].format(level="metaFrames_nMovingPixel", version=fn.versionShort)}/{config.site}_{camera}_{fn.year}{fn.month}{fn.day}.nc'
         if os.path.isfile(helperFname):
             # for MOSAiC we can use an exisiting estimate of the numbe rof moving pixels even though it is not in the ASCII data
             helperDat = xr.open_dataset(helperFname)
@@ -691,7 +691,7 @@ def _getMetaData1(
                 "%s: helper file not found, counting moving pixels" % (helperFname)
             )
 
-            inVid = cv2.VideoCapture(fname)
+            inVid = cv2.VideoCapture(fname, *av.decoderThreadArgs())
 
             ii = -1
             if not inVid.isOpened:
@@ -922,7 +922,7 @@ def createMetaFrames1(fname0, camera, config, skipExisting=True, writeNc=True):
         )
 
     if metaDat is not None:
-        metaDat = tools.finishNc(metaDat, config.site, config.visssGen)
+        metaDat = tools.finishNc(metaDat, config.site, config.visssGen, config=config)
         if writeNc:
             tools.to_netcdf2(metaDat, config, fn.fname.metaFrames)
     else:
@@ -1274,7 +1274,9 @@ def getEvents(fnames0, config, fname0status=None):
     # no status files are available for MOSAiC, therefore use netcdf generated from log files to figure out when instrument was started (and clock was reset!)
     if (len(fnames0) > 0) and (config.site == "mosaic"):
         # becuase this is the only time we use _softwareStarttimes files, name is hardcoded here:
-        path = config.pathOut.format(level="metaEvents", version=__version__)
+        path = config.pathOut.format(
+            level="metaEvents", version=".".join(__version__.split(".")[:2])
+        )
         restartFile = f'{path}/{"_".join(fname0.split("/")[-1].split("_")[:-1])}_softwareStarttimes.nc'
         restartDat = xr.open_dataset(restartFile)
         case = fname0.split("/")[-1].split("_")[-1].split("-")[0]
@@ -1427,7 +1429,7 @@ def createEvent(
     metaDats = getEvents(fnames0, config, fname0status=fname0status)
     try:
         assert len(metaDats.file_starttime) > 0
-        metaDats = tools.finishNc(metaDats, config.site, config.visssGen)
+        metaDats = tools.finishNc(metaDats, config.site, config.visssGen, config=config)
         nFiles = sum(metaDats.event == "newfile") + sum(metaDats.event == "brokenfile")
         nFiles = int(nFiles.values)
         metaDats.attrs["noLevel0Files"] = nFiles

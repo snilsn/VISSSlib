@@ -1691,7 +1691,9 @@ def _getTrainingFrames(fnamesV, trainingSize, config):
     inVidTraining = {}
     for nThread, fnameV in fnamesV.items():
         assert fnameV.endswith(config.movieExtension)
-        vid = cv2.VideoCapture(fnameV)
+        vid = cv2.VideoCapture(
+            fnameV, *av.decoderThreadArgs(config.level1detect.cv2NumThreads)
+        )
         if int(vid.get(cv2.CAP_PROP_FRAME_COUNT)) > 0:
             inVidTraining[nThread] = vid
 
@@ -2042,7 +2044,9 @@ def detectParticles(
     nFramesByThread = {}
     for nThread, fnameV in fnamesV.items():
         assert fnameV.endswith(config.movieExtension)
-        inVid[nThread] = cv2.VideoCapture(fnameV)
+        inVid[nThread] = cv2.VideoCapture(
+            fnameV, *av.decoderThreadArgs(cv2NumThreads)
+        )
         nFramesByThread[nThread] = int(inVid[nThread].get(cv2.CAP_PROP_FRAME_COUNT))
         log.info(f"opened {fnameV} with {nFramesByThread[nThread]} frames.")
         assert nFramesByThread[nThread] > 0, f"too few frames: {nFramesByThread[nThread]}"
@@ -2237,7 +2241,7 @@ def detectParticles(
 
     # remove extra in 1.1
     metaData = tools.finishNc(
-        metaData, config.site, config.visssGen, extra={"blowingSnowFixed": "True"}
+        metaData, config.site, config.visssGen, config=config, extra={"blowingSnowFixed": "True"}
     )
     tools.to_netcdf2(metaData, config, fn.fname.metaDetection)
     metaData.close()
@@ -2247,7 +2251,7 @@ def detectParticles(
         snowParticlesXR = tools.finishNc(
             snowParticlesXR,
             config.site,
-            config.visssGen,
+            config.visssGen, config=config,
             extra={
                 **tools.collectVersionAttrs("level1detect", {}),
                 "maxMovingObjects": config.level1detect.maxMovingObjects,

@@ -11,7 +11,41 @@ from loguru import logger as log
 
 from . import files, tools
 
-__all__ = ["VideoReader", "VideoReaderMeta"]
+__all__ = ["VideoReader", "VideoReaderMeta", "decoderThreadArgs"]
+
+def decoderThreadArgs(nThreads=None):
+    """
+    Extra cv2.VideoCapture arguments limiting FFmpeg's decoder threads.
+
+    FFmpeg's frame-threaded H.264 decoder defaults to one thread per core and is
+    not covered by OMP_NUM_THREADS & co, so many concurrent workers oversubscribe
+    the node (processes >100% CPU, ~25% more CPU time per file). Follow
+    OMP_NUM_THREADS (exported per job by products.py); if unset (interactive use),
+    leave FFmpeg's default untouched.
+
+    Parameters
+    ----------
+    nThreads : int or str, optional
+        Explicit thread count, takes precedence over OMP_NUM_THREADS.
+
+    Returns
+    -------
+    tuple
+        Arguments to append after the file name in cv2.VideoCapture(...); empty if
+        no limit applies.
+    """
+    import cv2
+
+    if nThreads is None:
+        nThreads = os.environ.get("OMP_NUM_THREADS")
+    try:
+        nThreads = int(nThreads)
+    except (TypeError, ValueError):
+        return ()
+    if nThreads < 1:
+        return ()
+    return (cv2.CAP_FFMPEG, [cv2.CAP_PROP_N_THREADS, nThreads])
+
 
 
 def create_VideoReader():
@@ -269,7 +303,7 @@ class VideoReaderMeta(object):
         for tt in self.threads:
             fname = self.movFilePattern.format(thread=tt)
             assert os.path.isfile(fname)
-            self.video[tt] = VideoReader(fname)
+            self.video[tt] = VideoReader(fname, *decoderThreadArgs())
             self.positions[tt] = 0
         assert len(self.video) > 0
 

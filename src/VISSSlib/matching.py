@@ -1738,6 +1738,16 @@ def _resolveMatchingOffset(
     if maxDiffMs == "config":
         maxDiffMs = 1000 / config.fps / 2
 
+    if "mosaicFrameMapping" in config.dataFixes:
+        # follower capture_id has been mapped to leader capture_id already,
+        # only the unwrapping of the 16 bit counter can differ
+        captureIdOffset = fixes.mosaicCaptureIdOffset(leader1D, follower1D)
+        if offsetsOnly:
+            raise _MatchEarlyReturn((captureIdOffset, len(follower1D.fpid)))
+        mu = {"Z": 0, "H": 0, "T": 0, "I": captureIdOffset}
+        delta = {"Z": 0.5, "Y": 0.5, "H": 1, "T": 1 / config.fps, "I": 1}
+        return mu, delta, False, maxDiffMs
+
     try:
         captureIdOffset1, nMatched1 = tools.estimateCaptureIdDiffCore(
             leader1D,
@@ -2335,12 +2345,19 @@ def _matchSegments(
                 rotate_result,
                 rotate_err_result,
             )
-        else:
+        elif rotate_result is None:
             log.warning(
                 tools.concat(f"taking provided data for rotation from {rotate_time}")
             )
             rotate_result = rotate
             rotate_err_result = rotate_err
+        else:
+            # e.g. a sliver of a few particles after the last follower
+            # particle: don't let it replace the rotation already retrieved
+            # from an earlier segment of this file by the first guess
+            log.warning(
+                tools.concat("too little data, keeping rotation of previous segment")
+            )
 
         if rotationOnly:
             nLeader += len(leader1D4rot.fpid)
@@ -2400,6 +2417,19 @@ def _matchSegments(
         nLeader,
         nFollower,
     )
+
+
+def _newfileEventsAt(events, times):
+    """
+    newfile event (i.e. file properties like ptpStatus) valid at each of
+    `times`. Times before the first newfile event are attributed to the first
+    file: e.g. at MOSAiC, the leader's capture_time lags its record_time by
+    ~2 s, so the first frames of the 00:00 file have capture_time before
+    midnight, i.e. before that day's first newfile event.
+    """
+    newfile = events.where(events.event == "newfile", drop=True)
+    times = times.where(times >= newfile.file_starttime[0], newfile.file_starttime[0])
+    return newfile.sel(file_starttime=times, method="ffill")
 
 
 @log.catch(reraise=True)
@@ -2641,10 +2671,27 @@ def matchParticles(
     start = leader1D.capture_time[0].values - np.timedelta64(2, "s")
     end = leader1D.capture_time[-1].values + np.timedelta64(2, "s")
     log.info(tools.concat(f"opening {fnames1F}"))
+    mosaicFrameMapping = "mosaicFrameMapping" in config.dataFixes
     try:
         follower1DAll = tools.open_mflevel1detect(
-            fnames1F, config, start=start, end=end
+            fnames1F,
+            config,
+            start=start,
+            end=end,
+            skipFixes=["captureIdOverflows"] if mosaicFrameMapping else [],
         )  # with foxes
+        if mosaicFrameMapping and (follower1DAll is not None):
+            # follower capture_id -> leader capture_id of the same frame,
+            # see fixes.createMosaicFrameMapping
+            follower1DAll = fixes.mosaicFollowerCaptureIdToLeader(
+                follower1DAll, config
+            )
+            if (follower1DAll is not None) and (
+                "captureIdOverflows" in config.dataFixes
+            ):
+                follower1DAll = fixes.captureIdOverflows(
+                    follower1DAll, config, dim="fpid"
+                )
     except Exception as e:
         log.error(tools.concat("tools.open_mflevel1detect follower FAILED"))
         error = str(e)
@@ -2681,9 +2728,7 @@ def matchParticles(
         return fname1Match, None, None, None, None, None, None, errors
 
     if "ptpStatus" in lEvents.data_vars:
-        lEventsInterpolated = lEvents.where(lEvents.event == "newfile", drop=True).sel(
-            file_starttime=leader1D.capture_time, method="ffill"
-        )
+        lEventsInterpolated = _newfileEventsAt(lEvents, leader1D.capture_time)
         if not np.all(np.isin(lEventsInterpolated.ptpStatus, ["Slave", "Disabled"])):
             brokenDat = lEventsInterpolated.ptpStatus.isel(
                 fpid=~np.isin(lEventsInterpolated.ptpStatus, ["Slave", "Disabled"])
@@ -2701,9 +2746,7 @@ def matchParticles(
             return fname1Match, None, None, None, None, None, None, errors
 
     if "ptpStatus" in fEvents.data_vars:
-        fEventsInterpolated = fEvents.where(fEvents.event == "newfile", drop=True).sel(
-            file_starttime=follower1DAll.capture_time, method="ffill"
-        )
+        fEventsInterpolated = _newfileEventsAt(fEvents, follower1DAll.capture_time)
         if not np.all(np.isin(fEventsInterpolated.ptpStatus, ["Slave", "Disabled"])):
             brokenDat = fEventsInterpolated.ptpStatus.isel(
                 fpid=~np.isin(fEventsInterpolated.ptpStatus, ["Slave", "Disabled"])
@@ -2755,7 +2798,8 @@ def matchParticles(
     )
     captureIdDropTimes = []
     phaseJumpTimes = []
-    if ptpDisabled:
+    # with mosaicFrameMapping, follower capture_id is already exact
+    if ptpDisabled and not mosaicFrameMapping:
         maxDiffMsForDropDetection = maxDiffMs
         if maxDiffMsForDropDetection == "config":
             maxDiffMsForDropDetection = 1000 / config.fps / 2
@@ -3186,7 +3230,7 @@ def matchParticles(
     matchedDats = tools.finishNc(
         matchedDats,
         config.site,
-        config.visssGen,
+        config.visssGen, config=config,
         extra=tools.collectVersionAttrs(
             "level1match", {"level1detect": [fnameLv1Detect] + fnames1F}
         ),
@@ -3379,6 +3423,10 @@ def createMetaRotation(
         return None, None
 
     log.info("running %s" % fnameMetaRotation)
+
+    if "mosaicFrameMapping" in config.dataFixes:
+        # daily follower->leader frame mapping, used by matchParticles
+        fixes.createMosaicFrameMapping(case, config, skipExisting=skipExisting)
 
     # collect results here later
     metaRotation = []
@@ -3752,7 +3800,7 @@ def createMetaRotation(
             metaRotation = xr.concat(metaRotation, dim="file_starttime")
 
         if writeNc:
-            metaRotation = tools.finishNc(metaRotation, config.site, config.visssGen)
+            metaRotation = tools.finishNc(metaRotation, config.site, config.visssGen, config=config)
             tools.to_netcdf2(metaRotation, config, fnameMetaRotation)
         log.debug("DONE", fnameMetaRotation)
 

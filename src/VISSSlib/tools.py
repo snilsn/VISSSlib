@@ -242,6 +242,10 @@ DEFAULT_SETTINGS = {
     "name": None,
     "model": None,
     # mostly default settings
+    # optional site coordinates, written as nc attributes if set
+    "latitude": None,
+    "longitude": None,
+    "altitude": None,
     "aux": {
         "arm": {},
         "cloudnet": {
@@ -2222,7 +2226,7 @@ REPROCESS_AFTER = {
     "level1track": datetime.datetime(2026, 10, 1, 15, 50, 0),  # learned-scale tracker + track_expectedLength + coasting fix
     "level2detect": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
     "level2match": datetime.datetime(2026, 9, 2, 17, 0, 0),  # better QC
-    "level2track": datetime.datetime(2026, 10, 1, 15, 50, 0),  # turn-angle track edges + trackingIncomplete flag
+    "level2track": datetime.datetime(2026, 10, 7, 10, 50, 0),  # cameratrack="maxArea"
 }
 
 
@@ -2278,7 +2282,7 @@ def ncAttrs(site, visssGen, extra={}):
     return attrs
 
 
-def finishNc(dat, site, visssGen, extra={}):
+def finishNc(dat, site, visssGen, extra={}, config=None):
     """
     Finalize NetCDF dataset with attributes and encoding.
 
@@ -2292,6 +2296,9 @@ def finishNc(dat, site, visssGen, extra={}):
         Generator information.
     extra : dict, optional
         Extra attributes, by default {}.
+    config : dict, optional
+        Configuration settings. If it defines latitude, longitude and/or
+        altitude, they are written as global nc attributes.
 
     Returns
     -------
@@ -2305,6 +2312,10 @@ def finishNc(dat, site, visssGen, extra={}):
         extra[k] = str(extra[k])
 
     dat.attrs.update(ncAttrs(site, visssGen, extra=extra))
+    if config is not None:
+        for k in ("latitude", "longitude", "altitude"):
+            if config.get(k) is not None:
+                dat.attrs[k] = float(config[k])
 
     for k in list(dat.data_vars) + list(dat.coords):
         if dat[k].dtype == np.float64:
@@ -3645,7 +3656,7 @@ def reportLastFiles(
     output += f"VISSSlib version {__version__}\n"
 
     if writeFile:
-        fOut = f"{config['pathQuicklooks'].format(version=__version__,site=config['site'], level='')}/{'productReport'}_{config['site']}.html"
+        fOut = f"{config['pathQuicklooks'].format(version='.'.join(__version__.split('.')[:2]),site=config['site'], level='')}/{'productReport'}_{config['site']}.html"
         with open2(fOut, config, "w") as f:
             f.write("<html><pre>\n")
             f.write(output)
